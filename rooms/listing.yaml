@@ -1,0 +1,12 @@
+id: listing
+name: Copy Desk
+purpose: Scribe writes Etsy SEO titles, descriptions, and 13/13 tags.
+position: { x: 24, y: 4 }
+size: { w: 12, h: 8 }
+color: "#5a3a40"
+agents:
+  - id: scribe
+    name: Scribe
+    role: Listing copywriter and tag optimizer.
+    color: "#e0a3a3"
+tools: []

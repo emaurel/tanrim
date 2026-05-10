@@ -1,0 +1,12 @@
+id: archives
+name: Archives
+purpose: Sage keeps the persistent memory and feedback ledger — every approval, rejection, and note Edgar leaves becomes context the agents read on every run.
+position: { x: 12, y: 12 }
+size: { w: 12, h: 8 }
+color: "#4a3a2b"
+agents:
+  - id: sage
+    name: Sage
+    role: Curates long-term memory and surfaces feedback to other agents.
+    color: "#e6c79c"
+tools: []

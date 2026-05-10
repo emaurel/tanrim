@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.vite/
+*.sqlite
+*.sqlite-journal
+.DS_Store
+state/secrets.json
+# Runtime data (briefs, designs, listings, escalations, usage, log, fabricated tools).
+# All regenerable; nothing here is code worth tracking.
+state/

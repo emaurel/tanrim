@@ -1,0 +1,12 @@
+id: armory
+name: Armory
+purpose: Tinker forges new tools and skills (MCP servers, agent definitions) and equips the other agents.
+position: { x: 24, y: 12 }
+size: { w: 12, h: 8 }
+color: "#3a2b3a"
+agents:
+  - id: tinker
+    name: Tinker
+    role: Builds and registers new MCP tools and AgentDefinitions on demand.
+    color: "#b0a0d0"
+tools: []

@@ -1,0 +1,12 @@
+id: comms
+name: Communications
+purpose: Echo unifies TikTok/YouTube/Etsy/email comments and DMs into one inbox.
+position: { x: 0, y: 12 }
+size: { w: 12, h: 8 }
+color: "#264653"
+agents:
+  - id: echo
+    name: Echo
+    role: Pulls messages from connected channels, drafts replies for Edgar.
+    color: "#83c5be"
+tools: []

@@ -1,0 +1,12 @@
+id: publish
+name: Shipping Bay
+purpose: Courier pushes approved drafts to Etsy. The publish step is gated by Edgar's approval.
+position: { x: 36, y: 4 }
+size: { w: 12, h: 8 }
+color: "#6a4a3a"
+agents:
+  - id: courier
+    name: Courier
+    role: Calls POD + Etsy APIs after batch approval is granted.
+    color: "#d9a17a"
+tools: []

@@ -1,0 +1,8 @@
+id: war_room
+name: War Room
+purpose: Daily and weekly retro. All agents converge here to review numbers and adjust strategy. No permanent inhabitant.
+position: { x: 0, y: 20 }
+size: { w: 48, h: 6 }
+color: "#4a1a1a"
+agents: []
+tools: []

@@ -1,0 +1,12 @@
+id: treasury
+name: Treasury
+purpose: Coin tracks API spend per agent per day and warns when a room burns above budget.
+position: { x: 36, y: 12 }
+size: { w: 12, h: 8 }
+color: "#3a3a1a"
+agents:
+  - id: coin
+    name: Coin
+    role: Cost accountant. Watches token usage and external-API spend.
+    color: "#f4d35e"
+tools: []

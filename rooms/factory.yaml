@@ -1,0 +1,12 @@
+id: factory
+name: Factory
+purpose: Forge generates print-ready designs and pushes them to Printify/Printful.
+position: { x: 12, y: 4 }
+size: { w: 12, h: 8 }
+color: "#3d5a80"
+agents:
+  - id: forge
+    name: Forge
+    role: Writes prompts, generates artwork (GPT Image / Ideogram), composes mockups.
+    color: "#98c1d9"
+tools: []

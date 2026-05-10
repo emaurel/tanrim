@@ -1,0 +1,12 @@
+id: research
+name: Research Lab
+purpose: Nova studies winning Etsy stores and AI news, hands concept briefs to Forge.
+position: { x: 0, y: 4 }
+size: { w: 12, h: 8 }
+color: "#3a5a40"
+agents:
+  - id: nova
+    name: Nova
+    role: Etsy/eRank/Trends scraper, briefs the Factory with proven concepts.
+    color: "#a3b18a"
+tools: []

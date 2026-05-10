@@ -1,0 +1,12 @@
+id: throne
+name: Throne
+purpose: Overseer's chamber. Ultron supervises the dungeon and assigns work.
+position: { x: 0, y: 0 }
+size: { w: 48, h: 4 }
+color: "#2b1b3a"
+agents:
+  - id: ultron
+    name: Ultron
+    role: Head agent. Plans the day, dispatches briefs, enforces SLAs.
+    color: "#c084fc"
+tools: []
