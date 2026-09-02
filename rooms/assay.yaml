@@ -9,7 +9,7 @@ agents:
     name: Probe
     role: Qualifier. Audits the existing site, scores the opportunity, finds the contact.
     color: "#bcd35f"
-tools: ["site_audit"]
+tools: ["site_audit", "social_look"]
 max_workers: 3
 workbenches:
   - id: qualify
