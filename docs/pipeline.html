@@ -1,0 +1,650 @@
+<title>Pipeline As Built</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+
+<style>
+  /* Light palette is the base. Neutrals carry a slight green-grey bias to sit
+     with the room colours lifted from rooms/*.yaml. */
+  :root {
+    --ground:   #EDF0EA;
+    --surface:  #FFFFFF;
+    --sunken:   #E3E7DE;
+    --ink:      #1B1F24;
+    --muted:    #626A5E;
+    --faint:    #8A9184;
+    --rule:     #D2D8CA;
+    --rule-firm:#B4BCAB;
+
+    /* The one accent: an operator decision. Nothing else uses it. */
+    --gate:     #96631C;
+    --gate-bg:  #F6EBD6;
+    /* Terminal states. */
+    --dead:     #97423B;
+    --dead-bg:  #F7E4E1;
+
+    /* Room colours, taken from the manifests. */
+    --r-throne:  #2b1b3a;
+    --r-watch:   #3a5a40;
+    --r-assay:   #4a5a2b;
+    --r-factory: #3d5a80;
+    --r-gallery: #2b4a4a;
+    --r-copy:    #5a3a40;
+    --r-ship:    #6a4a3a;
+    --r-comms:   #264653;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:   #111418;
+      --surface:  #181C22;
+      --sunken:   #1E232A;
+      --ink:      #E4E7E2;
+      --muted:    #98A093;
+      --faint:    #6E766B;
+      --rule:     #2A313A;
+      --rule-firm:#3C444E;
+
+      --gate:     #E0A84B;
+      --gate-bg:  #2E2515;
+      --dead:     #E08A81;
+      --dead-bg:  #2E1B19;
+
+      --r-throne:  #9d7fbb;
+      --r-watch:   #8fb897;
+      --r-assay:   #b3c47a;
+      --r-factory: #8fb4d9;
+      --r-gallery: #7cc0c0;
+      --r-copy:    #d29aa2;
+      --r-ship:    #d3a279;
+      --r-comms:   #6fa8ba;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:   #111418;
+    --surface:  #181C22;
+    --sunken:   #1E232A;
+    --ink:      #E4E7E2;
+    --muted:    #98A093;
+    --faint:    #6E766B;
+    --rule:     #2A313A;
+    --rule-firm:#3C444E;
+
+    --gate:     #E0A84B;
+    --gate-bg:  #2E2515;
+    --dead:     #E08A81;
+    --dead-bg:  #2E1B19;
+
+    --r-throne:  #9d7fbb;
+    --r-watch:   #8fb897;
+    --r-assay:   #b3c47a;
+    --r-factory: #8fb4d9;
+    --r-gallery: #7cc0c0;
+    --r-copy:    #d29aa2;
+    --r-ship:    #d3a279;
+    --r-comms:   #6fa8ba;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+    font-size: 16.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 56px 28px 96px;
+  }
+
+  header.masthead { border-bottom: 2px solid var(--rule-firm); padding-bottom: 26px; }
+
+  .eyebrow {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 14px;
+  }
+
+  h1 {
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+    font-weight: 700;
+    font-size: clamp(2.1rem, 5vw, 3rem);
+    letter-spacing: -0.025em;
+    line-height: 1.04;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: 1.12rem;
+    color: var(--muted);
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  h2 {
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+    font-weight: 600;
+    font-size: 1.32rem;
+    letter-spacing: -0.012em;
+    margin: 56px 0 6px;
+    text-wrap: balance;
+  }
+
+  h3 {
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+    font-weight: 600;
+    font-size: 1rem;
+    letter-spacing: -0.005em;
+    margin: 30px 0 6px;
+  }
+
+  p { max-width: 68ch; margin: 0 0 14px; }
+  .lede { color: var(--muted); margin-bottom: 22px; }
+
+  code, .id {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.845em;
+  }
+  /* Stage names and file paths are literals in the code, so they are set as
+     literals here too. */
+  .id {
+    background: var(--sunken);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+
+  figure { margin: 26px 0 8px; }
+  .figscroll { overflow-x: auto; }
+  svg.flow { display: block; width: 100%; min-width: 720px; height: auto; color: var(--ink); }
+  figcaption {
+    font-size: 0.86rem;
+    color: var(--muted);
+    max-width: 70ch;
+    margin-top: 12px;
+    padding-left: 13px;
+    border-left: 2px solid var(--rule-firm);
+  }
+
+  table { border-collapse: collapse; width: 100%; margin: 18px 0 8px; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th {
+    font-family: Archivo, sans-serif;
+    font-weight: 600;
+    font-size: 0.74rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--faint);
+    border-bottom-color: var(--rule-firm);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .room {
+    font-family: Archivo, sans-serif;
+    font-weight: 600;
+    font-size: 0.8rem;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .room::before {
+    content: "";
+    display: inline-block;
+    width: 9px; height: 9px;
+    border-radius: 2px;
+    margin-right: 7px;
+    vertical-align: baseline;
+    background: currentColor;
+  }
+  .c-watch   { color: var(--r-watch); }
+  .c-assay   { color: var(--r-assay); }
+  .c-gallery { color: var(--r-gallery); }
+  .c-factory { color: var(--r-factory); }
+  .c-copy    { color: var(--r-copy); }
+  .c-ship    { color: var(--r-ship); }
+  .c-comms   { color: var(--r-comms); }
+  .c-throne  { color: var(--r-throne); }
+
+  .muted { color: var(--faint); font-style: italic; }
+
+  .note {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--gate);
+    border-radius: 4px;
+    padding: 15px 18px;
+    margin: 20px 0;
+    max-width: 74ch;
+  }
+  .note p:last-child { margin-bottom: 0; }
+  .note .tag {
+    font-family: Archivo, sans-serif;
+    font-weight: 600;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--gate);
+    display: block;
+    margin-bottom: 5px;
+  }
+  .note--dead { border-left-color: var(--dead); }
+  .note--dead .tag { color: var(--dead); }
+
+  ol.findings { max-width: 72ch; padding-left: 0; list-style: none; counter-reset: f; margin: 18px 0 0; }
+  ol.findings > li {
+    counter-increment: f;
+    display: grid;
+    grid-template-columns: 30px 1fr;
+    gap: 12px;
+    padding: 16px 0;
+    border-top: 1px solid var(--rule);
+  }
+  ol.findings > li::before {
+    content: counter(f);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.78rem;
+    color: var(--faint);
+    padding-top: 3px;
+  }
+  ol.findings h3 { margin: 0 0 4px; }
+  ol.findings p { margin: 0; font-size: 0.95rem; }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 20px;
+    border-top: 1px solid var(--rule);
+    font-size: 0.82rem;
+    color: var(--faint);
+    max-width: 72ch;
+  }
+  footer code { color: var(--muted); }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">agent_environment · read out of the working tree</p>
+    <h1>Pipeline As Built</h1>
+    <p class="standfirst">
+      Every stage, every transition and both human gates, taken from
+      <span class="id">state.STAGES</span>, the workbench declarations in
+      <span class="id">rooms/*.yaml</span> and the <span class="id">advance_lead()</span>
+      call sites — not from how it was meant to work.
+    </p>
+  </header>
+
+  <h2>How a lead moves</h2>
+  <p class="lede">
+    Eleven live stages and three terminal ones. The label on each arrow is the agent
+    that performs the move and the bench it stands at; the routing comes from
+    <span class="id">role_for_stage()</span>, which reads the bench declarations rather
+    than any list in Python.
+  </p>
+
+  <figure>
+    <div class="figscroll">
+      <svg class="flow" viewBox="0 0 960 830" role="img"
+           aria-label="A lead moves down a spine of ten stages from sourced to won. Probe qualifies, Lens reviews an existing site, Probe researches the dossier, Lens reads photographs, Forge builds, Lens inspects, Courier publishes behind an operator gate, and Echo sends behind a second operator gate. Leads leave the spine to needs_review, disqualified, qa_failed and lost.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+          </marker>
+          <marker id="ar-gate" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--gate)"/>
+          </marker>
+          <marker id="ar-dead" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--dead)"/>
+          </marker>
+        </defs>
+
+        <!-- ================= spine: the ten stages a lead passes through ============ -->
+        <g font-family="JetBrains Mono, monospace" font-size="13">
+          <g fill="var(--surface)" stroke="var(--rule-firm)" stroke-width="1.5">
+            <rect x="330" y="24"  width="190" height="34" rx="5"/>
+            <rect x="330" y="104" width="190" height="34" rx="5"/>
+            <rect x="330" y="184" width="190" height="34" rx="5"/>
+            <rect x="330" y="264" width="190" height="34" rx="5"/>
+            <rect x="330" y="344" width="190" height="34" rx="5"/>
+            <rect x="330" y="424" width="190" height="34" rx="5"/>
+            <rect x="330" y="504" width="190" height="34" rx="5"/>
+            <rect x="330" y="584" width="190" height="34" rx="5"/>
+            <rect x="330" y="664" width="190" height="34" rx="5"/>
+            <rect x="330" y="744" width="190" height="34" rx="5"/>
+          </g>
+          <g fill="currentColor" text-anchor="middle">
+            <text x="425" y="46">sourced</text>
+            <text x="425" y="126">qualified</text>
+            <text x="425" y="206">enriched</text>
+            <text x="425" y="286">visualised</text>
+            <text x="425" y="366">built</text>
+            <text x="425" y="446">qa_passed</text>
+            <text x="425" y="526">published</text>
+            <text x="425" y="606">contacted</text>
+            <text x="425" y="686">replied</text>
+            <text x="425" y="766">won</text>
+          </g>
+        </g>
+
+        <!-- ================= spine arrows ========================================== -->
+        <g stroke="currentColor" stroke-width="1.6" fill="none" marker-end="url(#ar)">
+          <line x1="425" y1="58"  x2="425" y2="98"/>
+          <line x1="425" y1="138" x2="425" y2="178"/>
+          <line x1="425" y1="218" x2="425" y2="258"/>
+          <line x1="425" y1="298" x2="425" y2="338"/>
+          <line x1="425" y1="378" x2="425" y2="418"/>
+          <line x1="425" y1="618" x2="425" y2="658"/>
+          <line x1="425" y1="698" x2="425" y2="738" stroke-dasharray="4 4"/>
+        </g>
+        <!-- the two arrows that cross an operator gate -->
+        <g stroke="var(--gate)" stroke-width="2" fill="none" marker-end="url(#ar-gate)">
+          <line x1="425" y1="458" x2="425" y2="498"/>
+          <line x1="425" y1="538" x2="425" y2="578"/>
+        </g>
+
+        <!-- ================= who performs each move ================================ -->
+        <g font-family="Archivo, sans-serif" font-size="11.5" text-anchor="end" fill="var(--muted)">
+          <text x="312" y="74">probe · Weighing Bench</text>
+          <text x="312" y="154">probe · Dossier Desk</text>
+          <text x="312" y="234">lens · The Light Box</text>
+          <text x="312" y="314">forge · The Build Floor</text>
+          <text x="312" y="394">lens · Inspection Bay</text>
+          <text x="312" y="468" fill="var(--gate)" font-weight="600">courier · The Crating Bay</text>
+          <text x="312" y="484" fill="var(--gate)">you approve → deploys to Pages</text>
+          <text x="312" y="548" fill="var(--gate)" font-weight="600">echo · The Outbox</text>
+          <text x="312" y="564" fill="var(--gate)">you approve → sends the email</text>
+          <text x="312" y="678">echo · The Inbox</text>
+          <text x="312" y="756" fill="var(--faint)">no room works this stage</text>
+        </g>
+
+        <!-- ============ detour: leads that already have a site ==================== -->
+        <g font-family="JetBrains Mono, monospace" font-size="12">
+          <rect x="650" y="62" width="150" height="30" rx="5"
+                fill="var(--surface)" stroke="var(--rule-firm)" stroke-width="1.5"/>
+          <text x="725" y="82" fill="currentColor" text-anchor="middle">needs_review</text>
+        </g>
+        <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#ar)">
+          <path d="M520 41 H600 Q614 41 614 55 V63 H644"/>
+          <path d="M800 77 H836 Q850 77 850 91 V121 H526"/>
+        </g>
+        <g font-family="Archivo, sans-serif" font-size="10.5" fill="var(--muted)">
+          <text x="528" y="35">a site exists</text>
+          <text x="725" y="113" text-anchor="middle">worth rebuilding</text>
+        </g>
+
+        <!-- ============ terminal: disqualified ===================================== -->
+        <g font-family="JetBrains Mono, monospace" font-size="12">
+          <rect x="650" y="166" width="150" height="30" rx="5"
+                fill="var(--dead-bg)" stroke="var(--dead)" stroke-width="1.5"/>
+          <text x="725" y="186" fill="var(--dead)" text-anchor="middle">disqualified</text>
+        </g>
+        <g stroke="var(--dead)" stroke-width="1.4" fill="none" marker-end="url(#ar-dead)">
+          <path d="M520 52 H546 Q560 52 560 66 V174 H644"/>
+          <path d="M725 92 V160"/>
+        </g>
+        <g font-family="Archivo, sans-serif" font-size="10.5" fill="var(--dead)">
+          <text x="566" y="158">no email, or not trading</text>
+          <text x="733" y="132">their site is fine</text>
+        </g>
+
+        <!-- ============ loop: QA sends the build back ============================== -->
+        <g font-family="JetBrains Mono, monospace" font-size="12">
+          <rect x="650" y="386" width="150" height="30" rx="5"
+                fill="var(--dead-bg)" stroke="var(--dead)" stroke-width="1.5"/>
+          <text x="725" y="406" fill="var(--dead)" text-anchor="middle">qa_failed</text>
+        </g>
+        <g stroke="var(--dead)" stroke-width="1.4" fill="none" marker-end="url(#ar-dead)">
+          <path d="M520 371 H566 Q580 371 580 385 V394 H644"/>
+          <path d="M650 401 H624 Q610 401 610 387 V361 H526"/>
+        </g>
+        <g font-family="Archivo, sans-serif" font-size="10.5" fill="var(--dead)">
+          <text x="725" y="379" text-anchor="middle">lens fails it</text>
+          <text x="616" y="348">forge rebuilds from the problems</text>
+        </g>
+
+        <!-- ============ terminal: lost ============================================= -->
+        <g font-family="JetBrains Mono, monospace" font-size="12">
+          <rect x="650" y="546" width="150" height="30" rx="5"
+                fill="var(--dead-bg)" stroke="var(--dead)" stroke-width="1.5"/>
+          <text x="725" y="566" fill="var(--dead)" text-anchor="middle">lost</text>
+        </g>
+        <g stroke="var(--dead)" stroke-width="1.4" fill="none" marker-end="url(#ar-dead)">
+          <path d="M520 531 H566 Q580 531 580 545 V554 H644"/>
+        </g>
+        <text x="528" y="525" font-family="Archivo, sans-serif" font-size="10.5"
+              fill="var(--dead)">you reject the send, no reason given</text>
+
+        <!-- ================= entry ================================================= -->
+        <g stroke="currentColor" stroke-width="1.6" fill="none" marker-end="url(#ar)">
+          <line x1="140" y1="41" x2="322" y2="41"/>
+        </g>
+        <g font-family="Archivo, sans-serif" font-size="11.5">
+          <text x="20" y="37" fill="var(--r-watch)" font-weight="600">nova · The Map Table</text>
+          <text x="20" y="53" fill="var(--muted)">you tell it where to look</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>
+      The two amber arrows are the only places the pipeline stops on its own. Everything
+      else moves without you: when a lead's stage changes,
+      <span class="id">Orchestrator._advance_leads</span> dispatches whichever room
+      declares that stage on one of its benches.
+    </figcaption>
+  </figure>
+
+  <h2>The routing table</h2>
+  <p class="lede">
+    This is the whole of it. A bench that declares a stage is what makes that stage
+    routable — there is no list of transitions anywhere in Python.
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Room</th><th>Bench</th><th>Works leads at</th><th>Also has</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="room c-watch">Watchtower</td>
+        <td>The Map Table</td>
+        <td><span class="muted">— operator-triggered only</span></td>
+        <td><code>osm_business_search</code></td>
+      </tr>
+      <tr>
+        <td class="room c-assay">Assay Room</td>
+        <td>Weighing Bench</td>
+        <td><span class="id">sourced</span></td>
+        <td rowspan="2"><code>site_audit</code>, 3 workers</td>
+      </tr>
+      <tr>
+        <td class="room c-assay">Assay Room</td>
+        <td>Dossier Desk</td>
+        <td><span class="id">qualified</span></td>
+      </tr>
+      <tr>
+        <td class="room c-gallery">Gallery</td>
+        <td>Incumbent Wall</td>
+        <td><span class="id">needs_review</span></td>
+        <td rowspan="4"><code>site_inspect</code>, <code>site_audit</code>, <code>image_collect</code>, 3 workers</td>
+      </tr>
+      <tr>
+        <td class="room c-gallery">Gallery</td>
+        <td>The Light Box</td>
+        <td><span class="id">enriched</span></td>
+      </tr>
+      <tr>
+        <td class="room c-gallery">Gallery</td>
+        <td>Inspection Bay</td>
+        <td><span class="id">built</span></td>
+      </tr>
+      <tr>
+        <td class="room c-gallery">Gallery</td>
+        <td>Comparison Bench</td>
+        <td><span class="muted">— reviews for other agents</span></td>
+      </tr>
+      <tr>
+        <td class="room c-factory">Factory</td>
+        <td>The Build Floor</td>
+        <td><span class="id">visualised</span>, <span class="id">qa_failed</span></td>
+        <td rowspan="2"><code>ui-ux-pro-max</code> skill, 3 workers</td>
+      </tr>
+      <tr>
+        <td class="room c-factory">Factory</td>
+        <td>Craft Bench</td>
+        <td><span class="muted">— delegated subtasks</span></td>
+      </tr>
+      <tr>
+        <td class="room c-ship">Shipping Bay</td>
+        <td>The Crating Bay</td>
+        <td><span class="id">qa_passed</span></td>
+        <td rowspan="2"><code>domain_check</code>, 3 workers</td>
+      </tr>
+      <tr>
+        <td class="room c-ship">Shipping Bay</td>
+        <td>The Registry Desk</td>
+        <td><span class="muted">— domain candidates</span></td>
+      </tr>
+      <tr>
+        <td class="room c-copy">Copy Desk</td>
+        <td>Copy Bench</td>
+        <td><span class="id">visualised</span></td>
+        <td rowspan="2">3 workers</td>
+      </tr>
+      <tr>
+        <td class="room c-copy">Copy Desk</td>
+        <td>The Pitch Desk</td>
+        <td><span class="id">published</span></td>
+      </tr>
+      <tr>
+        <td class="room c-comms">Communications</td>
+        <td>The Outbox</td>
+        <td><span class="id">published</span></td>
+        <td rowspan="2">3 workers</td>
+      </tr>
+      <tr>
+        <td class="room c-comms">Communications</td>
+        <td>The Inbox</td>
+        <td><span class="id">contacted</span>, <span class="id">replied</span></td>
+      </tr>
+      <tr>
+        <td class="room c-throne">Throne</td>
+        <td>The Lead Board</td>
+        <td><span class="muted">— supervises, does not route</span></td>
+        <td>singleton</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>What the code does that the plan doesn't say</h2>
+  <p class="lede">
+    Four things that fall out of reading the transitions rather than the intent.
+  </p>
+
+  <ol class="findings">
+    <li>
+      <div>
+        <h3>A failed build sends the lead back to research, not back to the builder</h3>
+        <p>
+          When Forge finishes without producing <span class="id">index.html</span> it calls
+          <span class="id">advance_lead(lead_id, "qualified")</span>. Because
+          <span class="id">qualified</span> routes to Probe's Dossier Desk, the sweep then
+          re-runs the whole dossier, the photo read and the build. A missing file costs
+          three agent runs, not one.
+        </p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Two rooms claim <span class="id">published</span>, and the sweep picks Communications</h3>
+        <p>
+          The Pitch Desk and The Outbox both declare it.
+          <span class="id">role_for_stage("published")</span> returns the first match in
+          room order, which is <span class="id">echo</span> — so an automatic dispatch goes
+          to <em>send the email</em>, not <em>write</em> it. Scribe only ever gets a
+          <span class="id">published</span> lead through an explicit
+          <span class="id">prefer_role="scribe"</span>, which today happens on exactly one
+          path: you rejecting a pitch with a reason.
+        </p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Nothing happens after a sale</h3>
+        <p>
+          <span class="id">won</span> has no room declaring it, so
+          <span class="id">role_for_stage</span> returns nothing and the lead stops.
+          The handover — buying the domain, attaching it, stripping the preview banner,
+          producing the files — exists as a plan and not as code.
+          <span class="id">replied</span> routes to The Inbox, but nothing writes a reply.
+        </p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>The Watchtower is the only room you have to start yourself</h3>
+        <p>
+          Nova's bench declares no stages, because sourcing takes a place rather than a
+          lead. Every other room fires on its own the moment a lead reaches its stage.
+        </p>
+      </div>
+    </li>
+  </ol>
+
+  <h2>Where it stops for you</h2>
+
+  <div class="note">
+    <span class="tag">Gate 1 · Shipping Bay</span>
+    <p>
+      Raised by Courier when a lead reaches <span class="id">qa_passed</span>. The card
+      embeds the build at 390px from <span class="id">/staging/&lt;lead_id&gt;/</span>.
+      Approving deploys to Cloudflare Pages, checks domain availability and moves the lead
+      to <span class="id">published</span>. Rejecting merges your reason into
+      <span class="id">qa.problems</span> as a critical and sends it to
+      <span class="id">qa_failed</span>, which is where Forge reads its rebuild brief.
+    </p>
+  </div>
+
+  <div class="note">
+    <span class="tag">Gate 2 · Communications</span>
+    <p>
+      Raised by Echo for a lead at <span class="id">published</span> that has a draft, a
+      recipient and a live preview. It refuses to raise at all while
+      <span class="id">AGENT_ENV_AGENCY_NAME</span> or
+      <span class="id">AGENT_ENV_SENDER_EMAIL</span> is unset, or while the draft contains
+      billing language. Rejecting <em>with</em> a reason returns it to the Copy Desk to
+      rewrite; rejecting silently marks it <span class="id">lost</span>.
+    </p>
+  </div>
+
+  <div class="note note--dead">
+    <span class="tag">Not a gate, but it stops too</span>
+    <p>
+      Probe raises a <span class="id">thin_content</span> card when a dossier comes back
+      <span class="id">not_enough</span>, and parks the lead back at
+      <span class="id">qualified</span> rather than building a page with nothing on it.
+      That card is a notification — no approval reopens the path.
+    </p>
+  </div>
+
+  <footer>
+    Read out of the working tree at <code>87ae59a</code> plus uncommitted hosting and
+    domain work. Sources: <code>state.STAGES</code> and <code>state.DEAD_STAGES</code>;
+    the <code>workbenches:</code> blocks in <code>rooms/*.yaml</code>;
+    <code>rooms.role_for_stage()</code>; every <code>advance_lead()</code> call site in
+    <code>backend/agent_env/</code>; and the <code>accepts_stages</code> tuples in
+    <code>handlers.py</code>. Nothing here is inferred from intent.
+  </footer>
+
+</div>

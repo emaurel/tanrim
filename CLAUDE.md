@@ -406,6 +406,98 @@ escalation is a new record with a fresh allowance. So there are two:
    task needs the operator, not another attempt. The denied-tool rerun path
    shares the same ceiling.
 
+### The outreach email is a template, not a fresh invention
+
+`prompts/scribe/OUTREACH_TEMPLATE.md` holds the canonical email: the process
+facts — what the offer is, what is included, that it is unsolicited and carries
+no obligation — plus slots marked `{{ADAPT}}` that Scribe writes per business.
+`{{PREVIEW_URL}}`, `{{PRICE}}` and `{{DOMAIN}}` are substituted before the
+prompt is built.
+
+The split is the point. The personalised parts *should* vary; the description of
+what someone is buying should not. Regenerating "what you get for €450" from
+scratch on every lead is how a customer ends up misled about the offer, and it
+is the one part of the email a misdescription actually matters in.
+
+`{{KEEP}}` sections may be reworded for tone but must not change what they
+promise or be dropped.
+
+The opt-out and sender identity are still appended in code so they cannot go
+missing — but `config.outreach_footer(language)` now writes them in the
+language of the email. A French business receiving a French pitch with an
+English legal notice reads as a template, which undermines the one paragraph
+that has to be believed.
+
+### Attaching a third-party MCP server to a room
+
+`rooms/<id>.yaml` can declare remote MCP servers, so granting a room a
+third-party toolset is a manifest change rather than a code change:
+
+```yaml
+mcp_servers:
+  - id: cloudflare
+    url: https://mcp.cloudflare.com/mcp
+    auth_env: CLOUDFLARE_API_TOKEN     # env var name, never the value
+    tools: [docs, search]              # allowlist
+    deny: [execute]                    # and don't even offer this one
+```
+
+Three details that matter:
+
+- **`tools` is an allowlist, applied per tool name** rather than the
+  `mcp__<server>__*` wildcard used for local tool servers. A remote server
+  decides what it exposes and can add tools whenever it likes; a room gets the
+  ones it was granted. Omitting `tools` grants everything, now and in future,
+  which is almost never right.
+- **`deny` exists because the allowlist only blocks invocation.** The server
+  still advertises everything it has, so without a deny the model sees a tool,
+  tries it, is refused, and has burned a turn learning that. Verified both
+  ways: with only the allowlist the agent called `execute` and got "requires
+  explicit user permission"; with the deny it is not listed at all.
+- **`auth_env` names an environment variable.** Manifests are committed;
+  secrets are not. A missing variable skips the server and logs why rather
+  than failing the run.
+
+No room currently uses one. Cloudflare's server is left commented in
+`rooms/publish.yaml` as the worked example: deploying is done deterministically
+by `hosting.py`, and Courier makes no model call in the publish path, so the
+tools would never be reached. Attaching an unused remote server just adds a
+handshake and two tools to every run's context.
+
+It did pay for itself once while being evaluated — asked for the custom-domain
+endpoint, `search` returned
+`POST /accounts/{account_id}/pages/projects/{project_name}/domains`, which is
+what the Launch Pad will need.
+
+### Hosting, and where domains come from
+
+`agent_env/hosting.py` deploys an approved build to Cloudflare Pages, giving a
+public `<slug>.pages.dev` URL. Before this, the "preview link" in an outreach
+email was `127.0.0.1` — unopenable by the person it was written for, which made
+the whole outreach step a dead end.
+
+It is plain HTTP, not a model call: putting a built site on a URL is mechanical
+and must not vary. Cloudflare also publishes an MCP server (`docs`, `search`,
+`execute` over 2,500+ endpoints, and it accepts a plain API token as a bearer so
+it works headlessly) — that is worth having for diagnosing a failure or a
+one-off change, but not for the deploy itself.
+
+The direct-upload flow is barely documented, so it was established empirically:
+`upload-token` → `assets/check-missing` → `assets/upload` → `deployments` with a
+`manifest` field mapping each path to a content hash. Cloudflare's own tooling
+hashes with blake3, which is not in the stdlib, but the hash is an opaque
+content key — a stable md5 works, verified against the live API. A brand-new
+project 522s for a few seconds while its certificate provisions.
+
+`domains.py` checks availability over **RDAP**, the protocol that replaced
+WHOIS: free, keyless, answered by the registry. It reports availability only.
+Registration is irreversible and spends real money, so a human buys the domain
+at the registrar and pastes it back — the system never holds a card. Courier
+generates candidates at publish time so the outreach email can name a free one,
+and the prompt insists on "available", never "reserved": someone can take it
+between the email and the reply, and promising a domain we do not hold is the
+kind of small dishonesty that loses a client at the worst moment.
+
 ### Seeing a build before approving it
 
 `/staging/<lead_id>/` serves any build straight off disk, published or not, and
