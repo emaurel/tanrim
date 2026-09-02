@@ -145,7 +145,19 @@ def build(lead: dict[str, Any]) -> Invoice:
     domain = (lead.get("domain_registered")
               or ((lead.get("domains") or {}).get("suggested") or [None])[0])
     quote = config.quote_for(domain, (lead.get("domains") or {}).get("priced"))
-    amount = float(quote["total"])
+
+    # You invoice what you QUOTED. Recomputing means any later change to the
+    # margin, the rounding or the domain's real price silently desyncs the
+    # invoice from the email the client is holding — and they are holding a
+    # figure they agreed to. Only fall back to the computed price when nothing
+    # was ever quoted.
+    quoted = ((lead.get("outreach") or {}).get("quote") or {}).get("amount")
+    if quoted:
+        amount = float(quoted)
+        quoted_from_email = True
+    else:
+        amount = float(quote["total"])
+        quoted_from_email = False
 
     # One line, because that is what was sold. Itemising a fixed-price job into
     # invented sub-amounts is how a total stops matching the quote.
@@ -163,6 +175,11 @@ def build(lead: dict[str, Any]) -> Invoice:
     }]
 
     notes = []
+    if quoted_from_email and abs(amount - float(quote["total"])) >= 0.01:
+        # Visible on the ledger, never on the document: the client sees one
+        # agreed figure, and this is only so the books explain the difference.
+        notes.append(f"__internal__ invoiced at the quoted {amount:.2f}; the "
+                     f"current computed price would be {quote['total']:.2f}")
     if lead.get("preview_url"):
         notes.append(f"Site livré : {lead['preview_url']}")
     return Invoice(
@@ -193,7 +210,8 @@ def render_html(inv: Invoice) -> str:
         f"<td class=n>{_money(l['total'], inv.currency)}</td></tr>"
         for l in inv.lines
     )
-    notes = ("".join(f"<p class=note>{n}</p>" for n in inv.notes)) if inv.notes else ""
+    shown = [n for n in inv.notes if not n.startswith("__internal__")]
+    notes = ("".join(f"<p class=note>{n}</p>" for n in shown)) if shown else ""
     bank = f"<div><span>IBAN</span><b>{config.IBAN}</b></div>"
     if config.BIC:
         bank += f"<div><span>BIC</span><b>{config.BIC}</b></div>"
@@ -367,9 +385,15 @@ async def create_for_lead(lead_id: str, force: bool = False) -> dict[str, Any]:
 
     pdf = INVOICE_DIR / f"{inv.number}.pdf"
     await write_pdf(render_html(inv), pdf)
-    # The split is recorded for the books and never printed on the invoice —
-    # the client is quoted one all-in figure.
-    split = config.quote_for(inv.domain, (lead.get("domains") or {}).get("priced"))
+    # The split for the books, never printed on the invoice — the client is
+    # quoted one all-in figure. Derived from what was actually INVOICED minus
+    # what the domain actually costs, not from the margin constant: if the
+    # quote went out at 590 and the domain really costs 75.10, the margin is
+    # 514.90, and a ledger that says 500 is telling you the wrong number.
+    priced = (lead.get("domains") or {}).get("priced") or {}
+    split = config.quote_for(inv.domain, priced)
+    real_domain = float(priced.get("total") if priced.get("total") is not None
+                        else split["domain_cost"])
     if existing and force:
         _forget(existing["number"])
     _record({
@@ -377,7 +401,9 @@ async def create_for_lead(lead_id: str, force: bool = False) -> dict[str, Any]:
         "client": inv.client_name, "total": inv.total, "currency": inv.currency,
         "issued": inv.issued, "pdf": str(pdf), "paid": False, "sent": False,
         "series": config.INVOICE_PREFIX,
-        "margin": split["margin"], "domain_cost": split["domain_cost"],
+        "margin": round(inv.total - real_domain, 2),
+        "domain_cost": round(real_domain, 2),
+        "domain_cost_verified": bool(priced.get("verified")),
         "domain_years": split["domain_years"], "domain": inv.domain,
     })
     state.log_event("run_end", from_="operator", to="operator",

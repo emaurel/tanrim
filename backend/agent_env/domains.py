@@ -248,24 +248,41 @@ async def price(domain: str, years: int = 10) -> dict[str, Any]:
             fallback["why"] = "OVH returned no purchase offer for that name"
             return fallback
         offer = create[0]
-        per_year = None
-        for pr in (offer.get("prices") or []):
-            if pr.get("label") in ("TOTAL", "PRICE"):
-                per_year = float(pr.get("price", {}).get("value") or 0)
-                break
-        if per_year is None:
+
+        # Registration and renewal are DIFFERENT prices, and the offer carries
+        # both. `TOTAL` is only the first year — a .fr came back as 4.99 with a
+        # renewal of 7.79, so multiplying the headline by ten under-priced ten
+        # years by 25 EUR, straight out of the margin. Ten years is one
+        # registration plus nine renewals.
+        prices = {pr.get("label"): float(pr.get("price", {}).get("value") or 0)
+                  for pr in (offer.get("prices") or [])}
+        first = prices.get("PRICE", prices.get("TOTAL"))
+        renew = prices.get("RENEW", first)
+        if first is None:
             fallback["why"] = "OVH's offer carried no price field"
             return fallback
+        total = first + renew * max(years - 1, 0)
+
+        currency = "EUR"
+        for pr in (offer.get("prices") or []):
+            cc = (pr.get("price") or {}).get("currencyCode")
+            if cc:
+                currency = cc
+                break
 
         return {
             "domain": domain, "years": years, "verified": True, "source": "OVH",
-            "per_year": round(per_year, 2),
-            "total": round(per_year * years, 2),
-            "currency": (offer.get("prices") or [{}])[0]
-                        .get("price", {}).get("currencyCode", "EUR"),
-            # OVH marks these; a premium name can be orders of magnitude dearer.
-            "premium": bool(offer.get("offer") and "premium" in str(offer.get("offer")).lower()),
+            "first_year": round(first, 2),
+            "renewal_per_year": round(renew, 2),
+            "total": round(total, 2),
+            "currency": currency,
+            # OVH prices a premium name through a different offer tier, and one
+            # can be orders of magnitude dearer than its TLD's usual rate.
+            "premium": (str(offer.get("offer") or "").lower() not in
+                        ("", "gold", "silver", "bronze", "diamond")),
             "offer": offer.get("offer"),
+            "breakdown": (f"{first:.2f} to register + {years - 1} renewals at "
+                          f"{renew:.2f} = {total:.2f} {currency}"),
         }
     except Exception as e:  # noqa: BLE001
         fallback["why"] = f"OVH lookup failed: {type(e).__name__}: {e}"
