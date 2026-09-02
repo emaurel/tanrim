@@ -75,6 +75,66 @@ The two diamonds are the only places it stops on its own. Everything else moves
 without you: when a lead's stage changes, the room whose workbench declares that
 stage is dispatched.
 
+### Nothing calls anything
+
+The diagram above says what happens to a lead. It doesn't show *how* a handoff
+happens, and that turns out to be the more surprising half: **no agent ever calls
+another one.** Each column below is a lifeline — the operator, the agents, and two
+things that aren't agents at all: the lead record on disk, and the sweep that
+polls it.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant N as nova
+    participant L as lead record
+    participant S as sweep
+    participant P as probe
+    participant X as lens
+    participant F as forge
+    participant C as courier
+    participant W as scribe
+    participant E as echo
+
+    You->>N: run_scout("bakeries in Villeurbanne")
+    N->>L: add_lead · stage = sourced
+
+    Note over L,S: No agent ever calls another. Every handoff below is<br/>the sweep polling state/leads.json every 3s and dispatching<br/>whichever workbench declares the new stage.
+
+    S->>P: sourced
+    P->>L: stage = qualified
+    S->>P: qualified
+    P->>L: stage = enriched
+    S->>X: enriched
+    X->>L: stage = visualised
+    S->>F: visualised
+    F->>L: stage = built
+    S->>X: built
+    X->>L: stage = qa_passed
+
+    S->>C: qa_passed
+    C->>You: raises publish_site card
+    You-->>C: approve
+    C->>L: deployed to Pages, domains checked<br/>stage = published
+
+    S->>E: published
+    E->>E: preflight
+    Note over W,E: role_for_stage("published") returns echo, so the sweep<br/>dispatches the sender, not the writer. Nothing runs scribe.
+    You->>W: run it yourself
+    W->>L: outreach draft stored
+    S->>E: published
+    E->>You: raises send_outreach card
+    You-->>E: approve
+    E->>L: stage = contacted
+```
+
+Read the columns and you can see the shape of the thing: every arrow either writes
+a stage to the lead record or is the sweep dispatching off one. Steps 20 to 23 are
+the gap that falls out of it — `role_for_stage("published")` returns `echo`, so the
+sweep dispatches the sender and never the writer, and the pitch only gets written
+if you run the Copy Desk yourself.
+
 | Room | Agent | What happens there |
 |---|---|---|
 | Throne | Ultron | Reads the lead board, supervises, reviews tool requests |
