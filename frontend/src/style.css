@@ -1082,14 +1082,33 @@ html, body {
   color: #8a8a95;
   text-align: right;
 }
+/* Every stage carries a colour, so a chip is readable at a glance and two
+   leads at different stages never look alike. Grey means "not yet judged" —
+   which is only true of `sourced`. The hue tracks the pipeline: green while
+   we are deciding and researching, blue/lilac while we are making something,
+   teal once it is out in the world, gold at the end, red for anything dead. */
+.rp-lead-stage { --stage: #8a8a98; color: var(--stage); }
+.rp-lead-stage[data-stage="sourced"]      { --stage: #8a8a98; }
+.rp-lead-stage[data-stage="needs_review"] { --stage: #d8a85a; }
 .rp-lead-stage[data-stage="qualified"],
-.rp-lead-stage[data-stage="qa_passed"] { color: #8fc98f; }
+.rp-lead-stage[data-stage="enriched"]     { --stage: #8fc98f; }
+.rp-lead-stage[data-stage="visualised"]   { --stage: #9ec5e8; }
+.rp-lead-stage[data-stage="built"]        { --stage: #b9a3d8; }
+.rp-lead-stage[data-stage="qa_passed"]    { --stage: #6abf8f; }
 .rp-lead-stage[data-stage="published"],
-.rp-lead-stage[data-stage="contacted"] { color: #7fd1c1; }
-.rp-lead-stage[data-stage="won"] { color: #e9c46a; }
+.rp-lead-stage[data-stage="contacted"]    { --stage: #7fd1c1; }
+.rp-lead-stage[data-stage="replied"]      { --stage: #f4d35e; }
+.rp-lead-stage[data-stage="won"]          { --stage: #e9c46a; }
 .rp-lead-stage[data-stage="disqualified"],
 .rp-lead-stage[data-stage="qa_failed"],
-.rp-lead-stage[data-stage="lost"] { color: #b06a6a; }
+.rp-lead-stage[data-stage="lost"]         { --stage: #b06a6a; }
+
+/* On the board the chip is a real chip: tinted ground and a matching edge,
+   derived from the one colour above so a new stage needs one line, not three. */
+.lb-stage {
+  border-color: color-mix(in srgb, var(--stage) 40%, #14141c);
+  background: color-mix(in srgb, var(--stage) 12%, #14141c);
+}
 .rp-lead-name { color: #ddd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rp-lead-note, .rp-lead-next {
   color: #777;
@@ -1556,3 +1575,57 @@ html, body {
   padding: 1px 0 1px 2px;
 }
 .lb-empty { color: #666; font-style: italic; padding: 8px 0; }
+
+/* ---- lead board: what is happening now ---- */
+.lb-live {
+  border: 1px solid #2a3a2f;
+  background: #121a15;
+  padding: 8px 10px;
+  margin: 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.lb-live--idle { color: #5f5f6c; border-color: #1f1f29; background: #12121a; font-style: italic; }
+.lb-live-row { display: flex; align-items: baseline; gap: 8px; }
+.lb-live-row strong { color: #a3b18a; font-size: 10px; letter-spacing: .08em; }
+.lb-live-what { color: #cfd8c8; flex: 1; }
+.lb-live-dur { color: #6a7a68; font-size: 10px; }
+
+/* A slow pulse, so "working" reads as ongoing rather than as a status word.
+   Anyone who has asked not to see motion gets a static dot instead. */
+.lb-pulse {
+  width: 7px; height: 7px;
+  background: #a3b18a;
+  flex: 0 0 auto;
+  animation: lb-breathe 1.8s ease-in-out infinite;
+}
+.lb-busy-dot {
+  width: 6px; height: 6px;
+  background: #a3b18a;
+  flex: 0 0 auto;
+  align-self: center;
+  animation: lb-breathe 1.8s ease-in-out infinite;
+}
+.lb-row--busy { border-left-color: #a3b18a; }
+@keyframes lb-breathe {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .25; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lb-pulse, .lb-busy-dot { animation: none; }
+}
+
+/* A handoff is the pipeline routing work, not an agent acting. Quieter. */
+.lb-entry--dispatch { border-left: 2px solid #23232f; background: #101018; }
+.lb-entry--dispatch::before { background: #2f2f3d; }
+.lb-entry--dispatch .lb-who { color: #55555f; }
+.lb-handoff { color: #8a8a98; }
+
+/* A stage change is the load-bearing entry — it is the only one that alters
+   what the lead IS. Give it the visual weight to match, so scanning the
+   column reads as the lead's journey with the runs as supporting detail. */
+.lb-entry--stage { background: #16131f; padding: 8px 10px; }
+.lb-entry--stage .lb-what { gap: 7px; }
+.lb-entry--stage .lb-stage { font-size: 10px; padding: 2px 7px; letter-spacing: .08em; }
+.lb-entry--stage .lb-arrow { color: #6a5f8a; font-size: 13px; line-height: 1; }

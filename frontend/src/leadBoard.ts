@@ -32,12 +32,21 @@ interface LeadRow {
   ts?: number;
   updated_ts?: number;
   history_len?: number;
+  working?: string[];
   last?: { ts: number; agent?: string; note?: string; stage?: string } | null;
+}
+
+interface Active {
+  worker_id: string;
+  role?: string;
+  summary?: string;
+  workbench?: string;
+  started_ts?: number;
 }
 
 interface Entry {
   ts: number;
-  kind: "stage" | "run" | "escalation" | "gate" | "reply";
+  kind: "stage" | "run" | "dispatch" | "escalation" | "gate" | "reply";
   subkind?: string;
   agent?: string;
   title: string;
@@ -75,6 +84,14 @@ function ago(ts?: number): string {
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
   if (s < 86400) return `${Math.round(s / 3600)}h ago`;
   return `${Math.round(s / 86400)}d ago`;
+}
+
+function elapsed(since?: number): string {
+  if (!since) return "";
+  const s = Math.max(0, Date.now() / 1000 - since);
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m ${Math.round(s % 60)}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
 /**
@@ -172,6 +189,13 @@ function buildList(): HTMLElement {
     const name = document.createElement("strong");
     name.textContent = l.name || l.id.slice(0, 8);
     line1.append(name, stageChip(l.stage));
+    if (l.working?.length) {
+      li.classList.add("lb-row--busy");
+      const dot = document.createElement("span");
+      dot.className = "lb-busy-dot";
+      dot.title = `${l.working.join(", ")} working on this now`;
+      line1.insertBefore(dot, name);
+    }
 
     const line2 = document.createElement("div");
     line2.className = "lb-row-sub";
@@ -211,18 +235,23 @@ function entryEl(e: Entry, olderTs: number | null): HTMLElement[] {
   head.className = "lb-entry-head";
   const who = document.createElement("span");
   who.className = "lb-who";
-  who.textContent = e.agent || "system";
+  // A dispatch is the pipeline routing work; it has no author, and labelling
+  // it "system" made it look like an agent had said something opaque.
+  who.textContent = e.kind === "dispatch" ? "pipeline" : (e.agent || "system");
   const what = document.createElement("span");
   what.className = "lb-what";
 
   // A stage change is the one entry whose shape matters more than its text.
-  if (e.kind === "stage" && e.to_stage) {
-    what.append(
-      document.createTextNode("moved "),
-      stageChip(e.from_stage || "—"),
-      document.createTextNode(" → "),
-      stageChip(e.to_stage),
-    );
+  if (e.kind === "dispatch") {
+    const arrow = document.createElement("span");
+    arrow.className = "lb-handoff";
+    arrow.textContent = e.title;
+    what.appendChild(arrow);
+  } else if (e.kind === "stage" && e.to_stage) {
+    const arrow = document.createElement("span");
+    arrow.className = "lb-arrow";
+    arrow.textContent = "→";
+    what.append(stageChip(e.from_stage || "—"), arrow, stageChip(e.to_stage));
   } else {
     what.textContent = e.title;
   }
@@ -340,6 +369,36 @@ async function buildTimeline(): Promise<HTMLElement> {
     wrap.appendChild(warn);
   }
 
+  // What is happening right now, pinned above the past. The list runs
+  // newest-first, so "now" belongs at the top of it.
+  const active: Active[] = data.active ?? [];
+  if (active.length) {
+    const box = document.createElement("div");
+    box.className = "lb-live";
+    for (const a of active) {
+      const row = document.createElement("div");
+      row.className = "lb-live-row";
+      const pulse = document.createElement("span");
+      pulse.className = "lb-pulse";
+      const who = document.createElement("strong");
+      who.textContent = (a.role || a.worker_id || "someone").toUpperCase();
+      const what = document.createElement("span");
+      what.className = "lb-live-what";
+      what.textContent = a.summary || "working";
+      const dur = document.createElement("span");
+      dur.className = "lb-live-dur";
+      dur.textContent = a.started_ts ? `${elapsed(a.started_ts)} so far` : "";
+      row.append(pulse, who, what, dur);
+      box.appendChild(row);
+    }
+    wrap.appendChild(box);
+  } else {
+    const box = document.createElement("div");
+    box.className = "lb-live lb-live--idle";
+    box.textContent = "Nobody is working on this lead right now.";
+    wrap.appendChild(box);
+  }
+
   const entries: Entry[] = data.entries ?? [];
   const list = document.createElement("ol");
   list.className = "lb-entries";
@@ -400,6 +459,20 @@ function scheduleRefresh(): void {
   }, 1200);
 }
 
+let tick: number | null = null;
+
+function startTicking(): void {
+  if (tick !== null) return;
+  tick = window.setInterval(() => {
+    if (!open) return;
+    // Only the live card is time-sensitive, and only while someone is on it.
+    if (host?.querySelector(".lb-live-row")) {
+      dirty = true;
+      scheduleRefresh();
+    }
+  }, 5000);
+}
+
 export function openBoard(leadId?: string): void {
   if (leadId) selected = leadId;
   if (!host) mountShell();
@@ -407,6 +480,7 @@ export function openBoard(leadId?: string): void {
   host!.classList.add("lb--open");
   document.body.classList.add("lb-page-open");
   if (location.hash !== "#leads") history.replaceState(null, "", "#leads");
+  startTicking();
   void (async () => {
     try {
       await loadLeads();

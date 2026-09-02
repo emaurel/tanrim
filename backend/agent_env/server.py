@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import agent_helpers
 from . import secrets as secrets_store
 from . import assets as assets_mod
 from . import config
@@ -91,6 +92,7 @@ async def get_leads(stage: str | None = None, slim: int = 0):
         # The board needs a row per lead, not each lead's whole dossier.
         # `last` is the tail of the history so a row can say what happened
         # most recently without a second request per lead.
+        busy = agent_helpers.all_in_flight()
         slimmed = []
         for l in leads:
             hist = l.get("history") or []
@@ -98,6 +100,10 @@ async def get_leads(stage: str | None = None, slim: int = 0):
             slimmed.append({
                 **{k: v for k, v in l.items() if k not in _LEAD_BULK},
                 "history_len": len(hist),
+                # So a row can show a lead is being worked without the board
+                # asking per lead.
+                "working": [i.get("role") for i in busy.values()
+                            if i.get("lead_id") == l["id"]],
                 "last": {"ts": last.get("ts"), "agent": last.get("agent"),
                          "note": (last.get("note") or "")[:200],
                          "from_stage": last.get("from_stage"),
@@ -162,11 +168,28 @@ async def lead_timeline(lead_id: str):
     for e in events:
         if (e.get("details") or {}).get("lead_id") != lead_id:
             continue
+        outcome = e.get("outcome")
+        agent = e.get("from") or e.get("to")
+        title = e.get("summary") or e.get("kind")
+        detail = ""
+        kind = "run"
+
+        # `X reached 'enriched' → lens` is the transport routing work, logged
+        # with no author, so it rendered as "system" saying something opaque.
+        # It is its own kind of event and deserves its own words.
+        if outcome == "dispatched":
+            kind = "dispatch"
+            to = e.get("to") or "?"
+            stage = (e.get("details") or {}).get("stage")
+            agent = None
+            title = f"handed to {to}"
+            detail = (f"the lead reached '{stage}', and that is {to}'s work"
+                      if stage else f"routed to {to}")
+
         entries.append({
-            "ts": e.get("ts"), "kind": "run", "subkind": e.get("kind"),
-            "agent": e.get("from") or e.get("to"),
-            "title": e.get("summary") or e.get("kind"),
-            "detail": "", "outcome": e.get("outcome"),
+            "ts": e.get("ts"), "kind": kind, "subkind": e.get("kind"),
+            "agent": agent, "title": title, "detail": detail,
+            "outcome": None if kind == "dispatch" else outcome,
             "to": e.get("to"),
         })
 
@@ -208,15 +231,28 @@ async def lead_timeline(lead_id: str):
 
     entries.sort(key=lambda x: x.get("ts") or 0)
 
+    # What is happening to this lead at this second. The ledgers above are all
+    # past tense; without this the page cannot distinguish "nothing is
+    # happening" from "an agent has been building for four minutes".
+    active = [
+        {"worker_id": wid, "role": info.get("role"),
+         "summary": info.get("summary"), "workbench": info.get("workbench"),
+         "started_ts": info.get("started_ts")}
+        for wid, info in agent_helpers.all_in_flight().items()
+        if info.get("lead_id") == lead_id
+    ]
+
     return {
         "lead": {k: v for k, v in lead.items() if k not in _LEAD_BULK},
         "entries": entries,
+        "active": active,
         # The activity log is a ring buffer. Say so, rather than letting a page
         # imply nothing happened during a window that simply rolled off.
         "events_complete": len(events) < 1000,
         "counts": {
             "stage_changes": sum(1 for e in entries if e["kind"] == "stage"),
             "runs": sum(1 for e in entries if e["kind"] == "run"),
+            "handoffs": sum(1 for e in entries if e["kind"] == "dispatch"),
             "escalations": sum(1 for e in entries if e["kind"] == "escalation"),
             "gates": sum(1 for e in entries if e["kind"] == "gate"),
         },
