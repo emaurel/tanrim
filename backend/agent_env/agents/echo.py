@@ -96,6 +96,12 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
             "subject": outreach.get("subject"),
             "body": outgoing_body(lead),
             "quote": outreach.get("quote"),
+            # Whether the domain figure inside the price was checked for this
+            # exact name or guessed from a table. The operator is about to send
+            # a number to a stranger; a guessed input to it should be visible.
+            "pricing": config.quote_for(
+                ((lead.get("domains") or {}).get("suggested") or [None])[0],
+                (lead.get("domains") or {}).get("priced")),
             "preview_url": lead.get("preview_url"),
             "transport": "smtp" if smtp_configured() else "manual",
         },

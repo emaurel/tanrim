@@ -64,7 +64,8 @@ def domain_cost(domain: str | None) -> tuple[float, str]:
     return round(per_year * DOMAIN_YEARS, 2), (tld or "default")
 
 
-def quote_for(domain: str | None = None) -> dict[str, Any]:
+def quote_for(domain: str | None = None,
+              priced: dict[str, Any] | None = None) -> dict[str, Any]:
     """The single source of the number.
 
     The customer is told ONE all-in figure. The split — what is the work and
@@ -73,7 +74,16 @@ def quote_for(domain: str | None = None) -> dict[str, Any]:
     itemises. A business reading "of which 90 EUR is the domain" starts pricing
     the domain instead of the site.
     """
-    cost, tld = domain_cost(domain)
+    if priced and priced.get("total") is not None:
+        # A real price for this exact name, fetched from the registrar.
+        cost = float(priced["total"])
+        tld = (domain or "").rsplit(".", 1)[-1].lower()
+        verified = bool(priced.get("verified"))
+        price_source = priced.get("source") or "registrar"
+        premium = priced.get("premium")
+    else:
+        cost, tld = domain_cost(domain)
+        verified, price_source, premium = False, "per-TLD estimate", None
     raw = MARGIN_AMOUNT + cost
     total = float(-(-raw // QUOTE_ROUND_TO) * QUOTE_ROUND_TO) if QUOTE_ROUND_TO > 1 else raw
     return {
@@ -86,11 +96,18 @@ def quote_for(domain: str | None = None) -> dict[str, Any]:
         "domain": domain,
         # what the rounding actually handed back
         "rounded_up_by": round(total - raw, 2),
+        # Whether the domain figure was CHECKED for this exact name or guessed
+        # from a table. It goes into an email and an invoice, so anything built
+        # on the guess has to say so.
+        "domain_cost_verified": verified,
+        "domain_cost_source": price_source,
+        "premium": premium,
     }
 
 
-def quote_display(domain: str | None = None) -> str:
-    q = quote_for(domain)
+def quote_display(domain: str | None = None,
+                  priced: dict[str, Any] | None = None) -> str:
+    q = quote_for(domain, priced)
     n = int(q["total"]) if float(q["total"]).is_integer() else q["total"]
     return f"{n} {q['currency']}"
 

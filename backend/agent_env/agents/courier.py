@@ -187,6 +187,12 @@ async def do_publish(world: World, lead_id: str) -> dict[str, Any]:
             town=lead.get("city") or "",
             trade=lead.get("category") or "",
         )
+        # And what it actually costs, for the exact name, because that figure
+        # is most of the difference between the quote and the margin. A per-TLD
+        # table cannot see a premium name.
+        first = (domain_info.get("suggested") or [None])[0]
+        if first:
+            domain_info["priced"] = await domains.price(first, config.DOMAIN_YEARS)
     except Exception as e:  # noqa: BLE001
         # A registry being slow must not block a publish.
         domain_info = {"error": f"{type(e).__name__}: {e}"}

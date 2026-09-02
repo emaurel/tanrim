@@ -546,6 +546,29 @@ async def health_mail():
     return mailbox.check()
 
 
+@app.get("/health/domain-pricing")
+async def health_domain_pricing(domain: str = "example-test-name.fr"):
+    """Is the registrar actually answering, for a real name?
+
+    Without credentials the quote falls back to a per-TLD table — a number that
+    can be badly wrong for a premium name — so this says plainly which one you
+    are on.
+    """
+    from . import domains as domains_mod
+    result = await domains_mod.price(domain, config.DOMAIN_YEARS)
+    return {
+        "configured": domains_mod.ovh_configured(),
+        "checked": domain,
+        "result": result,
+        "advice": (
+            "Live pricing is on." if result.get("verified") else
+            "Quotes are using the per-TLD estimate. Create a token at "
+            "https://api.ovh.com/createToken/ granting POST /order/cart, "
+            "GET /order/cart/* and POST /order/cart/*, then set "
+            "OVH_APPLICATION_KEY, OVH_APPLICATION_SECRET and OVH_CONSUMER_KEY."),
+    }
+
+
 @app.get("/health")
 async def health():
     return {

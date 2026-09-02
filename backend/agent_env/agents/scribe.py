@@ -99,8 +99,9 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
     free = (dom.get("suggested") or [])[:3]
     # Priced on the domain we are actually offering, since ten years of it is
     # inside the figure. One number goes to the customer; the split never does.
-    quote = config.quote_for(free[0] if free else None)
-    price = config.quote_display(free[0] if free else None)
+    priced = dom.get("priced")
+    quote = config.quote_for(free[0] if free else None, priced)
+    price = config.quote_display(free[0] if free else None, priced)
     filled = (
         template
         .replace("{{PREVIEW_URL}}", preview)

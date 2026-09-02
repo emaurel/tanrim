@@ -206,6 +206,18 @@ function renderGate(a: Approval, host: HTMLElement): boolean {
     return true;
   }
   if (a.kind === "send_outreach") {
+    const pr: any = p.pricing;
+    if (pr && pr.domain_cost_verified === false) {
+      host.appendChild(note(
+        `Heads up: the ${pr.domain_cost} ${pr.currency} of domain cost inside ` +
+        `this ${pr.total} ${pr.currency} price is a per-TLD estimate, not a ` +
+        `checked price for ${pr.domain ?? "this name"}. A premium name can ` +
+        `cost far more, and it comes out of your margin.`));
+    } else if (pr?.premium) {
+      host.appendChild(note(
+        `${pr.domain} is a PREMIUM domain at ${pr.domain_cost} ${pr.currency} ` +
+        `for ${pr.domain_years} years — check the price is really worth quoting.`));
+    }
     host.appendChild(kv("To", `${p.business ?? ""} <${p.to ?? "?"}>`));
     host.appendChild(kv("Subject", p.subject ?? ""));
     if (p.quote) {

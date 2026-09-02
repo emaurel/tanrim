@@ -18,6 +18,10 @@ import re
 import unicodedata
 from typing import Any
 
+import hashlib
+import os
+import time
+import json
 import httpx
 
 BOOTSTRAP = "https://data.iana.org/rdap/dns.json"
@@ -155,3 +159,114 @@ async def suggest(
     data["suggested"] = data["available"][:5]
     data["candidates_tried"] = tried
     return data
+
+
+# ---------------------------------------------------------------------------
+# What a domain actually costs.
+#
+# The quote is the margin plus ten years of registration, so the registration
+# figure goes straight into an email and an invoice. It used to come from a
+# hardcoded per-TLD table — a guess, and one that can be badly wrong: a
+# specific name can be a PREMIUM domain, where the same .fr is 9 EUR or 2000.
+# RDAP says nothing about price, so the table cannot see that at all.
+#
+# OVH will tell us exactly, for the exact name, but its cart pricing requires
+# credentials (creating a cart does not; reading a price does). So: ask when we
+# can, and when we cannot, say loudly that the number is an estimate rather
+# than let a quote rest silently on a guess.
+# ---------------------------------------------------------------------------
+
+OVH_ENDPOINT = os.getenv("OVH_ENDPOINT", "https://eu.api.ovh.com/1.0")
+OVH_SUBSIDIARY = os.getenv("OVH_SUBSIDIARY", "FR")
+
+
+def ovh_configured() -> bool:
+    return all(os.getenv(k) for k in
+               ("OVH_APPLICATION_KEY", "OVH_APPLICATION_SECRET", "OVH_CONSUMER_KEY"))
+
+
+def _ovh_headers(method: str, url: str, body: str, delta: int) -> dict[str, str]:
+    """OVH signs every call: SHA1 of secret+consumer+method+url+body+timestamp."""
+    app_key = os.getenv("OVH_APPLICATION_KEY", "")
+    app_secret = os.getenv("OVH_APPLICATION_SECRET", "")
+    consumer = os.getenv("OVH_CONSUMER_KEY", "")
+    ts = str(int(time.time()) + delta)
+    raw = "+".join([app_secret, consumer, method, url, body, ts])
+    sig = "$1$" + hashlib.sha1(raw.encode()).hexdigest()
+    return {
+        "X-Ovh-Application": app_key,
+        "X-Ovh-Consumer": consumer,
+        "X-Ovh-Timestamp": ts,
+        "X-Ovh-Signature": sig,
+        "Content-Type": "application/json",
+    }
+
+
+async def price(domain: str, years: int = 10) -> dict[str, Any]:
+    """The real registration cost for THIS name, or an honest estimate.
+
+    Always returns a usable number. What matters is `verified`: false means the
+    figure came from the per-TLD table and nobody has checked this particular
+    name, so it must be shown as an estimate wherever it reaches a person.
+    """
+    from . import config
+
+    tld = domain.rsplit(".", 1)[-1].lower() if "." in domain else ""
+    fallback = {
+        "domain": domain, "years": years, "verified": False,
+        "source": "per-TLD estimate",
+        "total": round(config.TLD_PRICES.get(tld, config.TLD_PRICES["default"]) * years, 2),
+        "currency": "EUR", "premium": None,
+    }
+    if not ovh_configured():
+        fallback["why"] = ("OVH credentials are not set, so no live price was "
+                           "fetched — set OVH_APPLICATION_KEY, "
+                           "OVH_APPLICATION_SECRET and OVH_CONSUMER_KEY")
+        return fallback
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": UA}) as client:
+            # OVH's clock, not ours: a drifting local clock invalidates the
+            # signature and the error says nothing useful.
+            t = await client.get(f"{OVH_ENDPOINT}/auth/time")
+            delta = int(t.text) - int(time.time()) if t.status_code == 200 else 0
+
+            url = f"{OVH_ENDPOINT}/order/cart"
+            body = json.dumps({"ovhSubsidiary": OVH_SUBSIDIARY})
+            r = await client.post(url, content=body,
+                                  headers=_ovh_headers("POST", url, body, delta))
+            r.raise_for_status()
+            cart = r.json()["cartId"]
+
+            url = f"{OVH_ENDPOINT}/order/cart/{cart}/domain?domain={domain}"
+            r = await client.get(url, headers=_ovh_headers("GET", url, "", delta))
+            r.raise_for_status()
+            offers = r.json()
+
+        create = [o for o in offers if o.get("action") == "create"] or offers
+        if not create:
+            fallback["why"] = "OVH returned no purchase offer for that name"
+            return fallback
+        offer = create[0]
+        per_year = None
+        for pr in (offer.get("prices") or []):
+            if pr.get("label") in ("TOTAL", "PRICE"):
+                per_year = float(pr.get("price", {}).get("value") or 0)
+                break
+        if per_year is None:
+            fallback["why"] = "OVH's offer carried no price field"
+            return fallback
+
+        return {
+            "domain": domain, "years": years, "verified": True, "source": "OVH",
+            "per_year": round(per_year, 2),
+            "total": round(per_year * years, 2),
+            "currency": (offer.get("prices") or [{}])[0]
+                        .get("price", {}).get("currencyCode", "EUR"),
+            # OVH marks these; a premium name can be orders of magnitude dearer.
+            "premium": bool(offer.get("offer") and "premium" in str(offer.get("offer")).lower()),
+            "offer": offer.get("offer"),
+        }
+    except Exception as e:  # noqa: BLE001
+        fallback["why"] = f"OVH lookup failed: {type(e).__name__}: {e}"
+        return fallback

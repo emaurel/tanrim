@@ -144,7 +144,7 @@ def build(lead: dict[str, Any]) -> Invoice:
     # actually registered for them, falling back to what was offered.
     domain = (lead.get("domain_registered")
               or ((lead.get("domains") or {}).get("suggested") or [None])[0])
-    quote = config.quote_for(domain)
+    quote = config.quote_for(domain, (lead.get("domains") or {}).get("priced"))
     amount = float(quote["total"])
 
     # One line, because that is what was sold. Itemising a fixed-price job into
@@ -369,7 +369,7 @@ async def create_for_lead(lead_id: str, force: bool = False) -> dict[str, Any]:
     await write_pdf(render_html(inv), pdf)
     # The split is recorded for the books and never printed on the invoice —
     # the client is quoted one all-in figure.
-    split = config.quote_for(inv.domain)
+    split = config.quote_for(inv.domain, (lead.get("domains") or {}).get("priced"))
     if existing and force:
         _forget(existing["number"])
     _record({
