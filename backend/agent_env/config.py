@@ -1,5 +1,8 @@
+import json
 import os
+import re
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -29,8 +32,71 @@ AGENCY_NAME = os.getenv("AGENT_ENV_AGENCY_NAME", "").strip()
 AGENCY_SENDER_EMAIL = os.getenv("AGENT_ENV_SENDER_EMAIL", "").strip()
 AGENCY_ADDRESS = os.getenv("AGENT_ENV_AGENCY_ADDRESS", "").strip()
 # Default quote for a spec site, in whole currency units.
-QUOTE_AMOUNT = int(os.getenv("AGENT_ENV_QUOTE_AMOUNT", "450"))
 QUOTE_CURRENCY = os.getenv("AGENT_ENV_QUOTE_CURRENCY", "EUR")
+
+# What the work is worth, before the pass-through cost of the domain. The
+# quoted price is this PLUS ten years of registration, so the margin does not
+# quietly shrink on a business whose name only survives on an expensive TLD.
+MARGIN_AMOUNT = int(os.getenv("AGENT_ENV_MARGIN_EUR", "500"))
+DOMAIN_YEARS = int(os.getenv("AGENT_ENV_DOMAIN_YEARS", "10"))
+
+# Registration cost per year, by TLD. RDAP answers availability and says
+# nothing about price, so this is a table rather than a lookup — keep it
+# roughly in line with what the registrar actually charges, and err high:
+# under-estimating comes out of the margin.
+_DEFAULT_TLD_PRICES = {"fr": 9.0, "com": 13.0, "net": 15.0, "eu": 9.0,
+                       "org": 14.0, "bzh": 35.0, "paris": 30.0, "default": 20.0}
+try:
+    TLD_PRICES = {**_DEFAULT_TLD_PRICES,
+                  **json.loads(os.getenv("AGENT_ENV_TLD_PRICES", "{}"))}
+except Exception:  # noqa: BLE001
+    TLD_PRICES = dict(_DEFAULT_TLD_PRICES)
+
+# A quote lands better as a round number, and rounding UP is the only direction
+# that cannot eat the margin.
+QUOTE_ROUND_TO = int(os.getenv("AGENT_ENV_QUOTE_ROUND_TO", "10"))
+
+
+def domain_cost(domain: str | None) -> tuple[float, str]:
+    """Ten years of that domain, and the TLD it was priced on."""
+    tld = (domain or "").rsplit(".", 1)[-1].lower() if domain and "." in domain else ""
+    per_year = TLD_PRICES.get(tld, TLD_PRICES["default"])
+    return round(per_year * DOMAIN_YEARS, 2), (tld or "default")
+
+
+def quote_for(domain: str | None = None) -> dict[str, Any]:
+    """The single source of the number.
+
+    The customer is told ONE all-in figure. The split — what is the work and
+    what is ten years of registration we pay out — is internal: it is how the
+    price is computed and how the margin is checked, never something the email
+    itemises. A business reading "of which 90 EUR is the domain" starts pricing
+    the domain instead of the site.
+    """
+    cost, tld = domain_cost(domain)
+    raw = MARGIN_AMOUNT + cost
+    total = float(-(-raw // QUOTE_ROUND_TO) * QUOTE_ROUND_TO) if QUOTE_ROUND_TO > 1 else raw
+    return {
+        "total": total,
+        "currency": QUOTE_CURRENCY,
+        "margin": float(MARGIN_AMOUNT),
+        "domain_cost": cost,
+        "domain_years": DOMAIN_YEARS,
+        "tld": tld,
+        "domain": domain,
+        # what the rounding actually handed back
+        "rounded_up_by": round(total - raw, 2),
+    }
+
+
+def quote_display(domain: str | None = None) -> str:
+    q = quote_for(domain)
+    n = int(q["total"]) if float(q["total"]).is_integer() else q["total"]
+    return f"{n} {q['currency']}"
+
+
+# Kept so nothing that imports it breaks; it is the no-domain case.
+QUOTE_AMOUNT = int(quote_for(None)["total"])
 
 
 # The opt-out has to be appended in code so it cannot go missing — but it also
@@ -49,6 +115,51 @@ OPT_OUT = {
         "your details and not contact you again."
     ),
 }
+
+
+# ---- Invoicing identity -------------------------------------------------
+#
+# Deliberately separate from the agency name. The outreach signs off as the
+# agency; a facture must carry the LEGAL person and their SIRET, and those are
+# not the same string. None of this belongs in the repo, so it all comes from
+# the environment.
+LEGAL_NAME = os.getenv("AGENT_ENV_LEGAL_NAME", "").strip()
+SIRET = os.getenv("AGENT_ENV_SIRET", "").strip()
+LEGAL_ADDRESS = os.getenv("AGENT_ENV_LEGAL_ADDRESS", "").strip()
+IBAN = os.getenv("AGENT_ENV_IBAN", "").strip()
+BIC = os.getenv("AGENT_ENV_BIC", "").strip()
+BANK_NAME = os.getenv("AGENT_ENV_BANK_NAME", "").strip()
+# Days from issue to due date. 0 means "payable on receipt", which is what a
+# one-off job for a small business should be.
+PAYMENT_TERMS_DAYS = int(os.getenv("AGENT_ENV_PAYMENT_TERMS_DAYS", "0"))
+# The VAT line. A micro-entrepreneur under the franchise en base uses 293 B;
+# it is a legally required mention and the wrong article is a real defect, so
+# it is configurable rather than assumed.
+VAT_MENTION = os.getenv(
+    "AGENT_ENV_VAT_MENTION", "TVA non applicable, article 293 B du CGI").strip()
+
+
+def invoice_config_problems() -> list[str]:
+    """Everything that must be set before a facture may be generated."""
+    problems: list[str] = []
+    if not LEGAL_NAME:
+        problems.append("AGENT_ENV_LEGAL_NAME is not set (the legal person, not the agency name)")
+    if not SIRET:
+        problems.append("AGENT_ENV_SIRET is not set")
+    elif len(SIRET.replace(" ", "")) != 14 or not SIRET.replace(" ", "").isdigit():
+        problems.append(f"AGENT_ENV_SIRET should be 14 digits, got {SIRET!r}")
+    if not LEGAL_ADDRESS:
+        problems.append("AGENT_ENV_LEGAL_ADDRESS is not set")
+    elif not re.search(r"\b\d{5}\b", LEGAL_ADDRESS):
+        # A compliant invoice needs the full address. The old template carried
+        # a street with no postcode or town.
+        problems.append(
+            f"AGENT_ENV_LEGAL_ADDRESS has no 5-digit postcode: {LEGAL_ADDRESS!r}")
+    if not IBAN:
+        problems.append("AGENT_ENV_IBAN is not set — there would be no way to pay")
+    if not VAT_MENTION:
+        problems.append("AGENT_ENV_VAT_MENTION is empty; the VAT mention is mandatory")
+    return problems
 
 
 def outreach_footer(language: str = "en") -> str:

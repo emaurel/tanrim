@@ -227,6 +227,53 @@ function renderGate(a: Approval, host: HTMLElement): boolean {
     return true;
   }
 
+  // They said yes. This card is the only place money and an irreversible
+  // domain purchase are decided, so it shows the invoice rather than a JSON
+  // dump, and puts payment at the top of the checklist.
+  if (a.kind === "handover") {
+    host.appendChild(kv("Business", String(p.business ?? "?")));
+    if (p.domain_to_buy) host.appendChild(kv("Domain to register", String(p.domain_to_buy)));
+    if (p.preview_url) host.appendChild(kv("Live preview", String(p.preview_url)));
+
+    const inv: any = p.invoice ?? {};
+    if (inv.ok) {
+      const row = document.createElement("div");
+      row.className = "rp-brief-field";
+      const lab = document.createElement("span");
+      lab.className = "rp-brief-label";
+      lab.textContent = "Invoice";
+      const val = document.createElement("span");
+      val.className = "rp-brief-value";
+      const link = document.createElement("a");
+      link.href = `/invoices/${inv.number}.pdf`;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = `${inv.number} — ${inv.total} ${inv.currency} (open PDF)`;
+      val.appendChild(link);
+      row.append(lab, val);
+      host.appendChild(row);
+      host.appendChild(note(
+        "Check it before you send it. Nothing here has been sent to anyone."));
+    } else if (inv.error) {
+      host.appendChild(note(`No invoice was generated: ${inv.error}`));
+    }
+
+    if (p.note) host.appendChild(labelled("what they said", note(String(p.note))));
+
+    const ol = document.createElement("ol");
+    ol.className = "rp-list";
+    for (const step of (p.checklist ?? [])) {
+      const li = document.createElement("li");
+      li.textContent = String(step);
+      ol.appendChild(li);
+    }
+    host.appendChild(labelled("before you approve", ol));
+    host.appendChild(note(
+      "Approving marks the lead won. Do it after they have paid and you have " +
+      "handed over the domain and the files — not before."));
+    return true;
+  }
+
   // Two agents stuck disagreeing about the same page. The operator needs to
   // see WHAT they disagree about, and the preview, to break the tie.
   if (a.kind === "qa_loop") {

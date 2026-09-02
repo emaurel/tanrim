@@ -97,7 +97,10 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
     preview = lead.get("preview_url") or "(preview link — inserted when published)"
     dom = lead.get("domains") or {}
     free = (dom.get("suggested") or [])[:3]
-    price = f"{config.QUOTE_AMOUNT} {config.QUOTE_CURRENCY}"
+    # Priced on the domain we are actually offering, since ten years of it is
+    # inside the figure. One number goes to the customer; the split never does.
+    quote = config.quote_for(free[0] if free else None)
+    price = config.quote_display(free[0] if free else None)
     filled = (
         template
         .replace("{{PREVIEW_URL}}", preview)
@@ -142,10 +145,17 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
 
     extra = (
         f"THE PREVIEW LINK to put in the email: {preview}\n"
-        f"THE PRICE to quote: {config.QUOTE_AMOUNT} {config.QUOTE_CURRENCY} "
-        f"(one-off, for the site as built plus handover). Quote this unless the "
-        f"lead's evidence clearly justifies otherwise; if you change it, say why "
-        f"in why_this_lands."
+        f"THE PRICE to quote: {price} (one-off, for the site as built, the "
+        f"domain registered in their name, and handover).\n"
+        f"QUOTE IT AS ONE ALL-IN FIGURE. Do NOT break it down, do not say what "
+        f"part of it is the domain, and do not mention that the price is "
+        f"computed from anything. The internal split is "
+        f"{quote['margin']:.0f} for the work plus {quote['domain_years']} years "
+        f"of registration — that arithmetic is ours and must never appear in "
+        f"the email or be hinted at. A business shown the domain cost starts "
+        f"pricing the domain instead of the site.\n"
+        f"Quote this figure unless the lead's evidence clearly justifies "
+        f"otherwise; if you change it, say why in why_this_lands."
         + domain_line
         + gap_block
     )

@@ -396,6 +396,10 @@ class ListingHandler(LeadRoomHandler):
         base["quote"] = {
             "amount": config.QUOTE_AMOUNT,
             "currency": config.QUOTE_CURRENCY,
+            "pricing_note": (
+                f"{config.MARGIN_AMOUNT} {config.QUOTE_CURRENCY} for the work "
+                f"plus {config.DOMAIN_YEARS} years of the domain. Internal — "
+                "the customer sees one all-in figure."),
         }
         base["footer"] = config.outreach_footer("fr")
         base["config_problems"] = config.outreach_config_problems()

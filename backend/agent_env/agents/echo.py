@@ -274,6 +274,14 @@ async def record_reply(
     state.advance_lead(lead_id, "replied", agent=AGENT_ID,
                        note=f"accepted: {note[:200]}" if note else "accepted",
                        replies=replies)
+
+    # The facture, generated now so the operator reviews it on the same card
+    # they approve the handover from. Nothing is sent: it writes a PDF and
+    # hands back the path. If the invoicing identity is incomplete it refuses
+    # and says which setting is missing — a half-legal invoice is worse than
+    # none, and this is the moment the operator can still fix it.
+    from .. import invoices as invoices_mod
+    invoice = await invoices_mod.create_for_lead(lead_id)
     state.add_user_approval(
         kind="handover",
         room_id=ROOM_ID,
@@ -286,7 +294,18 @@ async def record_reply(
             "domain_to_buy": domain,
             "preview_url": lead.get("preview_url"),
             "site_dir": str(SITES_DIR / lead_id),
+            "invoice": invoice,
             "checklist": [
+                # Payment first. The work was done on spec, so the only leverage
+                # is the thing they do not have yet — the domain in their name
+                # and the files. Handing those over before the money arrives
+                # gives that up for nothing.
+                (f"Send the facture ({invoice.get('number')}) and wait for the "
+                 f"transfer — {invoice.get('total')} {invoice.get('currency')}, "
+                 "reference on the invoice"
+                 if invoice.get("ok") else
+                 f"Invoice could NOT be generated: {invoice.get('error')}. "
+                 "Fix that, generate it, and get paid before going further"),
                 f"Register {domain or 'the domain they chose'} at OVH, in THEIR name,"
                 " for the longest term you can",
                 "Point the domain at Cloudflare and attach it to the Pages project",

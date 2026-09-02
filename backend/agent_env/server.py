@@ -8,10 +8,13 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import agent_helpers
+from . import invoices as invoices_mod
 from . import secrets as secrets_store
 from . import assets as assets_mod
 from . import config
@@ -302,6 +305,48 @@ async def delete_asset(lead_id: str, file: str):
     removed = assets_mod.delete(lead_id, file)
     state.update_lead(lead_id, owner_assets=assets_mod.read_manifest(lead_id))
     return {"ok": removed}
+
+
+@app.get("/invoices")
+async def list_invoices():
+    """The invoice ledger. Carries the internal margin/domain split, which is
+    for the operator's books and never appears on the document itself."""
+    return {"invoices": invoices_mod.list_invoices(),
+            "config_problems": config.invoice_config_problems(),
+            "next_number": invoices_mod.next_number()}
+
+
+@app.get("/invoices/{number}.pdf")
+async def get_invoice(number: str):
+    row = next((r for r in invoices_mod.list_invoices()
+                if r.get("number") == number), None)
+    if row is None or not row.get("pdf"):
+        raise HTTPException(404, "no such invoice")
+    path = Path(row["pdf"])
+    if not path.is_file():
+        raise HTTPException(404, f"the file is gone: {path}")
+    return FileResponse(path, media_type="application/pdf",
+                        filename=f"{number}.pdf")
+
+
+@app.post("/invoices/{number}/paid")
+async def mark_invoice_paid(number: str, body: dict[str, Any] | None = None):
+    """Record that the transfer arrived. The handover checklist is gated on it,
+    because the work was done on spec and the domain and files are the only
+    leverage there is."""
+    ok = invoices_mod.mark_paid(number, (body or {}).get("note", ""))
+    if not ok:
+        raise HTTPException(404, "no such invoice")
+    state.log_event("run_end", from_="operator", to="operator",
+                    summary=f"invoice {number} marked paid", outcome="completed")
+    await world.publish({"type": "approvals_updated"})
+    return {"ok": True, "number": number}
+
+
+@app.post("/leads/{lead_id}/invoice")
+async def make_invoice(lead_id: str):
+    """Generate (or regenerate) the facture for a lead."""
+    return await invoices_mod.create_for_lead(lead_id)
 
 
 @app.get("/rooms")
