@@ -1631,3 +1631,38 @@ html, body {
 .lb-entry--stage .lb-what { gap: 7px; }
 .lb-entry--stage .lb-stage { font-size: 10px; padding: 2px 7px; letter-spacing: .08em; }
 .lb-entry--stage .lb-arrow { color: #6a5f8a; font-size: 13px; line-height: 1; }
+
+/* ---- lead board: move a lead by hand ---- */
+.lb-move {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  background: #12121a;
+  border: 1px solid #1f1f29;
+}
+.lb-move .lb-fact-k { min-width: auto; }
+.lb-move-stage, .lb-move-why {
+  background: #191922;
+  border: 1px solid #2a2a36;
+  color: #ddd;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 6px;
+}
+.lb-move-why { flex: 1; min-width: 160px; }
+.lb-move-stage:focus, .lb-move-why:focus { outline: none; border-color: #5a4a7a; }
+.lb-move-go {
+  background: #2b2340;
+  border: 1px solid #4a3f6a;
+  color: #e6dcff;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+.lb-move-go:hover:not(:disabled) { background: #3a2f52; }
+.lb-move-go:disabled { opacity: .5; cursor: default; }
+.lb-move-msg { color: #7a7a88; font-size: 10px; }

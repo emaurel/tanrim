@@ -201,9 +201,48 @@ async def run_enrich(world: World, lead_id: str, instruction: str = "") -> dict[
     if loc.get("address"):
         patch["address"] = loc["address"]
 
+    # A business that is not trading is not a thin lead, it is a dead one.
+    # Probe confirmed one restaurant had closed in December and still parked it
+    # as "thin", so the pipeline researched the same closed restaurant four
+    # times. Nothing downstream can rescue this, so it ends here.
+    if profile.get("confirmed_trading") is False:
+        state.advance_lead(lead_id, "disqualified", agent=AGENT_ID,
+                           note=f"not trading: {reason}"[:300], **patch)
+        await world.say(AGENT_ID, "closed — disqualified", seconds=8)
+        state.log_event(
+            "run_end", from_=result.worker_id or AGENT_ID,
+            summary=f"disqualified {lead.get('name')}: not trading — {reason[:150]}",
+            outcome="completed", details={"lead_id": lead_id})
+        return {"ok": True, "readiness": readiness, "lead_id": lead_id,
+                "disqualified": True, "reason": reason}
+
     if readiness == "not_enough":
         # Don't build a site out of nothing. Park the lead and say why — this is
         # a cheaper failure than a placeholder site landing in an owner's inbox.
+        #
+        # Parking means staying at `qualified`, which is the stage that
+        # dispatches research — so a second identical verdict is a loop, not a
+        # decision, and each turn of it is a full WebSearch/WebFetch run. Once
+        # is a park; twice is an answer.
+        prior = sum(
+            1 for h in (lead.get("history") or [])
+            if h.get("stage") == "qualified"
+            and str(h.get("note", "")).startswith("not enough content to build")
+        )
+        if prior >= 1:
+            state.advance_lead(
+                lead_id, "disqualified", agent=AGENT_ID,
+                note=f"researched twice, still not enough to build on: {reason}"[:300],
+                **patch)
+            await world.say(AGENT_ID, "still not enough — disqualified", seconds=8)
+            state.log_event(
+                "run_end", from_=result.worker_id or AGENT_ID,
+                summary=f"disqualified {lead.get('name')} after a second "
+                        f"'not enough' verdict — {reason[:130]}",
+                outcome="completed", details={"lead_id": lead_id})
+            return {"ok": True, "readiness": readiness, "lead_id": lead_id,
+                    "disqualified": True, "reason": reason}
+
         state.advance_lead(lead_id, "qualified", agent=AGENT_ID,
                            note=f"not enough content to build: {reason}", **patch)
         await world.say(AGENT_ID, "not enough to build on", seconds=8)

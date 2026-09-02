@@ -300,6 +300,80 @@ function entryEl(e: Entry, olderTs: number | null): HTMLElement[] {
   return out;
 }
 
+const ALL_STAGES = [
+  ...STAGE_ORDER, "disqualified", "qa_failed", "lost",
+];
+
+/**
+ * Move a lead by hand.
+ *
+ * The escape hatch for when the pipeline is wrong and no card exists to say
+ * so — a lead once sat at a stage that dispatched the very run that put it
+ * back there, and re-researched a closed restaurant four times. Those are
+ * worth fixing at the source; this is so the operator never has to wait for
+ * a fix to stop one.
+ */
+function stageControl(lead: any): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "lb-move";
+
+  const lbl = document.createElement("span");
+  lbl.className = "lb-fact-k";
+  lbl.textContent = "move to";
+
+  const sel = document.createElement("select");
+  sel.className = "lb-move-stage";
+  for (const st of ALL_STAGES) {
+    const o = document.createElement("option");
+    o.value = st;
+    o.textContent = st;
+    if (st === lead.stage) o.selected = true;
+    sel.appendChild(o);
+  }
+
+  const why = document.createElement("input");
+  why.type = "text";
+  why.className = "lb-move-why";
+  why.placeholder = "why (goes into the lead's history)";
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "lb-move-go";
+  go.textContent = "move";
+
+  const msg = document.createElement("span");
+  msg.className = "lb-move-msg";
+
+  go.addEventListener("click", async () => {
+    if (sel.value === lead.stage) { msg.textContent = "already there"; return; }
+    go.disabled = true;
+    msg.textContent = "moving…";
+    try {
+      const r = await fetch(`/leads/${lead.id}/stage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ stage: sel.value, reason: why.value }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d?.detail ?? `${r.status}`);
+      msg.textContent = d.approvals_dismissed?.length
+        ? `moved · dismissed ${d.approvals_dismissed.join(", ")}`
+        : "moved";
+      why.value = "";
+      dirty = true;
+      await loadLeads();
+      await rerender();
+    } catch (err) {
+      msg.textContent = `failed: ${String(err)}`;
+    } finally {
+      go.disabled = false;
+    }
+  });
+
+  box.append(lbl, sel, why, go, msg);
+  return box;
+}
+
 async function buildTimeline(): Promise<HTMLElement> {
   const wrap = document.createElement("div");
   wrap.className = "lb-timeline-wrap";
@@ -357,7 +431,7 @@ async function buildTimeline(): Promise<HTMLElement> {
   fact("record", `${c.stage_changes ?? 0} stage changes · ${c.runs ?? 0} agent runs · `
     + `${c.escalations ?? 0} escalations · ${c.gates ?? 0} gates`);
 
-  wrap.append(head, facts);
+  wrap.append(head, facts, stageControl(lead));
 
   if (data.events_complete === false) {
     const warn = document.createElement("p");

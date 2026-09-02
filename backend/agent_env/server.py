@@ -135,6 +135,54 @@ _LEAD_BULK = ("profile", "visual", "qa", "site", "site_history", "audit",
               "outreach", "domains", "owner_assets", "history", "replies")
 
 
+@app.post("/leads/{lead_id}/stage")
+async def set_lead_stage(lead_id: str, body: dict[str, Any]):
+    """Move a lead by hand.
+
+    The escape hatch for when the pipeline is wrong about a lead and no card
+    exists to say so — a lead researched four times because the stage it parked
+    at was the stage that dispatches research. Every one of those bugs is worth
+    fixing at the source, but the operator should never have to wait for a
+    deploy to stop one.
+
+    It goes through `advance_lead` like everything else, so the change is in
+    the lead's history with the reason attached and shows up on the board.
+    """
+    stage = str(body.get("stage") or "").strip()
+    if stage not in state.ALL_STAGES:
+        raise HTTPException(400, f"unknown stage: {stage!r}")
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        raise HTTPException(404, "no such lead")
+    reason = str(body.get("reason") or "").strip()
+    if lead.get("stage") == stage:
+        return {"ok": True, "unchanged": True, "stage": stage}
+
+    # A pending card on this lead is about the state it is leaving. Resolve
+    # them, or they suppress dispatch at the new stage for no reason.
+    dropped = []
+    for a in state.list_user_approvals(status="pending"):
+        if (a.get("payload") or {}).get("lead_id") == lead_id:
+            state.resolve_user_approval(
+                a["id"], "ignored",
+                f"superseded: operator moved the lead to '{stage}'")
+            dropped.append(a["kind"])
+
+    state.advance_lead(
+        lead_id, stage, agent="operator",
+        note=(f"moved by hand: {reason}" if reason else "moved by hand")[:300])
+    state.log_event(
+        "run_end", from_="operator", to="operator",
+        summary=f"{lead.get('name')} moved by hand: "
+                f"{lead.get('stage')} → {stage}"
+                + (f" ({reason[:100]})" if reason else ""),
+        outcome="completed",
+        details={"lead_id": lead_id, "from": lead.get("stage"), "to": stage})
+    await world.publish({"type": "approvals_updated"})
+    return {"ok": True, "stage": stage, "from": lead.get("stage"),
+            "approvals_dismissed": dropped}
+
+
 @app.get("/leads/{lead_id}/timeline")
 async def lead_timeline(lead_id: str):
     """Everything that ever happened to one lead, in order.
@@ -579,6 +627,27 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
             # the orchestrator's stage sweep picks it up and sends it to the
             # Factory. Dispatching here as well put two Forge workers on the
             # same lead, two seconds apart, writing the same directory.
+
+    elif rec["kind"] == "thin_content":
+        # The lead is parked at `qualified`, which is also the stage that
+        # dispatches research — so a card that resolves without moving it just
+        # hands the lead back to the loop it came from. Four of these were
+        # resolved on one lead and the pipeline re-researched a restaurant that
+        # had closed in December, every time.
+        lead_id = rec["payload"].get("lead_id")
+        reason = (body.reason or "").strip()
+        if lead_id and body.decision == "approved":
+            # "Build it anyway" — we have what we have.
+            lead = state.get_lead(lead_id) or {}
+            state.advance_lead(
+                lead_id, "enriched", agent="operator",
+                note=f"operator: build it with what we have. {reason}"[:300]
+                     if reason else "operator: build it with what we have")
+        elif lead_id:
+            state.advance_lead(
+                lead_id, "disqualified", agent="operator",
+                note=f"operator: not worth building. {reason}"[:300]
+                     if reason else "operator: not worth building")
 
     elif rec["kind"] == "qa_loop":
         # Forge and Lens have failed to agree on the same page three times.

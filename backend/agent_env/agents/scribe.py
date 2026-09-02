@@ -129,14 +129,39 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
     for c in ((prof.get("hours") or {}).get("conflicts") or [])[:3]:
         gaps.append(f"UNCONFIRMED ON THE PAGE: {c}")
     owner_assets = lead.get("owner_assets") or []
+    # The dossier lists gaps in no particular order, so "no parking information"
+    # can crowd out "we do not have their menu". Rank them by what a visitor
+    # actually came for: what the business sells, then what it looks like, then
+    # anything the page currently states without confirmation.
+    def _rank(g: str) -> int:
+        t = g.lower()
+        if any(w in t for w in ("menu", "carte", "price", "prix", "tarif",
+                                "itemised", "offering", "service list")):
+            return 0
+        if any(w in t for w in ("photo", "image", "devanture", "façade",
+                                "facade", "shopfront", "interior")):
+            return 1
+        if any(w in t for w in ("unconfirmed", "conflict", "confirm", "confirmer",
+                                "hours", "horaire", "opening")):
+            return 2
+        return 3
+
+    gaps = sorted(gaps, key=_rank)
     gap_block = ""
     if gaps:
         gap_block = (
-            "\nWHAT IS STILL MISSING — the material for the ask. These come from "
-            "the dossier's `content_gaps`, the build's `placeholders`, and any "
-            "recorded conflict. Pick the two or three a business owner could "
-            "actually supply in one reply, and that would visibly improve the "
-            "page. Ignore the ones that are our problem rather than theirs.\n"
+            "\nWHAT IS STILL MISSING — the material for the ask, ordered by what "
+            "a visitor actually came for: what they sell first, then what the "
+            "place looks like, then anything the page states without "
+            "confirmation. Pick the two or three a business owner could supply "
+            "in one reply and that would visibly improve the page — working "
+            "DOWN this list, not across it. Ignore the ones that are our "
+            "problem rather than theirs.\n"
+            "If what they SELL is incomplete — a restaurant whose menu we only "
+            "half have, a garage whose services we could not price — ask for "
+            "that first and say plainly that you did not have the full list. "
+            "It is the most useful thing on their page and the easiest thing "
+            "for them to send.\n"
             + "\n".join(f"  - {g}" for g in gaps)
             + ("\n\nThey have already sent us "
                f"{len(owner_assets)} file(s), so do not ask again for those.\n"
