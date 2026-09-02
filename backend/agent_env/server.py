@@ -1000,30 +1000,26 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
         if lead_id and body.decision == "approved":
             asyncio.create_task(echo_mod.do_send(world, lead_id))
         elif lead_id:
-            # Rejecting a send is ambiguous: it can mean "reword this" or "never
-            # contact them". A reason means the former — send it back to the
-            # Copy Desk with your note. Silence means the latter.
+            # Rejecting a send means rewrite it. It used to mean that only when
+            # a reason was typed, and an empty box marked the lead `lost` — a
+            # destructive default hiding behind a blank field, where the
+            # obvious reading of "reject" is "not this version". Dropping a
+            # lead is now something you do deliberately: move it to `lost` with
+            # the stage control, or dismiss the card with `ignore`.
             reason = (body.reason or "").strip()
             lead = state.get_lead(lead_id) or {}
-            if reason:
-                outreach = dict(lead.get("outreach") or {})
-                outreach["operator_feedback"] = reason
-                outreach["sent"] = False
-                state.advance_lead(
-                    lead_id, "published", agent="operator",
-                    note=f"send rejected, rewriting: {reason[:200]}",
-                    outreach=outreach,
-                )
-                asyncio.create_task(continue_pipeline(
-                    lead_id,
-                    f"you rejected the pitch: {reason[:200]}",
-                    prefer_role="scribe",
-                ))
-            else:
-                state.advance_lead(
-                    lead_id, "lost", agent="operator",
-                    note="send rejected with no reason — treated as 'do not contact'",
-                )
+            outreach = dict(lead.get("outreach") or {})
+            outreach["operator_feedback"] = reason
+            outreach["sent"] = False
+            # Back to `published`, which is the Copy Desk's stage — the stage
+            # sweep dispatches Scribe from there. No explicit dispatch: doing
+            # both put two workers on one lead two seconds apart.
+            state.advance_lead(
+                lead_id, "published", agent="operator",
+                note=(f"send rejected, rewriting: {reason[:200]}" if reason
+                      else "send rejected — rewriting the pitch"),
+                outreach=outreach,
+            )
 
     elif rec["kind"] == "handover":
         # The handover itself is manual — buying a domain is irreversible and

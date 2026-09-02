@@ -268,7 +268,12 @@ function renderGate(a: Approval, host: HTMLElement): boolean {
         : "No SMTP configured — approving hands you the text to send yourself, " +
           "it does not send anything.",
     ));
-    return true;
+        host.appendChild(note(
+      "approve sends this email · reject sends it back to the Copy Desk to be " +
+      "rewritten, with anything you type below as the instruction · ignore " +
+      "leaves the lead alone. To drop the lead entirely, move it to 'lost' on " +
+      "the lead board."));
+return true;
   }
 
   // The email never arrived. Not a decision about the business — a missing
