@@ -85,9 +85,27 @@ def staging_url(lead_id: str) -> str:
 
 
 @app.get("/leads")
-async def get_leads(stage: str | None = None):
+async def get_leads(stage: str | None = None, slim: int = 0):
+    leads = state.list_leads(stage=stage, limit=500)
+    if slim:
+        # The board needs a row per lead, not each lead's whole dossier.
+        # `last` is the tail of the history so a row can say what happened
+        # most recently without a second request per lead.
+        slimmed = []
+        for l in leads:
+            hist = l.get("history") or []
+            last = hist[-1] if hist else None
+            slimmed.append({
+                **{k: v for k, v in l.items() if k not in _LEAD_BULK},
+                "history_len": len(hist),
+                "last": {"ts": last.get("ts"), "agent": last.get("agent"),
+                         "note": (last.get("note") or "")[:200],
+                         "from_stage": last.get("from_stage"),
+                         "stage": last.get("stage")} if last else None,
+            })
+        leads = slimmed
     return {
-        "leads": state.list_leads(stage=stage, limit=500),
+        "leads": leads,
         "counts": state.lead_counts_by_stage(),
         "stages": state.STAGES,
         "dead_stages": state.DEAD_STAGES,
@@ -100,6 +118,109 @@ async def get_lead(lead_id: str):
     if lead is None:
         raise HTTPException(404, "no such lead")
     return lead
+
+
+# Heavy fields. A lead carries its whole dossier, photo report and QA verdict;
+# a list of fifty of them is megabytes of JSON to render one row each.
+_LEAD_BULK = ("profile", "visual", "qa", "site", "site_history", "audit",
+              "outreach", "domains", "owner_assets", "history", "replies")
+
+
+@app.get("/leads/{lead_id}/timeline")
+async def lead_timeline(lead_id: str):
+    """Everything that ever happened to one lead, in order.
+
+    Five separate ledgers know part of the story and none knows all of it, so
+    they are merged here rather than in the browser:
+
+    - the lead's own `history` — every stage change, who moved it and why. This
+      is the permanent record; it is written in the same transaction as the
+      stage itself, so it cannot drift.
+    - the activity log — what agents actually did. Capped at 1000 entries
+      globally, so an old lead's runs roll off while its history survives.
+      `events_complete` says whether that has happened.
+    - escalations — where an agent got stuck and what Ultron told it.
+    - user approvals — the gates, and how the operator decided them.
+    - `replies` — what the business said back.
+    """
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        raise HTTPException(404, "no such lead")
+
+    entries: list[dict[str, Any]] = []
+
+    for h in lead.get("history") or []:
+        entries.append({
+            "ts": h.get("ts"), "kind": "stage",
+            "agent": h.get("agent"),
+            "title": f"{h.get('from_stage') or '—'} → {h.get('stage')}",
+            "detail": h.get("note") or "",
+            "from_stage": h.get("from_stage"), "to_stage": h.get("stage"),
+        })
+
+    events = state.list_events(limit=1000)
+    for e in events:
+        if (e.get("details") or {}).get("lead_id") != lead_id:
+            continue
+        entries.append({
+            "ts": e.get("ts"), "kind": "run", "subkind": e.get("kind"),
+            "agent": e.get("from") or e.get("to"),
+            "title": e.get("summary") or e.get("kind"),
+            "detail": "", "outcome": e.get("outcome"),
+            "to": e.get("to"),
+        })
+
+    for esc in state.list_escalations(status=None, limit=500):
+        if ((esc.get("original_task") or {}).get("lead_id")) != lead_id:
+            continue
+        entries.append({
+            "ts": esc.get("ts"), "kind": "escalation",
+            "agent": esc.get("agent"),
+            "title": f"{esc.get('agent')} got stuck and asked for guidance",
+            "detail": (esc.get("message") or "")[:1200],
+            "outcome": esc.get("status"),
+            "answer": (esc.get("ultron_response") or {}).get("guidance")
+                      if isinstance(esc.get("ultron_response"), dict)
+                      else esc.get("ultron_response"),
+        })
+
+    for a in state.list_user_approvals(status=None, limit=500):
+        if (a.get("payload") or {}).get("lead_id") != lead_id:
+            continue
+        entries.append({
+            "ts": a.get("ts"), "kind": "gate",
+            "agent": a.get("requesting_agent"),
+            "title": a.get("summary") or a.get("kind"),
+            "detail": a.get("reason") or "",
+            "outcome": a.get("status"),
+            "gate_kind": a.get("kind"),
+            "decided_ts": a.get("resolved_ts") or a.get("decided_ts"),
+        })
+
+    for r in lead.get("replies") or []:
+        entries.append({
+            "ts": r.get("ts"), "kind": "reply",
+            "agent": r.get("recorded_by") or "operator",
+            "title": f"the business replied — {r.get('outcome')}",
+            "detail": r.get("note") or "",
+            "outcome": r.get("outcome"),
+        })
+
+    entries.sort(key=lambda x: x.get("ts") or 0)
+
+    return {
+        "lead": {k: v for k, v in lead.items() if k not in _LEAD_BULK},
+        "entries": entries,
+        # The activity log is a ring buffer. Say so, rather than letting a page
+        # imply nothing happened during a window that simply rolled off.
+        "events_complete": len(events) < 1000,
+        "counts": {
+            "stage_changes": sum(1 for e in entries if e["kind"] == "stage"),
+            "runs": sum(1 for e in entries if e["kind"] == "run"),
+            "escalations": sum(1 for e in entries if e["kind"] == "escalation"),
+            "gates": sum(1 for e in entries if e["kind"] == "gate"),
+        },
+    }
 
 
 @app.post("/leads/{lead_id}/assets")

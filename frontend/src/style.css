@@ -1303,3 +1303,256 @@ html, body {
   font-size: 11px;
   cursor: pointer;
 }
+
+/* ---------- Lead board (full-screen page) ----------
+   A cross-cutting view: one row per lead, and the whole chronology of the one
+   you pick. Shares the room panels' palette so it reads as the same app. */
+.lb-open-btn {
+  background: #241c33;
+  border: 1px solid #3a2f52;
+  color: #c9bce8;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+.lb-open-btn:hover { background: #33284a; color: #e6dcff; }
+
+#leadboard {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: #0d0d10;
+  display: none;
+  flex-direction: column;
+  color: #ddd;
+  font-size: 12px;
+}
+#leadboard.lb--open { display: flex; }
+
+.lb-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #1f1f29;
+  background: linear-gradient(180deg, rgba(40, 30, 60, 0.45), transparent);
+  flex: 0 0 auto;
+}
+.lb-header h1 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 3px;
+  color: #d8d0f0;
+  font-weight: 700;
+}
+.lb-sub { color: #6a6a78; flex: 1; font-size: 11px; }
+.lb-close {
+  background: #1b1b24;
+  border: 1px solid #2a2a36;
+  color: #aaa;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.lb-close:hover { background: #2a2a36; color: #ddd; }
+
+/* Two panes: the list is fixed-width, the timeline takes the rest. */
+.lb-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(280px, 26%) 1fr;
+}
+.lb-list-wrap {
+  border-right: 1px solid #1f1f29;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #0f1016;
+}
+.lb-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid #1f1f29;
+}
+.lb-filter {
+  background: #14141c;
+  border: 1px solid #1f1f29;
+  color: #8a8a98;
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.lb-filter:hover { color: #ddd; }
+.lb-filter--on { background: #2b2340; border-color: #4a3f6a; color: #e6dcff; }
+
+.lb-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.lb-row {
+  background: #14141c;
+  border: 1px solid #1f1f29;
+  border-left: 3px solid #2a2a36;
+  padding: 7px 9px;
+  cursor: pointer;
+}
+.lb-row:hover { background: #1a1a24; }
+.lb-row:focus-visible { outline: 1px solid #5a4a7a; outline-offset: 1px; }
+.lb-row--on { background: #1e1a2c; border-left-color: #7a5af0; }
+.lb-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  justify-content: space-between;
+}
+.lb-row-top strong {
+  color: #f4f1de;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-row-sub { color: #7a7a88; font-size: 10px; margin-top: 3px; }
+.lb-row-last {
+  color: #5f5f6c;
+  font-size: 10px;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-stage {
+  font-size: 9px;
+  letter-spacing: .06em;
+  border: 1px solid #2a2a36;
+  padding: 1px 5px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+/* ---- timeline pane ---- */
+.lb-timeline-wrap { overflow-y: auto; padding: 14px 18px 40px; min-height: 0; }
+.lb-placeholder { color: #666; font-style: italic; }
+.lb-lead-head { display: flex; align-items: center; gap: 10px; }
+.lb-lead-head h2 { margin: 0; font-size: 15px; color: #f4f1de; }
+.lb-facts {
+  margin: 10px 0 14px;
+  display: grid;
+  gap: 2px;
+  border-left: 2px solid #1f1f29;
+  padding-left: 10px;
+}
+.lb-facts > div { display: flex; gap: 10px; }
+.lb-fact-k { color: #6a6a78; min-width: 96px; font-size: 10px; }
+.lb-fact-v { color: #b8b8c4; word-break: break-all; font-size: 11px; }
+.lb-warn {
+  color: #c9a86a;
+  background: #1c1810;
+  border: 1px solid #3a3020;
+  padding: 7px 9px;
+  margin: 0 0 14px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.lb-entries {
+  /* No markers: the list runs newest-first, so ordinals would count backwards. */
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 14px;
+  border-left: 1px solid #23232f;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lb-entry {
+  position: relative;
+  background: #13131a;
+  border: 1px solid #1f1f29;
+  padding: 6px 9px;
+}
+/* The dot on the spine. */
+.lb-entry::before {
+  content: "";
+  position: absolute;
+  left: -19px;
+  top: 10px;
+  width: 7px;
+  height: 7px;
+  background: #3a3a4a;
+  border: 1px solid #0d0d10;
+}
+.lb-entry--stage::before     { background: #7a5af0; }
+.lb-entry--gate::before      { background: #f4d35e; }
+.lb-entry--reply::before     { background: #7fd1c1; }
+.lb-entry--escalation::before{ background: #e76f51; }
+
+.lb-entry--stage { border-left: 2px solid #4a3f6a; }
+.lb-entry--gate  { border-left: 2px solid #6a5c25; }
+.lb-entry--reply { border-left: 2px solid #2c5c55; }
+.lb-entry--escalation { border-left: 2px solid #5c3327; }
+
+.lb-when {
+  display: block;
+  color: #55555f;
+  font-size: 9.5px;
+  letter-spacing: .04em;
+}
+.lb-entry-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.lb-who {
+  color: #a3b18a;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  flex: 0 0 auto;
+}
+.lb-what { color: #d4d4de; display: flex; gap: 5px; align-items: baseline; flex-wrap: wrap; }
+.lb-detail {
+  color: #8f8f9c;
+  font-size: 10.5px;
+  line-height: 1.55;
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+.lb-answer { color: #b9a3d8; border-left: 2px solid #3a2f52; padding-left: 8px; }
+.lb-outcome {
+  display: inline-block;
+  margin-top: 5px;
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #7a7a88;
+  border: 1px solid #23232f;
+  padding: 0 4px;
+}
+.lb-entry[data-outcome="failed"]  .lb-outcome,
+.lb-entry[data-outcome="crashed"] .lb-outcome { color: #e08a72; border-color: #5c3327; }
+.lb-entry[data-outcome="completed"] .lb-outcome,
+.lb-entry[data-outcome="approved"]  .lb-outcome { color: #8fc98f; border-color: #2c4a2c; }
+.lb-entry[data-outcome="pending"] .lb-outcome { color: #f4d35e; border-color: #5c5225; }
+
+.lb-gap {
+  color: #4a4a55;
+  font-size: 9.5px;
+  font-style: italic;
+  padding: 1px 0 1px 2px;
+}
+.lb-empty { color: #666; font-style: italic; padding: 8px 0; }

@@ -3,11 +3,13 @@ import { World } from "./scenes/World";
 import { mount as mountCrew } from "./agentList";
 import { startApprovalSync } from "./approvals";
 import { installUnlockHandlers } from "./notify";
+import { installLeadBoard } from "./leadBoard";
 
 mountCrew();
 // Browsers block audio until the user has interacted with the page.
 installUnlockHandlers();
 startApprovalSync();
+installLeadBoard();
 
 new Phaser.Game({
   type: Phaser.AUTO,
