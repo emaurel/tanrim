@@ -196,6 +196,16 @@ def role_for_stage(stage: str) -> str | None:
     return None
 
 
+def room_for_role(role: str) -> str | None:
+    """The room staffed by `role` — so a crash badges the room the operator
+    would go looking in. Derived from the manifests, like everything else here.
+    """
+    for room in load_rooms():
+        if any(a.id == role for a in room.agents):
+            return room.id
+    return None
+
+
 def mcp_servers_for(room_id: str) -> list[McpServerSpec]:
     for room in load_rooms():
         if room.id == room_id:

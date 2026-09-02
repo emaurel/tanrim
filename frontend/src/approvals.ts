@@ -226,6 +226,49 @@ function renderGate(a: Approval, host: HTMLElement): boolean {
     ));
     return true;
   }
+
+  // Two agents stuck disagreeing about the same page. The operator needs to
+  // see WHAT they disagree about, and the preview, to break the tie.
+  if (a.kind === "qa_loop") {
+    host.appendChild(kv("Business", String(p.business ?? "?")));
+    host.appendChild(kv("Failed builds", String(p.rounds ?? "?")));
+    if (p.critical_problems)
+      host.appendChild(labelled("what QA keeps failing it on",
+        note(String(p.critical_problems))));
+    if (p.qa_summary)
+      host.appendChild(labelled("QA's own summary", note(String(p.qa_summary))));
+    if (p.what_this_means) host.appendChild(note(String(p.what_this_means)));
+    if (p.lead_id) host.appendChild(sitePreview(`/staging/${p.lead_id}/`));
+    host.appendChild(note(
+      "approve = pass QA and publish (say so in the box if Lens was wrong) · " +
+      "reject = back to Forge with your note as the instruction"
+    ));
+    return true;
+  }
+
+  // A crash is not a decision to make — it is a bug to read. Show the error
+  // and the tail of the traceback, because the alternative is stdout on a
+  // server the operator is not watching.
+  if (a.kind === "agent_crashed") {
+    host.appendChild(kv("Agent", String(p.agent ?? "?")));
+    host.appendChild(kv("Business", String(p.business ?? p.lead_id ?? "?")));
+    host.appendChild(kv("Stuck at", String(p.stage ?? "?")));
+    host.appendChild(kv("Error", String(p.error ?? "?")));
+    if (p.what_this_means) host.appendChild(note(String(p.what_this_means)));
+    if (p.traceback) {
+      const pre = document.createElement("pre");
+      pre.className = "rp-approval-payload";
+      pre.style.maxHeight = "16rem";
+      pre.style.overflow = "auto";
+      pre.textContent = String(p.traceback);
+      host.appendChild(labelled("traceback", pre));
+    }
+    host.appendChild(note(
+      "Dismiss with 'ignore' once the cause is fixed — that releases the lead " +
+      "so the pipeline picks it up again."
+    ));
+    return true;
+  }
   return false;
 }
 

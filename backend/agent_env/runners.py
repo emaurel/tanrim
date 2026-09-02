@@ -160,7 +160,70 @@ def _skip_if_busy(name: str, runner: Runner) -> Runner:
             # Every worker in that room is busy. Ultron will see the lead still
             # sitting at its stage on the board and can dispatch it again.
             return {"ok": False, "error": str(e)}
+        except Exception as e:  # noqa: BLE001
+            # A bug, not a busy room. Dispatched runs are detached tasks, so
+            # without this the traceback goes to stdout, the event log says
+            # only "failed", and the lead is parked at its stage with nobody
+            # looking at it — a NameError on a rarely-taken path silently
+            # ended a whole pipeline this way.
+            #
+            # A crash is never retried automatically: the same input crashes
+            # the same code, so a rerun burns a run to reach the same place.
+            # It raises a card instead, which also suppresses dispatch on that
+            # lead until the operator has seen it.
+            return _crashed(name, task, e)
     return wrapped
+
+
+def _crashed(name: str, task: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    """Record an unexpected exception where the operator will actually find it."""
+    import traceback
+
+    from . import rooms, state
+
+    lead_id = task.get("lead_id")
+    detail = f"{type(exc).__name__}: {exc}"
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    lead = state.get_lead(lead_id) if lead_id else None
+    label = (lead or {}).get("name") or lead_id or "(no lead)"
+    stage = (lead or {}).get("stage")
+
+    state.log_event(
+        "run_end", from_=name, to="operator",
+        summary=f"{name} CRASHED on {label}: {detail}"[:240],
+        outcome="crashed",
+        details={"lead_id": lead_id, "stage": stage, "error": detail,
+                 "traceback": tb[-4000:]},
+    )
+
+    room_id = rooms.room_for_role(name)
+    existing = [
+        a for a in state.list_user_approvals(status="pending")
+        if a["kind"] == "agent_crashed"
+        and a["payload"].get("agent") == name
+        and a["payload"].get("lead_id") == lead_id
+        and a["payload"].get("stage") == stage
+    ]
+    if not existing:
+        state.add_user_approval(
+            kind="agent_crashed",
+            room_id=room_id or "throne",
+            requesting_agent=name,
+            summary=f"{name} crashed on {label} at '{stage}' — {detail}"[:200],
+            payload={
+                "lead_id": lead_id, "agent": name, "stage": stage,
+                "business": (lead or {}).get("name"),
+                "error": detail,
+                "traceback": tb[-4000:],
+                "what_this_means":
+                    "This is a bug in the code, not a busy room or a bad lead. "
+                    f"The lead is still at '{stage}' and nothing will retry it "
+                    "automatically, because the same input would crash the same "
+                    "way. Fix the cause, then dismiss this card to let the "
+                    "pipeline pick the lead up again.",
+            },
+        )
+    return {"ok": False, "error": detail, "crashed": True}
 
 
 AGENT_RUNNERS: dict[str, Runner] = {

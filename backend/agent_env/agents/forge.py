@@ -14,12 +14,15 @@ from typing import Any
 
 from .. import assets, skills, state
 from ..agent_helpers import (
+    AgentBusy,
     format_escalations,
     format_feedback,
     format_lead,
     format_tool_history,
+    in_flight_for_role,
     run_agent,
 )
+from ..workers import RoomAtCapacity
 from ..config import SITES_DIR
 from ..world import World
 
@@ -59,7 +62,7 @@ def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
             sections.append(block)
     sections.append(format_lead(lead, include=("audit",)))
 
-    owner = assets.describe(lead_id)
+    owner = assets.describe(lead["id"])
     if owner:
         sections.append(owner)
 
@@ -157,6 +160,20 @@ async def run_build(world: World, lead_id: str, instruction: str = "") -> dict[s
         return {"ok": False, "error": f"no such lead: {lead_id}"}
 
     site_dir = SITES_DIR / lead_id
+    # Bail out BEFORE touching the filesystem if another Forge already has this
+    # lead. run_agent's claim would reject the duplicate anyway, but by then we
+    # have already overwritten the `.previous` snapshot with the live run's
+    # half-written files and rolled them back over its build directory — a
+    # duplicate dispatch was destroying the very work the claim exists to
+    # protect. This check is racy on its own; the claim below is the guarantee.
+    if any(f.get("lead_id") == lead_id for f in in_flight_for_role(AGENT_ID)):
+        state.log_event("run_end", from_=AGENT_ID,
+                        summary=f"skipped duplicate build for {lead.get('name')} "
+                                "— a Forge is already on this lead",
+                        outcome="skipped", details={"lead_id": lead_id})
+        return {"ok": False, "error": "a Forge is already building this lead",
+                "skipped": True}
+
     site_dir.mkdir(parents=True, exist_ok=True)
 
     # Snapshot whatever is already there. A rebuild that fails part-way used to
@@ -205,6 +222,10 @@ async def run_build(world: World, lead_id: str, instruction: str = "") -> dict[s
             schema=SCHEMA,
             skills=_room_skills(),
         )
+    except (AgentBusy, RoomAtCapacity):
+        # Not a failure: this dispatch never started. Another run owns the
+        # build directory, so rolling back here would overwrite ITS files.
+        raise
     except Exception:
         # A half-finished rebuild must not replace a build that worked. Put the
         # previous one back before letting the error surface.
