@@ -16,6 +16,15 @@ function detail(lead: Lead): HTMLElement | null {
   }
   if (o.sent) wrap.appendChild(field("Sent", `via ${o.transport ?? "?"}`));
 
+  for (const m of ((lead as any).inbound ?? []).slice(-2)) {
+    const box = document.createElement("pre");
+    box.className = "rp-email-body";
+    const read = m.triage?.summary ? `\n\n[Echo read it as: ${m.triage.outcome} — ${m.triage.summary}]` : "";
+    box.textContent = `From: ${m.from}\nSubject: ${m.subject}\n\n${m.body}${read}`;
+    wrap.appendChild(field("They wrote", ""));
+    wrap.appendChild(box);
+  }
+
   // Anything they sent us, with its provenance and what ingest did to it.
   const owned: any[] = (lead as any).owner_assets ?? [];
   if (owned.length) {
@@ -52,6 +61,15 @@ function detail(lead: Lead): HTMLElement | null {
 }
 
 function banner(data: any): HTMLElement | null {
+  if (!data.mailbox_configured) {
+    const el = document.createElement("div");
+    el.className = "rp-hint";
+    el.textContent =
+      "IMAP is not configured, so replies are not being fetched — attach what " +
+      "they sent by hand below. Set IMAP_HOST / IMAP_USER / IMAP_PASSWORD in " +
+      ".env and replies arrive on their own, attachments included.";
+    return el;
+  }
   if (data.smtp_configured) {
     const el = document.createElement("div");
     el.className = "rp-hint";
@@ -161,6 +179,15 @@ function replyActions(lead: Lead, ctx: PanelContext): HTMLElement[] {
   ];
 }
 
+function checkMailButton(ctx: PanelContext): HTMLElement {
+  return secondaryButton("check the mailbox now", async () => {
+    const res = await postRoomAction("comms", "check_mail");
+    if (!res.ok) window.alert(res.error ?? "could not reach the mailbox");
+    else if (!res.arrived) window.alert("Nothing new.");
+    await ctx.reload();
+  });
+}
+
 export const open = makeLeadRoom({
   agentName: "Echo",
   verb: "request send",
@@ -171,7 +198,7 @@ export const open = makeLeadRoom({
   extraActions: (lead, ctx) => {
     // Once it has gone out, the useful actions are about the reply.
     if (lead.stage === "contacted") {
-      return [attachFiles(lead, ctx), ...replyActions(lead, ctx)];
+      return [checkMailButton(ctx), attachFiles(lead, ctx), ...replyActions(lead, ctx)];
     }
     if (lead.outreach?.sent) return [];
     return [

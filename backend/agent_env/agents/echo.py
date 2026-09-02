@@ -291,3 +291,109 @@ async def record_reply(
                     details={"lead_id": lead_id})
     return {"ok": True, "outcome": outcome, "stage": "replied",
             "handover_raised": True}
+
+
+# ---------- Triaging what arrived ----------
+#
+# The mechanical half is automated: mailbox.poll fetches the message and files
+# the attachments. Reading what they meant is a judgement, so a model makes it —
+# but only the cheap, reversible outcome is applied automatically. A change
+# request costs a rebuild and can be undone; an acceptance means handing over a
+# domain and a site, so that one waits for the operator.
+
+TRIAGE_SCHEMA = '''{"outcome":"changes|accepted|refused|unclear","confidence":0.0,
+"request":"","summary":"","flag":""}'''
+
+# Below this, even a `changes` verdict goes to the operator instead.
+TRIAGE_FLOOR = 0.6
+
+
+async def triage_inbound(world: World, lead_id: str) -> dict[str, Any]:
+    """Read the newest unhandled inbound message and act on it."""
+    from ..agent_helpers import run_agent
+    from .. import prompts as prompts_mod
+
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        return {"ok": False, "error": f"no such lead: {lead_id}"}
+    pending = [m for m in (lead.get("inbound") or []) if not m.get("triaged")]
+    if not pending:
+        return {"ok": False, "error": "nothing new to read"}
+    message = pending[-1]
+
+    body = str(message.get("body") or "").strip()
+    if not body:
+        return {"ok": False, "error": "the message had no readable text"}
+
+    files = message.get("attachments_stored") or []
+    prompt = (
+        prompts_mod.load("echo", "TRIAGE_ROLE")
+        + f"\n\nThe business: {lead.get('name')}\n"
+        + f"They were sent: {lead.get('preview_url')}\n"
+        + (f"They attached {len(files)} file(s), already stored: "
+           f"{', '.join(files)}\n" if files else "They attached nothing.\n")
+        + "\n----- BEGIN CUSTOMER MESSAGE -----\n"
+        + body[:4000]
+        + "\n----- END CUSTOMER MESSAGE -----\n\nReturn the JSON now."
+    )
+
+    result = await run_agent(
+        world,
+        role=AGENT_ID, room_id=ROOM_ID, model="claude-sonnet-4-6",
+        prompt=prompt,
+        summary=f"reading the reply from {lead.get('name')}",
+        say=f"reading {str(lead.get('name'))[:22]}…",
+        workbench="inbox",
+        original_task={"lead_id": lead_id},
+        max_turns=4,
+        max_budget_usd=0.25,
+        schema=TRIAGE_SCHEMA,
+    )
+    parsed = result.data or {}
+    outcome = parsed.get("outcome")
+    confidence = float(parsed.get("confidence") or 0)
+    flag = (parsed.get("flag") or "").strip()
+
+    # Mark it read either way, so a message it could not place is not re-read
+    # on every tick.
+    inbound = list(lead.get("inbound") or [])
+    for m in inbound:
+        if m.get("message_id") == message.get("message_id"):
+            m["triaged"] = True
+            m["triage"] = parsed
+    state.update_lead(lead_id, inbound=inbound)
+
+    # `changes` is cheap and reversible, so apply it. Anything else — including
+    # low confidence, and including anything flagged — goes to the operator.
+    if outcome == "changes" and confidence >= TRIAGE_FLOOR and not flag:
+        request = (parsed.get("request") or body)[:1500]
+        applied = await record_reply(world, lead_id, "changes", request)
+        return {"ok": True, "outcome": outcome, "applied": True, **applied}
+
+    state.add_user_approval(
+        kind="reply_received",
+        room_id=ROOM_ID,
+        requesting_agent=AGENT_ID,
+        summary=f"{lead.get('name')} replied — {parsed.get('summary') or 'read it'}",
+        payload={
+            "lead_id": lead_id,
+            "business": lead.get("name"),
+            "from": message.get("from"),
+            "subject": message.get("subject"),
+            "body": body[:4000],
+            "attachments": files,
+            "reading": parsed,
+            "why_you": (
+                flag or
+                ("this one is about money" if outcome == "accepted" else
+                 "not confident enough to act on it" if confidence < TRIAGE_FLOOR else
+                 "needs a person")
+            ),
+        },
+    )
+    await world.publish({"type": "approvals_updated"})
+    state.log_event("user_approval", from_=AGENT_ID, to="operator",
+                    summary=f"reply from {lead.get('name')} needs you: "
+                            f"{parsed.get('summary', '')[:120]}",
+                    details={"lead_id": lead_id})
+    return {"ok": True, "outcome": outcome, "applied": False, "raised_card": True}

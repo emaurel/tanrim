@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import uuid
+from email.utils import parseaddr
 from threading import Lock
 from typing import Any
 
@@ -493,6 +495,28 @@ DEAD_STAGES = ["disqualified", "qa_failed", "lost"]
 ALL_STAGES = STAGES + DEAD_STAGES
 
 
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def clean_email(value: Any) -> str | None:
+    """Pull a usable address out of whatever a model wrote in the field.
+
+    Agents append provenance to it — one real lead was stored as
+    `contact@example.fr (sourced from OSM node/1371087888 and SIRENE register)`, which
+    is neither sendable nor matchable against an inbound `From` header. The
+    address is the only part that can be acted on, so it is the only part kept.
+    """
+    if not value:
+        return None
+    text = str(value)
+    # A display-name form gets handled first; otherwise take the first address.
+    _, addr = parseaddr(text)
+    if addr and EMAIL_RE.fullmatch(addr):
+        return addr.lower()
+    found = EMAIL_RE.search(text)
+    return found.group(0).lower() if found else None
+
+
 def add_lead(
     name: str,
     *,
@@ -518,6 +542,7 @@ def add_lead(
         "history": [],
         **fields,
     }
+    rec["email"] = clean_email(rec.get("email"))
     with _lock:
         items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
         items.append(rec)
@@ -551,6 +576,8 @@ def get_lead(lead_id: str) -> dict[str, Any] | None:
 
 def update_lead(lead_id: str, **fields: Any) -> dict[str, Any] | None:
     """Patch a lead without touching its stage."""
+    if "email" in fields:
+        fields["email"] = clean_email(fields["email"])
     _ensure()
     with _lock:
         items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
@@ -576,6 +603,8 @@ def advance_lead(
     is always a complete record of who moved the lead and why."""
     if stage not in ALL_STAGES:
         raise ValueError(f"unknown stage: {stage}")
+    if "email" in fields:
+        fields["email"] = clean_email(fields["email"])
     _ensure()
     with _lock:
         items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())

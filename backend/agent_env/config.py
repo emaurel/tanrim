@@ -75,3 +75,14 @@ def outreach_config_problems() -> list[str]:
 # answer within a fortnight or not at all, and a board full of leads nobody ever
 # replied to hides the ones that did.
 NO_REPLY_DAYS = int(os.getenv("AGENT_ENV_NO_REPLY_DAYS", "21"))
+
+
+# ---------- Reading the mailbox ----------
+# IMAP settings fall back to the SMTP ones, since most providers use one
+# account for both. Use an app password, never the account password: this
+# process holds it in memory and a headless server cannot do an OAuth redirect.
+IMAP_HOST = os.getenv("IMAP_HOST", "").strip()
+IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+# How often to check. Minutes, not seconds — a business replies within a day,
+# and hammering an IMAP server is how an account gets rate-limited.
+MAIL_POLL_MINUTES = int(os.getenv("AGENT_ENV_MAIL_POLL_MINUTES", "5"))

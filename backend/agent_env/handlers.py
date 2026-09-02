@@ -465,6 +465,9 @@ class CommsHandler(LeadRoomHandler):
         base["smtp_configured"] = echo.smtp_configured()
         base["reply_outcomes"] = list(echo.REPLY_OUTCOMES)
         base["no_reply_days"] = config.NO_REPLY_DAYS
+        from . import mailbox
+        base["mailbox_configured"] = mailbox.configured()
+        base["mail_poll_minutes"] = config.MAIL_POLL_MINUTES
         base["config_problems"] = config.outreach_config_problems()
         return base
 
@@ -475,6 +478,22 @@ class CommsHandler(LeadRoomHandler):
         return await echo.request_send(self.world, lead_id)
 
     async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if name == "check_mail":
+            import asyncio as _asyncio
+
+            from . import mailbox
+            if not mailbox.configured():
+                return {"ok": False, "error":
+                        "IMAP is not configured — set IMAP_HOST, IMAP_USER and "
+                        "IMAP_PASSWORD in .env"}
+            try:
+                arrived = await _asyncio.to_thread(mailbox.poll)
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            for rec in arrived:
+                await echo.triage_inbound(self.world, rec["lead_id"])
+            return {"ok": True, "arrived": len(arrived),
+                    "from": [r.get("business") for r in arrived]}
         if name == "record_reply":
             lead_id = payload.get("lead_id")
             if not lead_id:

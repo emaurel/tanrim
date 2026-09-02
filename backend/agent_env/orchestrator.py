@@ -31,6 +31,7 @@ class Orchestrator:
         # (lead_id, stage) pairs already dispatched, so recovery of a stalled
         # lead happens once rather than every tick.
         self._dispatched: set[tuple[str, str]] = set()
+        self._last_mail_poll = 0.0
         # Mark all current reports as already processed so we don't replay
         # history on every restart. Only NEW reports trigger a Sonnet reaction.
         self._processed_reports: set[str] = {
@@ -60,6 +61,46 @@ class Orchestrator:
         while True:
             await self.world.tick()
             await asyncio.sleep(0.1)
+
+    async def _read_mail(self) -> None:
+        """Fetch replies and file their attachments, then read what they said.
+
+        Polled on a slow clock: a business answers within a day, and hammering
+        an IMAP server is how an account gets rate-limited. A mailbox that is
+        unreachable must never take the loop down — outreach is the one part of
+        this that depends on someone else's server.
+        """
+        from . import config, mailbox
+        from .agents import echo
+
+        if not mailbox.configured():
+            return
+        if time.time() - self._last_mail_poll < config.MAIL_POLL_MINUTES * 60:
+            return
+        self._last_mail_poll = time.time()
+
+        try:
+            arrived = await asyncio.to_thread(mailbox.poll)
+        except Exception as e:  # noqa: BLE001
+            state.log_event(
+                "run_end", from_="echo",
+                summary=f"could not read the mailbox: {type(e).__name__}: {e}"[:240],
+                outcome="failed",
+            )
+            return
+
+        for record in arrived:
+            try:
+                await echo.triage_inbound(self.world, record["lead_id"])
+            except Exception as e:  # noqa: BLE001
+                # The message and its attachments are already stored; only the
+                # reading failed, and the operator can still see it.
+                state.log_event(
+                    "run_end", from_="echo",
+                    summary=f"stored the reply from {record.get('business')} but "
+                            f"could not read it: {type(e).__name__}"[:200],
+                    outcome="failed", details={"lead_id": record["lead_id"]},
+                )
 
     async def _expire_silence(self) -> None:
         """Treat a long silence as a no.
@@ -209,6 +250,7 @@ class Orchestrator:
                 # Leads that changed stage → dispatch the room that works it.
                 await self._advance_leads()
                 await self._expire_silence()
+                await self._read_mail()
 
                 # Retire ephemeral workers whose lead has finished its run
                 # through the pipeline. Rooms keep their base agent, so a room
