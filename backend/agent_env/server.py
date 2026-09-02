@@ -6,12 +6,13 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import secrets as secrets_store
+from . import assets as assets_mod
 from . import config
 from . import prompts as prompts_mod
 from . import skills as skills_mod
@@ -99,6 +100,51 @@ async def get_lead(lead_id: str):
     if lead is None:
         raise HTTPException(404, "no such lead")
     return lead
+
+
+@app.post("/leads/{lead_id}/assets")
+async def upload_assets(
+    lead_id: str,
+    files: list[UploadFile] = File(...),
+    caption: str = Form(""),
+    source: str = Form("owner email"),
+):
+    """Take files the business sent us into the lead's asset store.
+
+    Separate from the harvested photographs on purpose: these are theirs, given
+    for this purpose, and they are the only images allowed on a built page.
+    """
+    if state.get_lead(lead_id) is None:
+        raise HTTPException(404, "no such lead")
+    accepted, rejected = [], []
+    for upload in files:
+        try:
+            data = await upload.read()
+            accepted.append(assets_mod.ingest(
+                lead_id, upload.filename or "file", data,
+                source=source, caption=caption,
+            ))
+        except assets_mod.AssetRejected as e:
+            rejected.append({"file": upload.filename, "why": str(e)})
+        except Exception as e:  # noqa: BLE001
+            rejected.append({"file": upload.filename, "why": f"{type(e).__name__}: {e}"})
+    if accepted:
+        state.update_lead(lead_id, owner_assets=assets_mod.read_manifest(lead_id))
+        state.log_event(
+            "run_end", from_="operator",
+            summary=f"{len(accepted)} file(s) from the business stored for "
+                    f"{state.get_lead(lead_id).get('name')}",
+            outcome="completed", details={"lead_id": lead_id},
+        )
+        await world.publish({"type": "approvals_updated"})
+    return {"ok": bool(accepted), "accepted": accepted, "rejected": rejected}
+
+
+@app.delete("/leads/{lead_id}/assets/{file}")
+async def delete_asset(lead_id: str, file: str):
+    removed = assets_mod.delete(lead_id, file)
+    state.update_lead(lead_id, owner_assets=assets_mod.read_manifest(lead_id))
+    return {"ok": removed}
 
 
 @app.get("/rooms")

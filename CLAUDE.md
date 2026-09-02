@@ -127,6 +127,44 @@ numbers were in circulation; both landed in `hours.conflicts` and
 `content_gaps` as "must call before building". That is the correct outcome —
 the alternative is publishing a confident wrong fact to the owner.
 
+## Files the business sends us
+
+Two directories per lead, and the distinction is the whole point:
+
+- `state/sites/<lead_id>/photos/` — photographs Lens **harvested** from review
+  platforms. Read for information, never republished.
+- `state/sites/<lead_id>/assets/` — files the **owner sent us for their site**.
+  These are theirs, given for this purpose, and they are the only images
+  allowed on a built page.
+
+Provenance lives in `assets/manifest.json` next to the files rather than being
+inferred from the path, because losing that distinction is exactly how a
+TripAdvisor photo ends up republished on a commercial page. Lens's QA is told
+the same rule from the other side: an image on the page that is not in the
+manifest is a critical failure, harvested or invented.
+
+`assets.ingest()` does two things on the way in, both of which matter:
+
+- **Downscales** to 1600px on the long edge. A phone photo is 3–5 MB and
+  4000px wide; on a page whose customers arrive on mobile that is the
+  difference between a site that loads and one that doesn't. Measured on a
+  test photo: 3600×2400 and 132 KB in, 1600×1067 and 10 KB out.
+- **Strips EXIF**, after honouring the orientation tag. Phone photos carry GPS
+  coordinates, the device model and a timestamp. The owner sent a picture of
+  their dining room, not their home address — re-encoding without the metadata
+  is the only honest thing to do with a file someone hands you to publish.
+
+Transport is `POST /leads/<id>/assets` (multipart), driven from the
+Communications panel next to the reply buttons: the operator saves the
+attachments out of the email and drops them in. Nothing reads a mailbox, so
+there is no automatic path from an attachment to disk, and inventing one would
+mean holding mail credentials to save a drag-and-drop.
+
+`hosting.SHIP_DIRS` makes `assets/` deploy with its path preserved, so a page
+referencing `/assets/x.jpg` finds it once live. Forge's photograph rule branches
+on which directory an image came from; with no owner assets it builds captioned
+slots instead, which is what the slots were always for.
+
 ## Reading their photographs
 
 Text research establishes that a business exists. Photographs establish what its

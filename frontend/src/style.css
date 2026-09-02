@@ -1279,3 +1279,27 @@ html, body {
   color: #6f6f7d;
   border-top: 1px solid #1e1e26;
 }
+
+.rp-attach {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 10px;
+  margin-bottom: 4px;
+  background: var(--surface, #16161d);
+  border: 1px dashed #3a3a4a;
+  border-radius: 4px;
+}
+.rp-attach-input { font-size: 11px; color: #b8b8c8; }
+.rp-attach-input::file-selector-button {
+  margin-right: 8px;
+  padding: 3px 8px;
+  border: 1px solid #333;
+  border-radius: 3px;
+  background: #1e1e26;
+  color: #ddd;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}

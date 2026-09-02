@@ -13,6 +13,9 @@ dependencies = [
     "httpx>=0.27",
     # Lens renders each built site in a real browser to verify the UI.
     "playwright>=1.40",
+    # Owner-supplied photos arrive straight off a phone: 4 MB, wrong-way-up,
+    # and carrying GPS in the EXIF. Pillow downscales and strips them.
+    "Pillow>=10.0",
 ]
 
 [project.scripts]

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .. import state
+from .. import assets, state
 from ..agent_helpers import (
     format_escalations,
     format_feedback,
@@ -71,6 +71,10 @@ def _build_prompt(lead: dict[str, Any], site_dir: str) -> str:
                 ) if visual.get(k)
             }, ensure_ascii=False, indent=2)[:4000]
         )
+
+    owner = assets.describe(lead_id)
+    if owner:
+        sections.append(owner)
 
     site = lead.get("site") or {}
     if site:

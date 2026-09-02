@@ -48,9 +48,15 @@ CONTENT_TYPES = {
     ".pdf": "application/pdf",
 }
 
-# Never upload these: QA screenshots, harvested photos, the skills symlink.
+# Never upload these: QA screenshots, harvested photos (not ours to republish),
+# the skills symlink, the rollback copy.
 SKIP_NAMES = {".claude", "photos", "incumbent", ".previous"}
 SKIP_PREFIXES = ("shot-",)
+# Directories that DO ship, with their path preserved. `assets/` holds files the
+# business sent for their own site, so a page referencing /assets/x.jpg has to
+# find it there once deployed.
+SHIP_DIRS = ("assets",)
+SKIP_IN_SHIP_DIRS = {"manifest.json"}
 
 
 class HostingNotConfigured(RuntimeError):
@@ -88,6 +94,14 @@ def collect(site_dir: Path) -> dict[str, bytes]:
     out: dict[str, bytes] = {}
     for path in sorted(site_dir.iterdir()):
         if path.is_symlink() or path.name in SKIP_NAMES:
+            continue
+        if path.is_dir():
+            if path.name not in SHIP_DIRS:
+                continue
+            for child in sorted(path.iterdir()):
+                if (child.is_file() and not child.is_symlink()
+                        and child.name not in SKIP_IN_SHIP_DIRS):
+                    out[f"/{path.name}/{child.name}"] = child.read_bytes()
             continue
         if not path.is_file() or path.name.startswith(SKIP_PREFIXES):
             continue

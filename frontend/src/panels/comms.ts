@@ -16,6 +16,31 @@ function detail(lead: Lead): HTMLElement | null {
   }
   if (o.sent) wrap.appendChild(field("Sent", `via ${o.transport ?? "?"}`));
 
+  // Anything they sent us, with its provenance and what ingest did to it.
+  const owned: any[] = (lead as any).owner_assets ?? [];
+  if (owned.length) {
+    const lab = document.createElement("div");
+    lab.className = "rp-brief-label";
+    lab.textContent = `They sent us · ${owned.length} file${owned.length === 1 ? "" : "s"}`;
+    wrap.appendChild(lab);
+    const list = document.createElement("div");
+    list.className = "rp-lead-thin";
+    for (const a of owned) {
+      const row = document.createElement("div");
+      row.className = "rp-lead-row";
+      row.innerHTML = `<span class="rp-lead-stage"></span>
+        <span class="rp-lead-name"></span><span class="rp-lead-note"></span>`;
+      row.querySelector(".rp-lead-stage")!.textContent =
+        `${Math.round((a.bytes ?? 0) / 1024)}kb`;
+      row.querySelector(".rp-lead-name")!.textContent = a.file;
+      const bits = [a.dimensions, a.caption, a.exif_stripped ? "metadata stripped" : ""]
+        .filter(Boolean);
+      row.querySelector(".rp-lead-note")!.textContent = bits.join(" · ");
+      list.appendChild(row);
+    }
+    wrap.appendChild(list);
+  }
+
   const rev = (lead as any).revision;
   if (rev?.requested_by === "client") {
     wrap.appendChild(field(`Change request · round ${rev.round}`, rev.request ?? ""));
@@ -43,6 +68,59 @@ function banner(data: any): HTMLElement | null {
     "you the exact email — send it from your own client, then mark the lead " +
     "contacted. Set SMTP_HOST / SMTP_USER / SMTP_PASSWORD to send from here.";
   return el;
+}
+
+/**
+ * Files the business sent. Kept separate from the harvested photographs on
+ * purpose: these are theirs, given for this purpose, and they are the only
+ * images allowed on a built page.
+ */
+function attachFiles(lead: Lead, ctx: PanelContext): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "rp-attach";
+
+  const input = document.createElement("input");
+  input.type = "file";
+  input.multiple = true;
+  input.accept = "image/*,.pdf,.txt,.md,.csv";
+  input.className = "rp-attach-input";
+
+  const caption = document.createElement("input");
+  caption.type = "text";
+  caption.className = "rp-lead-instruction";
+  caption.placeholder = "what did they say about these? (goes to the builder)";
+
+  const send = document.createElement("button");
+  send.type = "button";
+  send.className = "rp-secondary";
+  send.textContent = "attach what they sent";
+  send.addEventListener("click", async () => {
+    if (!input.files?.length) {
+      window.alert("Pick the files they sent first.");
+      return;
+    }
+    const body = new FormData();
+    for (const f of Array.from(input.files)) body.append("files", f);
+    body.append("caption", caption.value);
+    send.disabled = true;
+    send.textContent = "uploading…";
+    try {
+      const r = await fetch(`/leads/${lead.id}/assets`, { method: "POST", body });
+      const out = await r.json();
+      if (out.rejected?.length) {
+        window.alert(
+          "Not stored:\n" +
+          out.rejected.map((x: any) => `${x.file}: ${x.why}`).join("\n"),
+        );
+      }
+    } catch (e) {
+      window.alert(`Upload failed: ${e}`);
+    }
+    await ctx.reload();
+  });
+
+  wrap.append(input, caption, send);
+  return wrap;
 }
 
 /**
@@ -92,7 +170,9 @@ export const open = makeLeadRoom({
   secondary: { key: "contacted", title: "Contacted", detail },
   extraActions: (lead, ctx) => {
     // Once it has gone out, the useful actions are about the reply.
-    if (lead.stage === "contacted") return replyActions(lead, ctx);
+    if (lead.stage === "contacted") {
+      return [attachFiles(lead, ctx), ...replyActions(lead, ctx)];
+    }
     if (lead.outreach?.sent) return [];
     return [
       secondaryButton("copy the email", async () => {

@@ -12,7 +12,7 @@ import shutil
 import time
 from typing import Any
 
-from .. import skills, state
+from .. import assets, skills, state
 from ..agent_helpers import (
     format_escalations,
     format_feedback,
@@ -58,6 +58,10 @@ def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
         if block:
             sections.append(block)
     sections.append(format_lead(lead, include=("audit",)))
+
+    owner = assets.describe(lead_id)
+    if owner:
+        sections.append(owner)
 
     visual = lead.get("visual")
     if visual:
