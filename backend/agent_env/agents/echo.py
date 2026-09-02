@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import os
 import smtplib
+import time
 import ssl
 from email.message import EmailMessage
 from typing import Any
 
 from .. import config, state
+from ..config import SITES_DIR
 from ..world import World
 
 AGENT_ID = "echo"
@@ -171,3 +173,121 @@ async def mark_contacted(world: World, lead_id: str, note: str = "sent manually"
     state.advance_lead(lead_id, "contacted", agent=AGENT_ID, note=note, outreach=outreach)
     await world.publish({"type": "approvals_updated"})
     return {"ok": True, "lead_id": lead_id}
+
+
+# ---------- What the client said back ----------
+#
+# Nothing reads email yet, so the reply is recorded by the operator. The three
+# outcomes reuse machinery that already exists rather than adding stages:
+# a change request is the same path as an operator rejection, an acceptance
+# raises a handover checklist, a refusal is terminal.
+
+REPLY_OUTCOMES = ("changes", "accepted", "refused")
+
+
+async def record_reply(
+    world: World, lead_id: str, outcome: str, note: str = ""
+) -> dict[str, Any]:
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        return {"ok": False, "error": f"no such lead: {lead_id}"}
+    if outcome not in REPLY_OUTCOMES:
+        return {"ok": False, "error": f"outcome must be one of {REPLY_OUTCOMES}"}
+    note = (note or "").strip()
+
+    reply = {
+        "ts": time.time(),
+        "outcome": outcome,
+        "note": note,
+        "recorded_by": "operator",
+    }
+    replies = list(lead.get("replies") or [])
+    replies.append(reply)
+
+    if outcome == "changes":
+        # Exactly the operator-rejection path: the request goes into
+        # `qa.problems`, because that is where Forge reads its brief. The only
+        # difference is who asked, and `revision` records that — the business
+        # has now SEEN this site, which changes how Forge and Scribe write.
+        if not note:
+            return {"ok": False, "error":
+                    "a change request needs the customer's words — that text is "
+                    "the rebuild brief"}
+        qa = dict(lead.get("qa") or {})
+        problems = list(qa.get("problems") or [])
+        problems.insert(0, {
+            "severity": "critical",
+            "where": "client",
+            "problem": f"The business asked for changes: {note}",
+            "fix": note,
+        })
+        qa["problems"] = problems
+        qa["verdict"] = "fail"
+        revision = dict(lead.get("revision") or {})
+        revision.update({
+            "round": int(revision.get("round", 0)) + 1,
+            "requested_by": "client",
+            "request": note,
+            "ts": time.time(),
+        })
+        state.advance_lead(
+            lead_id, "qa_failed", agent=AGENT_ID,
+            note=f"client asked for changes: {note[:200]}",
+            qa=qa, revision=revision, replies=replies,
+        )
+        await world.say(AGENT_ID, "client wants changes", seconds=8)
+        state.log_event("run_end", from_=AGENT_ID,
+                        summary=f"{lead.get('name')} asked for changes — back to the "
+                                f"Factory (round {revision['round']})",
+                        outcome="completed", details={"lead_id": lead_id})
+        return {"ok": True, "outcome": outcome, "stage": "qa_failed",
+                "round": revision["round"]}
+
+    if outcome == "refused":
+        state.advance_lead(lead_id, "lost", agent=AGENT_ID,
+                           note=f"client declined: {note[:200]}" if note
+                                else "client declined",
+                           replies=replies)
+        await world.say(AGENT_ID, "declined", seconds=8)
+        state.log_event("run_end", from_=AGENT_ID,
+                        summary=f"{lead.get('name')} declined",
+                        outcome="completed", details={"lead_id": lead_id})
+        return {"ok": True, "outcome": outcome, "stage": "lost"}
+
+    # accepted — they want it and are paying. The handover is not automated:
+    # buying a domain is irreversible and spends real money, so it is a
+    # checklist for the operator, and the lead is `won` once it is delivered.
+    domain = ((lead.get("domains") or {}).get("suggested") or [None])[0]
+    state.advance_lead(lead_id, "replied", agent=AGENT_ID,
+                       note=f"accepted: {note[:200]}" if note else "accepted",
+                       replies=replies)
+    state.add_user_approval(
+        kind="handover",
+        room_id=ROOM_ID,
+        requesting_agent=AGENT_ID,
+        summary=f"{lead.get('name')} said yes — hand it over",
+        payload={
+            "lead_id": lead_id,
+            "business": lead.get("name"),
+            "note": note,
+            "domain_to_buy": domain,
+            "preview_url": lead.get("preview_url"),
+            "site_dir": str(SITES_DIR / lead_id),
+            "checklist": [
+                f"Register {domain or 'the domain they chose'} at OVH, in THEIR name,"
+                " for the longest term you can",
+                "Point the domain at Cloudflare and attach it to the Pages project",
+                "Redeploy without the noindex tag and without the preview banner",
+                "Send them the files, the login-free live URL, and the one-page"
+                " handover doc",
+                "Then approve this card to mark the lead won",
+            ],
+        },
+    )
+    await world.publish({"type": "approvals_updated"})
+    await world.say(AGENT_ID, "accepted — handover", seconds=10)
+    state.log_event("user_approval", from_=AGENT_ID, to="operator",
+                    summary=f"{lead.get('name')} accepted — handover checklist raised",
+                    details={"lead_id": lead_id})
+    return {"ok": True, "outcome": outcome, "stage": "replied",
+            "handover_raised": True}

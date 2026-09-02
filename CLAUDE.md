@@ -26,9 +26,24 @@ artifact", because many leads sit at different stages at once.
 
 ```
 sourced → needs_review → qualified → enriched → visualised → built → qa_passed → published → contacted → replied → won
-   ↓            ↓            ↓ ↑                               ↑ ↓
-   └────────────┴─→ disqualified└─(too thin)                qa_failed (back to Forge)          → lost
+   ↓            ↓            ↓ ↑                               ↑ ↓                              ↓          ↓
+   └────────────┴─→ disqualified└─(too thin)                qa_failed ←─ change request ────────┘     handover card
+                                                                                                ↓
+                                                                                              lost (declined, or
+                                                                                               21 days of silence)
 ```
+
+A change request from the business is **not** a special case: their words go into
+`qa.problems` and the lead returns to `qa_failed` — the same path as an operator
+rejection — so it walks the whole build, QA and publish loop again. Only
+`revision.requested_by == "client"` marks it, which tells Forge the business has
+already seen this page (change what they mentioned, leave the rest) and Scribe to
+send a two-line note instead of pitching again.
+
+`replied` means they accepted. Echo raises a `handover` card carrying the
+checklist, and approving that card is what marks the lead `won` — registering a
+domain is irreversible and spends real money, so none of the handover is
+automated. `config.NO_REPLY_DAYS` turns silence into `lost` on a timer.
 
 `needs_review` is where a lead goes when it turns out to already HAVE a
 website. Nothing may call an existing site bad until Lens has rendered it in a

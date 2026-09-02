@@ -60,94 +60,34 @@ flowchart TD
     G2 -->|"echo sends the email"| contacted
     G2 -->|"rejected, no reason given"| lost
 
-    contacted["contacted"] -->|"echo · The Inbox"| replied
-    replied["replied"] --> won["won"]
+    contacted["contacted"] --> R{"what they said"}
+    R -->|"they want changes<br/>their words become the brief"| qa_failed
+    R -->|"they accepted and paid"| replied
+    R -->|"they declined"| lost
+    R -->|"no reply in 21 days"| lost
+
+    replied["replied"] --> G3{"you deliver it"}
+    G3 -->|"domain bought, banner off, files sent"| won["won"]
 
     classDef gate fill:#f6ebd6,stroke:#96631c,stroke-width:2px,color:#3a2708
     classDef dead fill:#f7e4e1,stroke:#97423b,color:#4a1f1b
     classDef done fill:#e8f0e4,stroke:#4a7c46,color:#1f3a1d
-    class G1,G2 gate
+    classDef reply fill:#e6eef5,stroke:#3d5a80,color:#16283d
+    class G1,G2,G3 gate
+    class R reply
     class disqualified,qa_failed,lost dead
     class won done
 ```
 
-The two diamonds are the only places it stops on its own. Everything else moves
-without you: when a lead's stage changes, the room whose workbench declares that
-stage is dispatched.
+The three amber diamonds are where it waits for you. Everything between them
+moves on its own: when a lead's stage changes, the room whose workbench declares
+that stage is dispatched.
 
-### Nothing calls anything
-
-The diagram above says what happens to a lead. It doesn't show *how* a handoff
-happens, and that turns out to be the more surprising half: **no agent ever calls
-another one.** Each column below is a lifeline — the operator, the agents, and two
-things that aren't agents at all: the lead record on disk, and the sweep that
-polls it.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor You
-    participant N as nova
-    participant L as lead record
-    participant S as sweep
-    participant P as probe
-    participant X as lens
-    participant F as forge
-    participant C as courier
-    participant W as scribe
-    participant E as echo
-
-    You->>N: run_scout("bakeries in Villeurbanne")
-    N->>L: add_lead · stage = sourced
-
-    Note over L,S: No agent ever calls another. Every handoff below is<br/>the sweep polling state/leads.json every 3s and dispatching<br/>whichever workbench declares the new stage.
-
-    S->>P: sourced
-    P->>L: stage = qualified
-    S->>P: qualified
-    P->>L: stage = enriched
-    S->>X: enriched
-    X->>L: stage = visualised
-    S->>F: visualised
-    F->>L: stage = built
-    S->>X: built
-    X->>L: stage = qa_passed
-
-    S->>C: qa_passed
-    C->>You: raises publish_site card
-    You-->>C: approve
-    C->>L: deployed to Pages, domains checked<br/>stage = published
-
-    S->>E: published
-    E->>E: preflight
-    Note over W,E: role_for_stage("published") returns echo, so the sweep<br/>dispatches the sender, not the writer. Nothing runs scribe.
-    You->>W: run it yourself
-    W->>L: outreach draft stored
-    S->>E: published
-    E->>You: raises send_outreach card
-    You-->>E: approve
-    E->>L: stage = contacted
-```
-
-Read the columns and you can see the shape of the thing: every arrow either writes
-a stage to the lead record or is the sweep dispatching off one. Steps 20 to 23 are
-the gap that falls out of it — `role_for_stage("published")` returns `echo`, so the
-sweep dispatches the sender and never the writer, and the pitch only gets written
-if you run the Copy Desk yourself.
-
-| Room | Agent | What happens there |
-|---|---|---|
-| Throne | Ultron | Reads the lead board, supervises, reviews tool requests |
-| Watchtower | Nova | Sources businesses with no website (OpenStreetMap) |
-| Assay Room | Probe | Qualifies cheaply, then researches the dossier properly |
-| Gallery | Lens | Looks at things: their site, their photos, our build |
-| Factory | Forge | Writes the actual site to disk |
-| Copy Desk | Scribe | Site copy, and the outreach email + quote |
-| Shipping Bay | Courier | Publishes a preview — **your approval** |
-| Communications | Echo | Sends the outreach — **your approval** |
-| Archives | Sage | Feedback ledger and activity log, fed back into agent context |
-| Armory | Tinker | Writes new MCP tools at runtime when an agent lacks one |
-| Treasury | Coin | Token spend per agent, cost per lead |
+A change request from the business is the *same* path as you rejecting a build —
+their words go into `qa.problems`, the lead returns to `qa_failed`, and it walks
+the whole build, QA and publish loop again. Nothing special-cases it, except that
+a `revision` marker tells Forge the business has already seen this site and
+Scribe to send a short "here's the change" note rather than the pitch again.
 
 ## The parts worth stealing
 

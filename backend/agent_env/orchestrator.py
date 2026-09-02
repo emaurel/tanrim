@@ -61,6 +61,30 @@ class Orchestrator:
             await self.world.tick()
             await asyncio.sleep(0.1)
 
+    async def _expire_silence(self) -> None:
+        """Treat a long silence as a no.
+
+        A lead sits at `contacted` until the business answers, and most never
+        will. Without this the board fills with leads that are neither won nor
+        lost, which buries the ones still worth chasing.
+        """
+        from . import config
+
+        cutoff = time.time() - config.NO_REPLY_DAYS * 86400
+        for lead in state.list_leads(stage="contacted", limit=500):
+            sent = float(lead.get("updated_ts") or 0)
+            if sent and sent < cutoff:
+                state.advance_lead(
+                    lead["id"], "lost", agent="system",
+                    note=f"no reply in {config.NO_REPLY_DAYS} days",
+                )
+                state.log_event(
+                    "run_end", from_="system",
+                    summary=f"{lead.get('name')}: no reply in "
+                            f"{config.NO_REPLY_DAYS} days — marked lost",
+                    outcome="completed", details={"lead_id": lead["id"]},
+                )
+
     async def _advance_leads(self) -> None:
         """Move a lead to the next room the moment its stage changes.
 
@@ -184,6 +208,7 @@ class Orchestrator:
 
                 # Leads that changed stage → dispatch the room that works it.
                 await self._advance_leads()
+                await self._expire_silence()
 
                 # Retire ephemeral workers whose lead has finished its run
                 # through the pipeline. Rooms keep their base agent, so a room

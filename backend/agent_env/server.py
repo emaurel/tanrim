@@ -356,6 +356,17 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
                     note="send rejected with no reason — treated as 'do not contact'",
                 )
 
+    elif rec["kind"] == "handover":
+        # The handover itself is manual — buying a domain is irreversible and
+        # spends real money. Approving this card means "I delivered it".
+        lead_id = rec["payload"].get("lead_id")
+        if lead_id and body.decision == "approved":
+            state.advance_lead(
+                lead_id, "won", agent="operator",
+                note=f"delivered: {(body.reason or '').strip()[:200]}"
+                     if body.reason else "delivered",
+            )
+
     elif rec["kind"] == "escalation_alert":
         # Re-fire Ultron with the operator's reply so he can update guidance
         # and (if Edgar asked a question) respond to Edgar via a new card.

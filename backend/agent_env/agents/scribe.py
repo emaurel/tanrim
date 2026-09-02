@@ -120,7 +120,23 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
         f"in why_this_lands."
         + domain_line
     )
-    if feedback:
+    rev = lead.get("revision") or {}
+    if rev.get("requested_by") == "client":
+        # They have already had the pitch. This is a short note about a change
+        # they asked for, not the offer again.
+        extra = (
+            "THIS IS NOT A FIRST PITCH. This business already received the "
+            "outreach, replied, and asked for a change — which has now been "
+            f"made (round {rev.get('round', 1)}).\n\n"
+            f"What they asked for:\n  \"{rev.get('request', '')}\"\n\n"
+            "Write a SHORT note: what changed, the link, and one line inviting "
+            "them to look. Two or three sentences. Do NOT re-pitch, do not "
+            "restate the price or what is included, and do not repeat that it "
+            "was unsolicited — they know, they are talking to you. Ignore the "
+            "template's {{KEEP}} sections for this one; they are for a first "
+            "approach.\n\n"
+        ) + extra
+    elif feedback:
         # A rewrite exists because the operator rejected the last draft. Their
         # note is the brief; ignoring it produces the same email again.
         extra = (

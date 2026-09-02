@@ -94,6 +94,21 @@ def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
             "COPY FROM THE COPY DESK (Scribe wrote this for the site — use it):\n"
             + json.dumps(copy, ensure_ascii=False, indent=2)[:2500]
         )
+    # A revision for a business that has already SEEN the site is a different
+    # job from a first build: they are reacting to something specific, and
+    # everything they did not mention they presumably accepted.
+    rev = lead.get("revision") or {}
+    if rev.get("requested_by") == "client":
+        sections.append(
+            "THIS IS A REVISION, NOT A FIRST BUILD. The business has seen this "
+            f"site and asked for changes — this is round {rev.get('round', 1)}.\n\n"
+            f"What they asked for, in their words:\n  \"{rev.get('request', '')}\"\n\n"
+            "Change what they asked about and leave the rest alone. They did not "
+            "mention the other sections, which means those are fine; a rebuild "
+            "that quietly redesigns the whole page reads as not having listened, "
+            "and it puts work they had already accepted back up for review."
+        )
+
     qa = lead.get("qa")
     if qa and (qa.get("problems") or []):
         failed = qa.get("verdict") == "fail"

@@ -463,6 +463,8 @@ class CommsHandler(LeadRoomHandler):
             stages=["contacted", "replied", "won", "lost"], limit=40
         )
         base["smtp_configured"] = echo.smtp_configured()
+        base["reply_outcomes"] = list(echo.REPLY_OUTCOMES)
+        base["no_reply_days"] = config.NO_REPLY_DAYS
         base["config_problems"] = config.outreach_config_problems()
         return base
 
@@ -473,6 +475,15 @@ class CommsHandler(LeadRoomHandler):
         return await echo.request_send(self.world, lead_id)
 
     async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if name == "record_reply":
+            lead_id = payload.get("lead_id")
+            if not lead_id:
+                return {"ok": False, "error": "lead_id required"}
+            return await echo.record_reply(
+                self.world, lead_id,
+                payload.get("outcome") or "",
+                payload.get("note") or "",
+            )
         if name == "mark_contacted":
             lead_id = payload.get("lead_id")
             if not lead_id:

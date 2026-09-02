@@ -69,3 +69,9 @@ def outreach_config_problems() -> list[str]:
     if not AGENCY_SENDER_EMAIL:
         missing.append("AGENT_ENV_SENDER_EMAIL is not set")
     return missing
+
+
+# How long to wait for a reply before treating silence as a no. Small businesses
+# answer within a fortnight or not at all, and a board full of leads nobody ever
+# replied to hides the ones that did.
+NO_REPLY_DAYS = int(os.getenv("AGENT_ENV_NO_REPLY_DAYS", "21"))

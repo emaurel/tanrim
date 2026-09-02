@@ -281,6 +281,19 @@
     const dark = matchMedia("(prefers-color-scheme: dark)").matches
       && document.documentElement.dataset.theme !== "light";
     try {
+      window.mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "neutral" });
+      window.mermaid.run();
+    } catch (e) { /* the host may have rendered it already */ }
+  });
+</script>
+
+
+<script>
+  window.addEventListener("load", () => {
+    if (!window.mermaid) return;
+    const dark = matchMedia("(prefers-color-scheme: dark)").matches
+      && document.documentElement.dataset.theme !== "light";
+    try {
       window.mermaid.initialize({
         startOnLoad: true,
         theme: dark ? "dark" : "neutral",
@@ -315,154 +328,62 @@
 
   <figure>
     <div class="figscroll">
-      <svg class="flow" viewBox="0 0 960 830" role="img"
-           aria-label="A lead moves down a spine of ten stages from sourced to won. Probe qualifies, Lens reviews an existing site, Probe researches the dossier, Lens reads photographs, Forge builds, Lens inspects, Courier publishes behind an operator gate, and Echo sends behind a second operator gate. Leads leave the spine to needs_review, disqualified, qa_failed and lost.">
-        <defs>
-          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5"
-                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
-          </marker>
-          <marker id="ar-gate" viewBox="0 0 10 10" refX="9" refY="5"
-                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M0 0 L10 5 L0 10 z" fill="var(--gate)"/>
-          </marker>
-          <marker id="ar-dead" viewBox="0 0 10 10" refX="9" refY="5"
-                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M0 0 L10 5 L0 10 z" fill="var(--dead)"/>
-          </marker>
-        </defs>
+      <pre class="mermaid">
+flowchart TD
+    START(["you name a place"]) -->|"nova · The Map Table"| sourced
 
-        <!-- ================= spine: the ten stages a lead passes through ============ -->
-        <g font-family="JetBrains Mono, monospace" font-size="13">
-          <g fill="var(--surface)" stroke="var(--rule-firm)" stroke-width="1.5">
-            <rect x="330" y="24"  width="190" height="34" rx="5"/>
-            <rect x="330" y="104" width="190" height="34" rx="5"/>
-            <rect x="330" y="184" width="190" height="34" rx="5"/>
-            <rect x="330" y="264" width="190" height="34" rx="5"/>
-            <rect x="330" y="344" width="190" height="34" rx="5"/>
-            <rect x="330" y="424" width="190" height="34" rx="5"/>
-            <rect x="330" y="504" width="190" height="34" rx="5"/>
-            <rect x="330" y="584" width="190" height="34" rx="5"/>
-            <rect x="330" y="664" width="190" height="34" rx="5"/>
-            <rect x="330" y="744" width="190" height="34" rx="5"/>
-          </g>
-          <g fill="currentColor" text-anchor="middle">
-            <text x="425" y="46">sourced</text>
-            <text x="425" y="126">qualified</text>
-            <text x="425" y="206">enriched</text>
-            <text x="425" y="286">visualised</text>
-            <text x="425" y="366">built</text>
-            <text x="425" y="446">qa_passed</text>
-            <text x="425" y="526">published</text>
-            <text x="425" y="606">contacted</text>
-            <text x="425" y="686">replied</text>
-            <text x="425" y="766">won</text>
-          </g>
-        </g>
+    sourced["sourced"] -->|"probe · Weighing Bench"| qualified
+    sourced -->|"a site exists"| needs_review
+    sourced -->|"no email, or not trading"| disqualified
 
-        <!-- ================= spine arrows ========================================== -->
-        <g stroke="currentColor" stroke-width="1.6" fill="none" marker-end="url(#ar)">
-          <line x1="425" y1="58"  x2="425" y2="98"/>
-          <line x1="425" y1="138" x2="425" y2="178"/>
-          <line x1="425" y1="218" x2="425" y2="258"/>
-          <line x1="425" y1="298" x2="425" y2="338"/>
-          <line x1="425" y1="378" x2="425" y2="418"/>
-          <line x1="425" y1="618" x2="425" y2="658"/>
-          <line x1="425" y1="698" x2="425" y2="738" stroke-dasharray="4 4"/>
-        </g>
-        <!-- the two arrows that cross an operator gate -->
-        <g stroke="var(--gate)" stroke-width="2" fill="none" marker-end="url(#ar-gate)">
-          <line x1="425" y1="458" x2="425" y2="498"/>
-          <line x1="425" y1="538" x2="425" y2="578"/>
-        </g>
+    needs_review["needs_review"] -->|"lens · Incumbent Wall<br/>worth rebuilding"| qualified
+    needs_review -->|"their site is fine"| disqualified
 
-        <!-- ================= who performs each move ================================ -->
-        <g font-family="Archivo, sans-serif" font-size="11.5" text-anchor="end" fill="var(--muted)">
-          <text x="312" y="74">probe · Weighing Bench</text>
-          <text x="312" y="154">probe · Dossier Desk</text>
-          <text x="312" y="234">lens · The Light Box</text>
-          <text x="312" y="314">forge · The Build Floor</text>
-          <text x="312" y="394">lens · Inspection Bay</text>
-          <text x="312" y="468" fill="var(--gate)" font-weight="600">courier · The Crating Bay</text>
-          <text x="312" y="484" fill="var(--gate)">you approve → deploys to Pages</text>
-          <text x="312" y="548" fill="var(--gate)" font-weight="600">echo · The Outbox</text>
-          <text x="312" y="564" fill="var(--gate)">you approve → sends the email</text>
-          <text x="312" y="678">echo · The Inbox</text>
-          <text x="312" y="756" fill="var(--faint)">no room works this stage</text>
-        </g>
+    qualified["qualified"] -->|"probe · Dossier Desk"| enriched
+    qualified -->|"dossier too thin<br/>raises a card"| qualified
 
-        <!-- ============ detour: leads that already have a site ==================== -->
-        <g font-family="JetBrains Mono, monospace" font-size="12">
-          <rect x="650" y="62" width="150" height="30" rx="5"
-                fill="var(--surface)" stroke="var(--rule-firm)" stroke-width="1.5"/>
-          <text x="725" y="82" fill="currentColor" text-anchor="middle">needs_review</text>
-        </g>
-        <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#ar)">
-          <path d="M520 41 H600 Q614 41 614 55 V63 H644"/>
-          <path d="M800 77 H836 Q850 77 850 91 V121 H526"/>
-        </g>
-        <g font-family="Archivo, sans-serif" font-size="10.5" fill="var(--muted)">
-          <text x="528" y="35">a site exists</text>
-          <text x="725" y="113" text-anchor="middle">worth rebuilding</text>
-        </g>
+    enriched["enriched"] -->|"lens · The Light Box<br/>reads their photographs"| visualised
+    visualised["visualised"] -->|"forge · The Build Floor"| built
 
-        <!-- ============ terminal: disqualified ===================================== -->
-        <g font-family="JetBrains Mono, monospace" font-size="12">
-          <rect x="650" y="166" width="150" height="30" rx="5"
-                fill="var(--dead-bg)" stroke="var(--dead)" stroke-width="1.5"/>
-          <text x="725" y="186" fill="var(--dead)" text-anchor="middle">disqualified</text>
-        </g>
-        <g stroke="var(--dead)" stroke-width="1.4" fill="none" marker-end="url(#ar-dead)">
-          <path d="M520 52 H546 Q560 52 560 66 V174 H644"/>
-          <path d="M725 92 V160"/>
-        </g>
-        <g font-family="Archivo, sans-serif" font-size="10.5" fill="var(--dead)">
-          <text x="566" y="158">no email, or not trading</text>
-          <text x="733" y="132">their site is fine</text>
-        </g>
+    built["built"] -->|"lens · Inspection Bay"| qa_passed
+    built -->|"lens fails it"| qa_failed
+    qa_failed["qa_failed"] -->|"forge rebuilds from the problems"| built
 
-        <!-- ============ loop: QA sends the build back ============================== -->
-        <g font-family="JetBrains Mono, monospace" font-size="12">
-          <rect x="650" y="386" width="150" height="30" rx="5"
-                fill="var(--dead-bg)" stroke="var(--dead)" stroke-width="1.5"/>
-          <text x="725" y="406" fill="var(--dead)" text-anchor="middle">qa_failed</text>
-        </g>
-        <g stroke="var(--dead)" stroke-width="1.4" fill="none" marker-end="url(#ar-dead)">
-          <path d="M520 371 H566 Q580 371 580 385 V394 H644"/>
-          <path d="M650 401 H624 Q610 401 610 387 V361 H526"/>
-        </g>
-        <g font-family="Archivo, sans-serif" font-size="10.5" fill="var(--dead)">
-          <text x="725" y="379" text-anchor="middle">lens fails it</text>
-          <text x="616" y="348">forge rebuilds from the problems</text>
-        </g>
+    qa_passed["qa_passed"] --> G1{"your approval"}
+    G1 -->|"courier deploys to Cloudflare Pages"| published
+    G1 -->|"rejected, with your reason"| qa_failed
 
-        <!-- ============ terminal: lost ============================================= -->
-        <g font-family="JetBrains Mono, monospace" font-size="12">
-          <rect x="650" y="546" width="150" height="30" rx="5"
-                fill="var(--dead-bg)" stroke="var(--dead)" stroke-width="1.5"/>
-          <text x="725" y="566" fill="var(--dead)" text-anchor="middle">lost</text>
-        </g>
-        <g stroke="var(--dead)" stroke-width="1.4" fill="none" marker-end="url(#ar-dead)">
-          <path d="M520 531 H566 Q580 531 580 545 V554 H644"/>
-        </g>
-        <text x="528" y="525" font-family="Archivo, sans-serif" font-size="10.5"
-              fill="var(--dead)">you reject the send, no reason given</text>
+    published["published"] --> G2{"your approval"}
+    G2 -->|"echo sends the email"| contacted
+    G2 -->|"rejected, no reason given"| lost
 
-        <!-- ================= entry ================================================= -->
-        <g stroke="currentColor" stroke-width="1.6" fill="none" marker-end="url(#ar)">
-          <line x1="140" y1="41" x2="322" y2="41"/>
-        </g>
-        <g font-family="Archivo, sans-serif" font-size="11.5">
-          <text x="20" y="37" fill="var(--r-watch)" font-weight="600">nova · The Map Table</text>
-          <text x="20" y="53" fill="var(--muted)">you tell it where to look</text>
-        </g>
-      </svg>
+    contacted["contacted"] --> R{"what they said"}
+    R -->|"they want changes<br/>their words become the brief"| qa_failed
+    R -->|"they accepted and paid"| replied
+    R -->|"they declined"| lost
+    R -->|"no reply in 21 days"| lost
+
+    replied["replied"] --> G3{"you deliver it"}
+    G3 -->|"domain bought, banner off, files sent"| won["won"]
+
+    classDef gate fill:#f6ebd6,stroke:#96631c,stroke-width:2px,color:#3a2708
+    classDef dead fill:#f7e4e1,stroke:#97423b,color:#4a1f1b
+    classDef done fill:#e8f0e4,stroke:#4a7c46,color:#1f3a1d
+    classDef reply fill:#e6eef5,stroke:#3d5a80,color:#16283d
+    class G1,G2,G3 gate
+    class R reply
+    class disqualified,qa_failed,lost dead
+    class won done
+      </pre>
     </div>
     <figcaption>
-      The two amber arrows are the only places the pipeline stops on its own. Everything
-      else moves without you: when a lead's stage changes,
-      <span class="id">Orchestrator._advance_leads</span> dispatches whichever room
-      declares that stage on one of its benches.
+      The three amber diamonds are where it waits for you; everything between them
+      moves on its own, dispatched by
+      <span class="id">Orchestrator._advance_leads</span> when a lead's stage changes.
+      A change request from the business takes the same path as your own rejection —
+      their words go into <span class="id">qa.problems</span> and the lead returns to
+      <span class="id">qa_failed</span> — so it walks the whole build, QA and publish
+      loop again with no special case.
     </figcaption>
   </figure>
 
@@ -569,72 +490,6 @@
   </table>
 
 
-  <h2>Nothing calls anything</h2>
-  <p class="lede">
-    The state machine above says what happens to a lead. It does not show how a
-    handoff happens, and that is the more surprising half: no agent ever calls
-    another one. Each column is a lifeline — the operator, the agents, and two
-    things that are not agents at all: the lead record on disk, and the sweep
-    that polls it.
-  </p>
-
-  <figure>
-    <div class="figscroll">
-      <pre class="mermaid">
-sequenceDiagram
-    autonumber
-    actor You
-    participant N as nova
-    participant L as lead record
-    participant S as sweep
-    participant P as probe
-    participant X as lens
-    participant F as forge
-    participant C as courier
-    participant W as scribe
-    participant E as echo
-
-    You->>N: run_scout("bakeries in Villeurbanne")
-    N->>L: add_lead · stage = sourced
-
-    Note over L,S: No agent ever calls another. Every handoff below is<br/>the sweep polling state/leads.json every 3s and dispatching<br/>whichever workbench declares the new stage.
-
-    S->>P: sourced
-    P->>L: stage = qualified
-    S->>P: qualified
-    P->>L: stage = enriched
-    S->>X: enriched
-    X->>L: stage = visualised
-    S->>F: visualised
-    F->>L: stage = built
-    S->>X: built
-    X->>L: stage = qa_passed
-
-    S->>C: qa_passed
-    C->>You: raises publish_site card
-    You-->>C: approve
-    C->>L: deployed to Pages, domains checked<br/>stage = published
-
-    S->>E: published
-    E->>E: preflight
-    Note over W,E: role_for_stage("published") returns echo, so the sweep<br/>dispatches the sender, not the writer. Nothing runs scribe.
-    You->>W: run it yourself
-    W->>L: outreach draft stored
-    S->>E: published
-    E->>You: raises send_outreach card
-    You-->>E: approve
-    E->>L: stage = contacted
-      </pre>
-    </div>
-    <figcaption>
-      Every arrow either writes a stage to the lead record or is the sweep
-      dispatching off one. Steps 20–23 are the gap that falls out of that:
-      <span class="id">role_for_stage("published")</span> returns
-      <span class="id">echo</span>, so the sweep dispatches the sender and never
-      the writer.
-    </figcaption>
-  </figure>
-
   <h2>What the code does that the plan doesn't say</h2>
   <p class="lede">
     Four things that fall out of reading the transitions rather than the intent.
@@ -669,13 +524,28 @@ sequenceDiagram
     </li>
     <li>
       <div>
-        <h3>Nothing happens after a sale</h3>
+        <h3>A change request is not a special case, and that is deliberate</h3>
         <p>
-          <span class="id">won</span> has no room declaring it, so
-          <span class="id">role_for_stage</span> returns nothing and the lead stops.
-          The handover — buying the domain, attaching it, stripping the preview banner,
-          producing the files — exists as a plan and not as code.
-          <span class="id">replied</span> routes to The Inbox, but nothing writes a reply.
+          When a business asks for something different, their words go into
+          <span class="id">qa.problems</span> and the lead returns to
+          <span class="id">qa_failed</span> — the identical path to you rejecting a
+          build. It then walks the whole build, QA and publish loop again. The only
+          thing that marks it is <span class="id">revision.requested_by == "client"</span>,
+          which tells Forge the business has already seen this page (so change what
+          they mentioned and leave the rest) and Scribe to send a two-line note
+          rather than pitching again.
+        </p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Silence is a loss, on a timer</h3>
+        <p>
+          A lead sitting at <span class="id">contacted</span> for
+          <span class="id">AGENT_ENV_NO_REPLY_DAYS</span> (21 by default) is moved to
+          <span class="id">lost</span> by the sweep. Most businesses never answer, and
+          a board full of leads that are neither won nor lost buries the ones still
+          worth chasing.
         </p>
       </div>
     </li>
@@ -713,6 +583,19 @@ sequenceDiagram
       <span class="id">AGENT_ENV_SENDER_EMAIL</span> is unset, or while the draft contains
       billing language. Rejecting <em>with</em> a reason returns it to the Copy Desk to
       rewrite; rejecting silently marks it <span class="id">lost</span>.
+    </p>
+  </div>
+
+  <div class="note">
+    <span class="tag">Gate 3 · Communications</span>
+    <p>
+      Raised by Echo when you record that the business accepted. It carries the
+      handover checklist — register the domain at OVH in their name, point it at
+      Cloudflare, redeploy without the <span class="id">noindex</span> and without the
+      preview banner, send the files and the one-page doc. None of that is automated:
+      registering a domain is irreversible and spends real money, so the system never
+      holds a card. Approving the card is what marks the lead
+      <span class="id">won</span>.
     </p>
   </div>
 
