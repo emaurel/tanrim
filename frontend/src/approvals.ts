@@ -250,6 +250,26 @@ function renderGate(a: Approval, host: HTMLElement): boolean {
     return true;
   }
 
+  // The email never arrived. Not a decision about the business — a missing
+  // address, and the work is all still there waiting for one.
+  if (a.kind === "bad_address") {
+    host.appendChild(kv("Business", String(p.business ?? "?")));
+    host.appendChild(kv("Bounced", String(p.bounced_address ?? "?")));
+    if (p.phone) host.appendChild(kv("Phone on file", String(p.phone)));
+    const oc: any = p.other_contacts ?? {};
+    for (const [k, v] of Object.entries(oc)) {
+      if (v && typeof v === "string" && k !== "email") host.appendChild(kv(k, v));
+    }
+    if (p.preview_url) host.appendChild(kv("Site is live at", String(p.preview_url)));
+    if (p.what_this_means) host.appendChild(note(String(p.what_this_means)));
+    if (p.detail) host.appendChild(labelled("what the mail server said",
+                                            note(String(p.detail))));
+    host.appendChild(note(
+      "Put a working address in the box below and approve — that is what gets " +
+      "used. Reject to mark the lead lost."));
+    return true;
+  }
+
   // They said yes. This card is the only place money and an irreversible
   // domain purchase are decided, so it shows the invoice rather than a JSON
   // dump, and puts payment at the top of the checklist.

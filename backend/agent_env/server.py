@@ -135,6 +135,27 @@ _LEAD_BULK = ("profile", "visual", "qa", "site", "site_history", "audit",
               "outreach", "domains", "owner_assets", "history", "replies")
 
 
+@app.post("/leads/{lead_id}/bounce")
+async def report_bounce(lead_id: str, body: dict[str, Any] | None = None):
+    """Report a delivery failure by hand.
+
+    The poller only sees UNREAD mail, and the operator reads this mailbox too —
+    a bounce they have already opened is invisible to it. Rather than leave the
+    lead looking contacted, this files it the same way the automatic path does.
+    """
+    body = body or {}
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        raise HTTPException(404, "no such lead")
+    address = str(body.get("address") or lead.get("email") or "").strip()
+    if not address:
+        raise HTTPException(400, "no address to record as bounced")
+    return await echo_mod.record_bounce(
+        world, lead_id, address,
+        permanent=bool(body.get("permanent", True)),
+        detail=str(body.get("detail") or "reported by the operator"))
+
+
 @app.post("/leads/{lead_id}/stage")
 async def set_lead_stage(lead_id: str, body: dict[str, Any]):
     """Move a lead by hand.
@@ -691,6 +712,32 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
             # the orchestrator's stage sweep picks it up and sends it to the
             # Factory. Dispatching here as well put two Forge workers on the
             # same lead, two seconds apart, writing the same directory.
+
+    elif rec["kind"] == "bad_address":
+        # The address was wrong, so nothing was delivered. Approving means the
+        # operator has put a working one on the lead; rejecting means giving up
+        # on a business we cannot reach.
+        lead_id = rec["payload"].get("lead_id")
+        lead = state.get_lead(lead_id) or {} if lead_id else {}
+        reason = (body.reason or "").strip()
+        if lead_id and body.decision == "approved":
+            # A reason that contains an address is the address.
+            found = state.EMAIL_RE.search(reason or "")
+            if found:
+                state.update_lead(lead_id, email=found.group(0))
+            if not (state.get_lead(lead_id) or {}).get("email"):
+                raise HTTPException(
+                    400, "this lead still has no address — put one in the reply "
+                         "box (or on the lead) before approving, otherwise the "
+                         "email has nowhere to go")
+            state.advance_lead(
+                lead_id, "drafted", agent="operator",
+                note=f"new address supplied: {(state.get_lead(lead_id) or {}).get('email')}")
+        elif lead_id:
+            state.advance_lead(
+                lead_id, "lost", agent="operator",
+                note=f"no reachable address. {reason}"[:300] if reason
+                     else "no reachable address")
 
     elif rec["kind"] == "thin_content":
         # The lead is parked at `qualified`, which is also the stage that

@@ -140,6 +140,91 @@ def _attachments(msg: Message) -> list[tuple[str, bytes]]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Bounces.
+#
+# A bounce is not silence, and treating it as silence is the worst reading
+# available: the lead sits at `contacted` until the no-reply timer files it as
+# `lost`, as though a business considered our offer and ignored it. They never
+# received it. The address came off a map and nobody had ever verified it.
+#
+# Delivery reports arrive from mailer-daemon@ and so match no lead by sender —
+# the failed address is inside the report, not on the envelope.
+# ---------------------------------------------------------------------------
+
+_BOUNCE_SENDERS = ("mailer-daemon", "postmaster", "mail delivery subsystem")
+
+
+def _bounce_report(msg: Message) -> dict[str, Any] | None:
+    """The failed recipient and whether the failure is permanent, or None.
+
+    Reads the machine-readable `message/delivery-status` part first, because
+    it is unambiguous and language-independent — the human part of a Gmail
+    bounce is localised, and matching French prose is how you miss the next
+    provider's wording.
+    """
+    sender = parseaddr(msg.get("From", ""))[1].lower()
+    subject = str(make_header(decode_header(msg.get("Subject", "")))).lower()
+    looks_like = (
+        any(w in sender for w in _BOUNCE_SENDERS)
+        or "report-type=delivery-status" in (msg.get("Content-Type", "") or "").lower()
+        or subject.startswith(("undelivered", "undeliverable", "delivery status",
+                               "returned mail", "mail delivery failed",
+                               "échec de la remise", "adresse introuvable"))
+    )
+    if not looks_like:
+        return None
+
+    recipient, status, action = None, None, None
+    for part in msg.walk():
+        if part.get_content_type() != "message/delivery-status":
+            continue
+        # Each per-recipient block is RFC822-style header text.
+        payload = part.get_payload()
+        blocks = payload if isinstance(payload, list) else []
+        for block in blocks:
+            for key, value in (block.items() if hasattr(block, "items") else []):
+                k, v = key.lower(), str(value).strip()
+                if k == "final-recipient" or (k == "original-recipient" and not recipient):
+                    recipient = v.split(";", 1)[-1].strip().strip("<>").lower()
+                elif k == "status":
+                    status = v
+                elif k == "action":
+                    action = v.lower()
+
+    if recipient is None:
+        # No structured part (some providers send prose only). Fall back to any
+        # address in the text that we actually hold on a lead.
+        text = _body_text(msg) or ""
+        for addr in set(state.EMAIL_RE.findall(text)):
+            if _lead_by_address(addr):
+                recipient = addr.lower()
+                break
+    if recipient is None:
+        return None
+
+    permanent = bool(
+        (status or "").startswith("5")
+        or action == "failed"
+        or (not status and "introuvable" in (_body_text(msg) or "").lower())
+    )
+    return {"recipient": recipient, "status": status, "action": action,
+            "permanent": permanent,
+            "detail": (_body_text(msg) or "")[:600]}
+
+
+def _lead_by_address(address: str) -> dict[str, Any] | None:
+    """Any lead holding this address, at any stage — a bounce is about a lead
+    we already wrote to, which may no longer be awaiting a reply."""
+    a = (address or "").strip().lower()
+    if not a:
+        return None
+    for lead in state.list_leads(limit=500):
+        if (lead.get("email") or "").strip().lower() == a:
+            return lead
+    return None
+
+
 def _lead_for(sender: str) -> dict[str, Any] | None:
     """A lead we already hold this address for, and only one awaiting a reply."""
     address = (sender or "").strip().lower()
@@ -184,6 +269,24 @@ def poll(limit: int = 20) -> list[dict[str, Any]]:
                 continue
             msg = email.message_from_bytes(raw[0][1])
             sender = parseaddr(msg.get("From", ""))[1]
+
+            # A delivery failure for something we sent. Handle it before the
+            # sender match, which cannot see it: the envelope says
+            # mailer-daemon, and the address that failed is inside the report.
+            bounce = _bounce_report(msg)
+            if bounce:
+                blead = _lead_by_address(bounce["recipient"])
+                if blead is not None:
+                    handled.append({
+                        "lead_id": blead["id"], "business": blead.get("name"),
+                        "kind": "bounce", "from": sender, **bounce,
+                    })
+                    server.store(msg_id, "+FLAGS", "\\Seen")
+                    continue
+                # A bounce for an address we do not hold is the operator's own
+                # mail. Leave it alone.
+                continue
+
             lead = _lead_for(sender)
             if lead is None:
                 # Not ours. Leave it unread.

@@ -91,6 +91,14 @@ class Orchestrator:
 
         for record in arrived:
             try:
+                # A delivery failure is a fact, not a message to interpret —
+                # it goes nowhere near the model.
+                if record.get("kind") == "bounce":
+                    await echo.record_bounce(
+                        self.world, record["lead_id"], record["recipient"],
+                        bool(record.get("permanent")),
+                        str(record.get("detail") or ""))
+                    continue
                 await echo.triage_inbound(self.world, record["lead_id"])
             except Exception as e:  # noqa: BLE001
                 # The message and its attachments are already stored; only the

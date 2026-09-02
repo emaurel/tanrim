@@ -386,6 +386,88 @@ TRIAGE_SCHEMA = '''{"outcome":"changes|accepted|refused|unclear","confidence":0.
 TRIAGE_FLOOR = 0.6
 
 
+async def record_bounce(
+    world: World,
+    lead_id: str,
+    address: str,
+    permanent: bool,
+    detail: str = "",
+) -> dict[str, Any]:
+    """A delivery failure for an address we wrote to.
+
+    No model call: a bounce is a fact, and what to do about it does not depend
+    on judgement. The important thing is that the lead stops looking contacted,
+    because it is not — and the no-reply timer would otherwise file it as `lost`
+    as though a business had read our offer and declined it.
+
+    A permanent failure means the address is wrong, so it is removed rather
+    than left on the record to be retried: `preflight` blocks a send with no
+    recipient, which is exactly the behaviour we want until a good address
+    exists. The bad one is preserved, because knowing which address failed is
+    what stops us sourcing it again.
+    """
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        return {"ok": False, "error": f"no such lead: {lead_id}"}
+
+    bounces = list(lead.get("bounces") or [])
+    bounces.append({"ts": time.time(), "address": address,
+                    "permanent": permanent, "detail": detail[:600]})
+
+    if not permanent:
+        # 4.x.x — the sending server keeps trying. Note it and wait.
+        state.update_lead(lead_id, bounces=bounces)
+        state.log_event(
+            "run_end", from_=AGENT_ID, to="operator",
+            summary=f"temporary delivery failure for {lead.get('name')} "
+                    f"<{address}> — the mail server will retry",
+            outcome="deferred", details={"lead_id": lead_id})
+        return {"ok": True, "permanent": False}
+
+    outreach = dict(lead.get("outreach") or {})
+    outreach["sent"] = False
+    outreach["bounced"] = address
+
+    # Back to `drafted`: the site is built and published and the email is
+    # written — the only thing missing is somewhere to send it.
+    state.advance_lead(
+        lead_id, "drafted", agent=AGENT_ID,
+        note=f"{address} does not exist — the outreach never arrived",
+        email=None, email_bounced=address, bounces=bounces, outreach=outreach)
+
+    state.add_user_approval(
+        kind="bad_address",
+        room_id=ROOM_ID,
+        requesting_agent=AGENT_ID,
+        summary=f"{lead.get('name')}: {address} does not exist — the email "
+                "never arrived",
+        payload={
+            "lead_id": lead_id,
+            "business": lead.get("name"),
+            "bounced_address": address,
+            "detail": detail[:600],
+            "phone": lead.get("phone"),
+            "other_contacts": ((lead.get("profile") or {}).get("contact") or {}),
+            "preview_url": lead.get("preview_url"),
+            "what_this_means":
+                "The address came from a public source and had never been "
+                "verified — nothing was delivered, so this business has not "
+                "heard from us. The site is still built and published and the "
+                "email is still written; it only needs somewhere to go. Reject "
+                "to give up on this lead, or approve once you have put a "
+                "working address on it (there may be a phone number above).",
+        },
+    )
+    await world.say(AGENT_ID, "bounced — bad address", seconds=10)
+    state.log_event(
+        "run_end", from_=AGENT_ID, to="operator",
+        summary=f"HARD BOUNCE for {lead.get('name')} <{address}> — never "
+                "delivered; lead returned to 'drafted' with no address",
+        outcome="failed", details={"lead_id": lead_id, "address": address})
+    await world.publish({"type": "approvals_updated"})
+    return {"ok": True, "permanent": True, "stage": "drafted"}
+
+
 async def triage_inbound(world: World, lead_id: str) -> dict[str, Any]:
     """Read the newest unhandled inbound message and act on it."""
     from ..agent_helpers import run_agent
