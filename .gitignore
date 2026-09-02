@@ -22,3 +22,9 @@ prompts/
 #   git clone --depth 1 https://github.com/nextlevelbuilder/ui-ux-pro-max-skill
 #   cp -r ui-ux-pro-max-skill/.claude/skills/ui-ux-pro-max .claude/skills/
 .claude/skills/ui-ux-pro-max/
+
+# Generated site output that lands at the repo root. Forge is scoped to a
+# per-lead build directory, but an early run wrote here — and a spec site names
+# a real business, so it must never be committed by accident.
+/index.html
+/styles.css
