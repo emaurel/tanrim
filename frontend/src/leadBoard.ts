@@ -212,7 +212,7 @@ function buildList(): HTMLElement {
     const pick = () => {
       if (selected !== l.id) {
         openEntries.clear();   // the open set belongs to the lead you were reading
-        filesCache = null;
+        dossierCache = null;
       }
       selected = l.id;
       rerender();
@@ -240,20 +240,9 @@ let currentLeadId: string | null = null;
  * entries above the one you were reading.
  */
 const openEntries = new Set<string>();
-let filesCache: { leadId: string; data: any } | null = null;
 
 function entryKey(e: Entry): string {
   return `${e.ts}|${e.kind}|${e.agent ?? ""}|${(e.title || "").slice(0, 40)}`;
-}
-
-/** Does this entry have build output worth showing? */
-function touchesTheBuild(e: Entry): boolean {
-  const t = `${e.title} ${e.detail ?? ""}`.toLowerCase();
-  return (
-    e.to_stage === "built" || e.to_stage === "qa_passed" || e.to_stage === "qa_failed" ||
-    e.to_stage === "published" ||
-    /built|build|render|inspect|logo|screenshot|publish/.test(t)
-  );
 }
 
 function row(k: string, v: string): HTMLElement {
@@ -428,29 +417,13 @@ function entryEl(e: Entry, olderTs: number | null): HTMLElement[] {
   li.tabIndex = 0;
   let filled = false;
 
-  const fill = async () => {
+  const fill = () => {
     if (filled) return;
     filled = true;
+    // Just what this event was. The artifacts live in the Dossier at the top
+    // of the lead: they belong to the business, not to whichever stage change
+    // happened to be nearest them.
     more.replaceChildren(...expandedDetail(e));
-    if (!touchesTheBuild(e)) return;
-    const holder = document.createElement("div");
-    holder.className = "lb-files";
-    more.appendChild(holder);
-    // Served from the cache when we already have it, so restoring an open
-    // entry after a refresh does not re-fetch on every tick.
-    if (filesCache && filesCache.leadId === currentLeadId) {
-      holder.replaceChildren(...fileGroups(filesCache.data));
-      return;
-    }
-    holder.textContent = "loading files…";
-    try {
-      const leadId = currentLeadId;
-      const d = await fetch(`/leads/${leadId}/files`).then((r) => r.json());
-      filesCache = { leadId: leadId!, data: d };
-      holder.replaceChildren(...fileGroups(d));
-    } catch (err) {
-      holder.textContent = `could not list the files: ${String(err)}`;
-    }
   };
 
   const open = (yes: boolean) => {
@@ -677,6 +650,183 @@ function invoiceControl(lead: any, invoice: any, blockedBy: string[]): HTMLEleme
   return box;
 }
 
+let dossierOpen = false;
+let dossierCache: { leadId: string; data: any } | null = null;
+
+/** Sections the dossier opens with. Everything else waits to be asked for. */
+const OPEN_BY_DEFAULT = new Set(["Files", "Identity"]);
+const openSections = new Set<string>(OPEN_BY_DEFAULT);
+
+/**
+ * One collapsible section.
+ *
+ * Collapsed by default because the whole dossier runs to about seven thousand
+ * pixels — the research alone is a hundred and twenty rows. Open, it is a wall
+ * you scroll past; closed, it is a menu of what we hold.
+ */
+function sub(title: string, note: string, body: HTMLElement,
+             count?: number): HTMLElement {
+  const wrap = document.createElement("section");
+  wrap.className = "lb-dsec";
+
+  const h = document.createElement("button");
+  h.type = "button";
+  h.className = "lb-dsec-h";
+  const holder = document.createElement("div");
+  holder.className = "lb-dsec-body";
+
+  const paint = () => {
+    const isOpen = openSections.has(title);
+    holder.hidden = !isOpen;
+    h.setAttribute("aria-expanded", String(isOpen));
+    h.textContent = `${isOpen ? "▾" : "▸"} ${title}`
+      + (count ? `  ·  ${count}` : "");
+  };
+  h.addEventListener("click", () => {
+    if (openSections.has(title)) openSections.delete(title);
+    else openSections.add(title);
+    paint();
+  });
+
+  if (note) {
+    const n = document.createElement("div");
+    n.className = "lb-file-note";
+    n.textContent = note;
+    holder.appendChild(n);
+  }
+  holder.appendChild(body);
+  paint();
+  wrap.append(h, holder);
+  return wrap;
+}
+
+/** Nested data as readable rows rather than a JSON dump. */
+function facts(obj: any, depth = 0): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "lb-dfacts";
+  if (obj === null || obj === undefined) return box;
+  if (typeof obj !== "object") {
+    box.textContent = String(obj);
+    return box;
+  }
+  const entries = Array.isArray(obj)
+    ? obj.map((v, i) => [String(i + 1), v] as const)
+    : Object.entries(obj);
+  for (const [k, v] of entries) {
+    if (v === null || v === undefined || v === "" ||
+        (Array.isArray(v) && !v.length)) continue;
+    const r = document.createElement("div");
+    r.className = "lb-x-row";
+    const kk = document.createElement("span");
+    kk.textContent = Array.isArray(obj) ? `${k}.` : k.replace(/_/g, " ");
+    r.appendChild(kk);
+    if (typeof v === "object" && depth < 2) {
+      const vv = document.createElement("span");
+      vv.appendChild(facts(v, depth + 1));
+      r.appendChild(vv);
+    } else {
+      const vv = document.createElement("span");
+      vv.textContent = typeof v === "object" ? JSON.stringify(v) : String(v);
+      r.appendChild(vv);
+    }
+    box.appendChild(r);
+  }
+  return box;
+}
+
+/**
+ * Everything we hold about the business, gathered.
+ *
+ * Separate from the timeline on purpose: the timeline answers "what happened",
+ * this answers "what do we have". Lazy, because it is the whole dossier and
+ * most visits do not want it.
+ */
+function dossierPanel(lead: any): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "lb-dossier";
+
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "lb-dossier-h";
+  const setLabel = () => {
+    head.textContent = `${dossierOpen ? "▾" : "▸"} DOSSIER`;
+    head.setAttribute("aria-expanded", String(dossierOpen));
+  };
+  setLabel();
+
+  const body = document.createElement("div");
+  body.className = "lb-dossier-body";
+  body.hidden = !dossierOpen;
+
+  let loaded = false;
+  const load = async () => {
+    if (loaded) return;
+    loaded = true;
+    if (dossierCache && dossierCache.leadId === lead.id) {
+      body.replaceChildren(...dossierSections(dossierCache.data));
+      return;
+    }
+    body.textContent = "loading…";
+    try {
+      const d = await fetch(`/leads/${lead.id}/dossier`).then((r) => r.json());
+      dossierCache = { leadId: lead.id, data: d };
+      body.replaceChildren(...dossierSections(d));
+    } catch (err) {
+      body.textContent = `could not load the dossier: ${String(err)}`;
+    }
+  };
+
+  head.addEventListener("click", () => {
+    dossierOpen = !dossierOpen;
+    body.hidden = !dossierOpen;
+    setLabel();
+    if (dossierOpen) void load();
+  });
+  if (dossierOpen) void load();
+
+  wrap.append(head, body);
+  return wrap;
+}
+
+function dossierSections(d: any): HTMLElement[] {
+  const out: HTMLElement[] = [];
+
+  if (d.files?.length) {
+    const holder = document.createElement("div");
+    holder.className = "lb-files";
+    holder.replaceChildren(...fileGroups({ groups: d.files,
+                                           staging_url: d.staging_url }));
+    const nFiles = (d.files as any[]).reduce((n, g) => n + g.files.length, 0);
+    out.push(sub("Files", "everything on disk for this lead", holder, nFiles));
+  }
+  const add = (title: string, note: string, value: any) => {
+    if (!value || (typeof value === "object" && !Object.keys(value).length)) return;
+    const n = typeof value === "object" ? Object.keys(value).length : 0;
+    out.push(sub(title, note, facts(value), n));
+  };
+  add("Identity", "what the lead record holds", d.identity);
+  add("The dossier", "Probe's research — every fact here is sourced", d.profile);
+  add("What Lens saw", "read off their own photographs", d.visual);
+  add("Their existing site", "if they already had one", d.existing_site ?? d.audit);
+  add("QA", "Lens's verdict on our build", d.qa);
+  add("The build", "what Forge reported making", d.site);
+  add("Domain and price", "availability and what it really costs", d.domains);
+  add("Quote", "what the email offered", d.quote);
+  add("Outreach", "the email, and whether it went", { ...d.outreach,
+                                                      sent_log: d.sent_log });
+  add("Replies", "what they said back", d.replies);
+  add("Bounces", "delivery failures", d.bounces);
+  add("Contact hunt", "addresses Probe found, and where", d.contact_hunt);
+  add("Invoice", "", d.invoice);
+  if (!out.length) {
+    const p = document.createElement("p");
+    p.className = "lb-x-text";
+    p.textContent = "Nothing gathered for this lead yet.";
+    out.push(p);
+  }
+  return out;
+}
+
 async function buildTimeline(): Promise<HTMLElement> {
   const wrap = document.createElement("div");
   wrap.className = "lb-timeline-wrap";
@@ -709,8 +859,8 @@ async function buildTimeline(): Promise<HTMLElement> {
   head.appendChild(h);
   head.appendChild(stageChip(lead.stage));
 
-  const facts = document.createElement("div");
-  facts.className = "lb-facts";
+  const factsEl = document.createElement("div");
+  factsEl.className = "lb-facts";
   const fact = (k: string, v?: string) => {
     if (!v) return;
     const row = document.createElement("div");
@@ -721,7 +871,7 @@ async function buildTimeline(): Promise<HTMLElement> {
     vv.className = "lb-fact-v";
     vv.textContent = v;
     row.append(kk, vv);
-    facts.appendChild(row);
+    factsEl.appendChild(row);
   };
   fact("id", lead.id);
   fact("address", lead.address);
@@ -735,8 +885,9 @@ async function buildTimeline(): Promise<HTMLElement> {
   fact("record", `${c.stage_changes ?? 0} stage changes · ${c.runs ?? 0} agent runs · `
     + `${c.escalations ?? 0} escalations · ${c.gates ?? 0} gates`);
 
-  wrap.append(head, facts, stageControl(lead),
-              invoiceControl(lead, data.invoice, data.invoice_blocked_by ?? []));
+  wrap.append(head, factsEl, stageControl(lead),
+              invoiceControl(lead, data.invoice, data.invoice_blocked_by ?? []),
+              dossierPanel(lead));
 
   if (data.events_complete === false) {
     const warn = document.createElement("p");

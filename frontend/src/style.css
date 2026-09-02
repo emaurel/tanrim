@@ -1727,6 +1727,9 @@ html, body {
 .lb-entry--clickable:hover { background: #17171f; }
 .lb-entry--clickable:focus-visible { outline: 1px solid #5a4a7a; outline-offset: 1px; }
 .lb-entry--open { background: #17171f; }
+/* `display: flex` beats the browser's own `[hidden] { display: none }`, so the
+   panel opened and could never be closed again. Say it explicitly. */
+.lb-expand[hidden] { display: none; }
 .lb-expand {
   margin-top: 7px;
   padding-top: 7px;
@@ -1807,3 +1810,51 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- lead board: the Dossier ---- */
+.lb-dossier { margin: 0 0 14px; border: 1px solid #1f1f29; background: #101018; }
+.lb-dossier-h {
+  width: 100%;
+  text-align: left;
+  background: #14141c;
+  border: 0;
+  border-bottom: 1px solid #1f1f29;
+  color: #c9bce8;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: .16em;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.lb-dossier-h:hover { background: #1a1a24; color: #e6dcff; }
+.lb-dossier-body { padding: 10px; display: flex; flex-direction: column; gap: 12px; }
+.lb-dossier-body[hidden] { display: none; }
+.lb-dsec-h {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: #8a8a98;
+  margin-bottom: 2px;
+}
+.lb-dfacts { display: flex; flex-direction: column; gap: 2px; }
+.lb-dfacts .lb-x-row span:first-child {
+  min-width: 118px;
+  flex: 0 0 118px;
+  color: #5f5f6c;
+}
+.lb-dfacts .lb-x-row span:last-child { color: #b8b8c4; word-break: break-word; }
+/* Nested levels step in, so a structure reads as a structure. */
+.lb-dfacts .lb-dfacts { margin-left: 0; border-left: 1px solid #23232f; padding-left: 8px; }
+.lb-dsec-h {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #1f1f29;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.lb-dsec-h:hover { color: #ddd; }
+.lb-dsec-body[hidden] { display: none; }
+.lb-dsec-body { padding-top: 5px; }

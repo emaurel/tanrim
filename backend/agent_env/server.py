@@ -136,6 +136,54 @@ _LEAD_BULK = ("profile", "visual", "qa", "site", "site_history", "audit",
               "outreach", "domains", "owner_assets", "history", "replies")
 
 
+@app.get("/leads/{lead_id}/dossier")
+async def lead_dossier(lead_id: str):
+    """Everything we know about a business, in one place.
+
+    The timeline answers "what happened"; this answers "what do we have". They
+    are different questions, and mixing them put a photo grid inside a stage
+    change, where it had nothing to do with the event it hung off.
+    """
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        raise HTTPException(404, "no such lead")
+    files = await lead_files(lead_id)
+    dom = lead.get("domains") or {}
+    return {
+        "lead_id": lead_id,
+        "identity": {
+            "name": lead.get("name"), "address": lead.get("address"),
+            "phone": lead.get("phone"), "email": lead.get("email"),
+            "email_bounced": lead.get("email_bounced"),
+            "website": lead.get("website"), "category": lead.get("category"),
+            "source": lead.get("source"), "stage": lead.get("stage"),
+            "preview_url": lead.get("preview_url"),
+        },
+        "profile": lead.get("profile"),
+        "visual": lead.get("visual"),
+        "qa": lead.get("qa"),
+        "site": lead.get("site"),
+        "audit": lead.get("audit"),
+        "existing_site": lead.get("existing_site"),
+        "domains": {
+            "suggested": dom.get("suggested"),
+            "results": dom.get("results"),
+            "priced": dom.get("priced"),
+            "parking_evidence": dom.get("parking_evidence"),
+        },
+        "quote": (lead.get("outreach") or {}).get("quote"),
+        "outreach": {k: v for k, v in ((lead.get("outreach") or {}).items())
+                     if k in ("subject", "language", "sent", "sent_ts")},
+        "sent_log": lead.get("sent_log"),
+        "replies": lead.get("replies"),
+        "bounces": lead.get("bounces"),
+        "contact_hunt": lead.get("contact_hunt"),
+        "invoice": invoices_mod.for_lead(lead_id),
+        "files": files.get("groups") or [],
+        "staging_url": files.get("staging_url"),
+    }
+
+
 @app.get("/leads/{lead_id}/files")
 async def lead_files(lead_id: str):
     """Everything on disk for a lead, grouped by what it IS.
