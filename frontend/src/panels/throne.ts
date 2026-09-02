@@ -1,27 +1,17 @@
+/** Throne — Ultron reads the lead board and routes one lead to one room. */
 import { postRoomAction } from "../api";
 import { openPanel, type PanelContext } from "./base";
+import { stageCounts, type Lead } from "./leadRoom";
 
-interface ToolRequest {
-  id: string;
-  ts: number;
-  requesting_agent: string;
-  requesting_room: string;
-  name: string;
-  description: string;
-  why: string;
-  status: string;
-  ultron_decision: any;
-}
-
-interface DispatchResult {
-  ts: number;
-  ok: boolean;
-  agent?: string;
-  prompt?: string;
-  rationale?: string;
-  task?: string;
-  error?: string;
-}
+const ROOM_FOR_STAGE: Record<string, { room: string; next: string }> = {
+  sourced:   { room: "Assay Room",     next: "qualify it" },
+  qualified: { room: "Factory",        next: "build the site" },
+  built:     { room: "Gallery",        next: "inspect it" },
+  qa_failed: { room: "Factory",        next: "rebuild with Lens's notes" },
+  qa_passed: { room: "Shipping Bay",   next: "request publish" },
+  published: { room: "Copy Desk",      next: "write the pitch" },
+  contacted: { room: "Communications", next: "wait for a reply" },
+};
 
 let pollTimer: number | null = null;
 
@@ -30,165 +20,146 @@ async function render({ roomId, data, body, reload }: PanelContext) {
     clearTimeout(pollTimer);
     pollTimer = null;
   }
-
   const dispatching: boolean = data.dispatching;
-  const lastDispatch: DispatchResult | null = data.last_dispatch;
-  const available: string[] = data.available_agents ?? [];
-  const pending: ToolRequest[] = data.pending ?? [];
-  const awaiting: ToolRequest[] = data.awaiting_user ?? [];
-  const recent: ToolRequest[] = data.recent ?? [];
+  const board: Lead[] = data.board ?? [];
 
-  body.appendChild(dispatchForm(roomId, dispatching, available, reload));
-  if (dispatching) {
-    const status = document.createElement("div");
-    status.className = "rp-running";
-    status.innerHTML = `
-      <div class="rp-spinner"></div>
-      <div class="rp-running-text">Ultron is planning… watch his speech bubble.</div>
-    `;
-    body.appendChild(status);
-    pollTimer = window.setTimeout(() => reload(), 1500);
-  }
-  if (lastDispatch) body.appendChild(dispatchHistoryCard(lastDispatch));
-
-  body.appendChild(section("Pending Ultron review", pending, statusBlurb));
-  body.appendChild(section("Awaiting your call", awaiting, escalationBlurb));
-  body.appendChild(section("Recent decisions", recent, decisionBlurb));
-}
-
-function dispatchForm(
-  roomId: string,
-  dispatching: boolean,
-  available: string[],
-  reload: () => Promise<void>,
-): HTMLElement {
-  const heading = document.createElement("h4");
-  heading.className = "rp-h";
-  heading.textContent = "Give Ultron a task";
+  body.appendChild(stageCounts(data.counts ?? {}));
 
   const form = document.createElement("form");
   form.className = "rp-form";
   form.innerHTML = `
     <textarea name="task" rows="3"
-      placeholder="e.g. 'find me trending Etsy candle scents this season' — Ultron will route it to the right agent"></textarea>
+      placeholder="tell Ultron what you want — e.g. 'find prospects in Villeurbanne', 'move the best lead forward', 'get the garage lead ready to pitch'"></textarea>
     <div class="rp-row">
-      <span class="rp-form-hint">Sonnet · ~$0.05 per dispatch · routes to ${available.join(", ") || "(no agents available)"}</span>
+      <span class="rp-form-hint">${data.model} · he reads the board below and picks one move</span>
       <button type="submit"></button>
     </div>
   `;
   const submit = form.querySelector("button") as HTMLButtonElement;
   submit.textContent = dispatching ? "planning…" : "dispatch";
-  submit.disabled = dispatching || available.length === 0;
-
+  submit.disabled = dispatching;
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const fd = new FormData(form);
-    const task = (fd.get("task") as string).trim();
+    const task = ((new FormData(form).get("task") as string) || "").trim();
     if (!task) return;
     submit.disabled = true;
     const res = await postRoomAction(roomId, "dispatch", { task });
     if (!res.ok) {
       submit.disabled = false;
-      flashError(form, res.error ?? "failed to start");
+      const bar = document.createElement("div");
+      bar.className = "rp-error-flash";
+      bar.textContent = res.error ?? "failed";
+      form.appendChild(bar);
+      setTimeout(() => bar.remove(), 4000);
       return;
     }
     (form.elements.namedItem("task") as HTMLTextAreaElement).value = "";
     await reload();
   });
+  body.appendChild(form);
 
-  const wrap = document.createElement("div");
-  wrap.appendChild(heading);
-  wrap.appendChild(form);
-  return wrap;
-}
+  if (dispatching) {
+    const status = document.createElement("div");
+    status.className = "rp-running";
+    status.innerHTML = `<div class="rp-spinner"></div>
+      <div class="rp-running-text">Ultron is reading the board…</div>`;
+    body.appendChild(status);
+    pollTimer = window.setTimeout(() => reload(), 2500);
+  }
 
-function dispatchHistoryCard(d: DispatchResult): HTMLElement {
-  const card = document.createElement("article");
-  card.className = `rp-treq rp-treq--${d.ok ? "approved" : "denied"}`;
-  card.innerHTML = `
-    <header>
-      <span class="rp-treq-name"></span>
-      <span class="rp-treq-from"></span>
-      <span class="rp-treq-status"></span>
-    </header>
-    <div class="rp-treq-desc"></div>
-    <div class="rp-treq-blurb"></div>
-  `;
-  const ts = new Date(d.ts * 1000).toLocaleTimeString();
-  card.querySelector(".rp-treq-name")!.textContent = "Last dispatch";
-  card.querySelector(".rp-treq-from")!.textContent = ts;
-  card.querySelector(".rp-treq-status")!.textContent = d.ok ? `→ ${d.agent}` : "refused";
-  card.querySelector(".rp-treq-desc")!.textContent = d.task ?? "";
-  card.querySelector(".rp-treq-blurb")!.textContent =
-    d.error ? `error: ${d.error}` : (d.rationale ?? "");
-  const heading = document.createElement("h4");
-  heading.className = "rp-h";
-  heading.textContent = "Dispatch history";
-  const wrap = document.createElement("div");
-  wrap.appendChild(heading);
-  wrap.appendChild(card);
-  return wrap;
-}
+  // Ultron's view of the floor: an agent may be mid-run because he dispatched
+  // it, not because you clicked anything.
+  const busy: Record<string, any> = data.in_flight ?? {};
+  const busyIds = Object.keys(busy);
+  if (busyIds.length) {
+    const wrap = document.createElement("div");
+    wrap.className = "rp-busy-list";
+    const h = document.createElement("div");
+    h.className = "rp-brief-label";
+    h.textContent = "Working right now";
+    wrap.appendChild(h);
+    for (const id of busyIds) {
+      const row = document.createElement("div");
+      row.className = "rp-busy-row";
+      row.innerHTML = `<span class="rp-spinner rp-spinner--sm"></span>
+        <span class="rp-busy-name"></span><span class="rp-busy-what"></span>`;
+      row.querySelector(".rp-busy-name")!.textContent = id;
+      row.querySelector(".rp-busy-what")!.textContent = String(busy[id]?.summary ?? "");
+      wrap.appendChild(row);
+    }
+    body.appendChild(wrap);
+  }
 
-function section(title: string, items: ToolRequest[], blurb: (r: ToolRequest) => string): HTMLElement {
-  const wrap = document.createElement("div");
+  // Rooms that currently have more than their base agent on the floor.
+  const crew: Record<string, any> = data.crew ?? {};
+  const staffed = Object.entries(crew).filter(([, c]: [string, any]) => c.workers.length > 1);
+  if (staffed.length) {
+    const wrap = document.createElement("div");
+    wrap.className = "rp-busy-list";
+    const h = document.createElement("div");
+    h.className = "rp-brief-label";
+    h.textContent = "Extra agents hired";
+    wrap.appendChild(h);
+    for (const [role, c] of staffed) {
+      const row = document.createElement("div");
+      row.className = "rp-lead-row";
+      row.innerHTML = `<span class="rp-lead-stage"></span><span class="rp-lead-name"></span><span class="rp-lead-note"></span>`;
+      row.querySelector(".rp-lead-stage")!.textContent = `${c.workers.length}/${c.limit}`;
+      row.querySelector(".rp-lead-name")!.textContent = role;
+      row.querySelector(".rp-lead-note")!.textContent =
+        (c.workers as any[]).map((w) => w.id + (w.busy ? "*" : "")).join(", ");
+      wrap.appendChild(row);
+    }
+    body.appendChild(wrap);
+  }
+
+  const last = data.last_dispatch;
+  if (last) {
+    const el = document.createElement("div");
+    el.className = last.ok ? "rp-hint" : "rp-error";
+    el.textContent = last.ok
+      ? `→ ${last.agent}${last.lead_id ? ` on ${last.lead_id.slice(0, 8)}` : ""}: ${last.rationale ?? ""}`
+      : `refused: ${last.rationale ?? last.error ?? ""}`;
+    body.appendChild(el);
+  }
+
   const h = document.createElement("h4");
   h.className = "rp-h";
-  h.textContent = `${title} · ${items.length}`;
-  wrap.appendChild(h);
-  if (!items.length) {
-    const e = document.createElement("div");
-    e.className = "rp-empty";
-    e.textContent = "(none)";
-    wrap.appendChild(e);
-    return wrap;
+  h.textContent = `The board · ${board.length}`;
+  body.appendChild(h);
+
+  if (!board.length) {
+    const empty = document.createElement("div");
+    empty.className = "rp-empty";
+    empty.textContent =
+      "the pipeline is empty. Ask Ultron to find prospects somewhere, or send Nova out from the Watchtower.";
+    body.appendChild(empty);
+    return;
   }
-  for (const r of items) {
-    const card = document.createElement("article");
-    card.className = `rp-treq rp-treq--${r.status}`;
-    card.innerHTML = `
-      <header>
-        <span class="rp-treq-name"></span>
-        <span class="rp-treq-from"></span>
-        <span class="rp-treq-status"></span>
-      </header>
-      <div class="rp-treq-desc"></div>
-      <div class="rp-treq-blurb"></div>
-    `;
-    card.querySelector(".rp-treq-name")!.textContent = r.name;
-    card.querySelector(".rp-treq-from")!.textContent = `${r.requesting_agent} · ${r.requesting_room}`;
-    card.querySelector(".rp-treq-status")!.textContent = r.status;
-    card.querySelector(".rp-treq-desc")!.textContent = r.description;
-    card.querySelector(".rp-treq-blurb")!.textContent = blurb(r);
-    wrap.appendChild(card);
+
+  const list = document.createElement("div");
+  list.className = "rp-lead-thin";
+  for (const lead of board) {
+    const row = document.createElement("div");
+    row.className = "rp-lead-row rp-lead-row--board";
+    const hint = ROOM_FOR_STAGE[lead.stage];
+    row.innerHTML = `<span class="rp-lead-stage" data-stage="${lead.stage}"></span>
+      <span class="rp-lead-name"></span>
+      <span class="rp-lead-next"></span>
+      <button class="rp-del" type="button" aria-label="delete">×</button>`;
+    row.querySelector(".rp-lead-stage")!.textContent = lead.stage.replace("_", " ");
+    row.querySelector(".rp-lead-name")!.textContent =
+      lead.name + (lead.city ? ` · ${lead.city}` : "");
+    row.querySelector(".rp-lead-next")!.textContent =
+      hint ? `${hint.room} — ${hint.next}` : "done";
+    row.querySelector(".rp-del")!.addEventListener("click", async () => {
+      if (!confirm(`Delete ${lead.name} from the board?`)) return;
+      await postRoomAction(roomId, "delete_lead", { lead_id: lead.id });
+      await reload();
+    });
+    list.appendChild(row);
   }
-  return wrap;
-}
-
-function statusBlurb(r: ToolRequest): string {
-  return `▸ ${r.why}`;
-}
-
-function escalationBlurb(_r: ToolRequest): string {
-  return `Ultron flagged this — see the approval card above.`;
-}
-
-function decisionBlurb(r: ToolRequest): string {
-  const d = r.ultron_decision;
-  if (!d) return "";
-  if (d.error) return `error: ${d.error}`;
-  return `${d.verdict ?? r.status}: ${d.reason ?? ""}`;
-}
-
-function flashError(form: HTMLElement, msg: string) {
-  let bar = form.querySelector(".rp-error-flash") as HTMLElement | null;
-  if (!bar) {
-    bar = document.createElement("div");
-    bar.className = "rp-error-flash";
-    form.appendChild(bar);
-  }
-  bar.textContent = msg;
-  setTimeout(() => bar?.remove(), 4000);
+  body.appendChild(list);
 }
 
 export async function open(roomId: string) {

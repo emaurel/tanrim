@@ -1,12 +1,18 @@
 id: publish
 name: Shipping Bay
-purpose: Courier pushes approved drafts to Etsy. The publish step is gated by Edgar's approval.
-position: { x: 36, y: 4 }
+purpose: Courier deploys the approved site to a preview URL. Publishing is gated by your approval.
+position: { x: 12, y: 12 }
 size: { w: 12, h: 8 }
 color: "#6a4a3a"
 agents:
   - id: courier
     name: Courier
-    role: Calls POD + Etsy APIs after batch approval is granted.
-    color: "#d9a17a"
+    role: Deployer. Publishes previews; never ships without an approval.
+    color: "#e0a458"
 tools: []
+max_workers: 3
+workbenches:
+  - id: crate
+    name: The Crating Bay
+    job: Stamping previews noindex, adding the unofficial banner, raising the gate
+    stages: [qa_passed]

@@ -1,0 +1,10 @@
+{
+  "_comment": "Provenance for vendored skills. Kept outside the skill directories so those stay byte-identical to upstream. The room panel links each skill chip to its `url`.",
+  "ui-ux-pro-max": {
+    "url": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+    "version": "2.13.0",
+    "license": "MIT",
+    "vendored": "2026-09-01",
+    "subtree": ".claude/skills/ui-ux-pro-max"
+  }
+}

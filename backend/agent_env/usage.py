@@ -25,6 +25,11 @@ PRICING: dict[str, dict[str, float]] = {
     "claude-opus-4-7":   {"in": 15.00, "out": 75.00},
 }
 
+# Cached input is billed differently from fresh input: writing to the cache
+# costs more than a normal input token, reading from it costs far less.
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.10
+
 
 def _ensure() -> None:
     USAGE_FILE.parent.mkdir(exist_ok=True)
@@ -32,11 +37,22 @@ def _ensure() -> None:
         USAGE_FILE.write_text("[]")
 
 
-def compute_cost(model: str, in_tok: int, out_tok: int) -> float:
+def compute_cost(
+    model: str,
+    in_tok: int,
+    out_tok: int,
+    cache_write: int = 0,
+    cache_read: int = 0,
+) -> float:
     p = PRICING.get(model)
     if not p:
         return 0.0
-    return (in_tok / 1_000_000) * p["in"] + (out_tok / 1_000_000) * p["out"]
+    return (
+        (in_tok / 1_000_000) * p["in"]
+        + (cache_write / 1_000_000) * p["in"] * CACHE_WRITE_MULTIPLIER
+        + (cache_read / 1_000_000) * p["in"] * CACHE_READ_MULTIPLIER
+        + (out_tok / 1_000_000) * p["out"]
+    )
 
 
 def record(
@@ -45,8 +61,18 @@ def record(
     input_tokens: int,
     output_tokens: int,
     *,
+    cache_write: int = 0,
+    cache_read: int = 0,
     ts: float | None = None,
 ) -> dict[str, Any]:
+    """Record one call's spend.
+
+    `input_tokens` alone is not the input cost. The SDK reports fresh input,
+    cache *creation* and cache *read* separately, and for these agents almost
+    all of the input is cached — a run whose prompt is 7,000 tokens reports
+    `input_tokens: 10` with the rest under `cache_creation_input_tokens`.
+    Counting only the first field under-reported input spend by ~1000x.
+    """
     _ensure()
     rec = {
         "id": str(uuid.uuid4()),
@@ -54,8 +80,14 @@ def record(
         "agent_id": agent_id,
         "model": model,
         "input_tokens": int(input_tokens),
+        "cache_write_tokens": int(cache_write),
+        "cache_read_tokens": int(cache_read),
+        # What the Treasury shows as "input" — everything that entered the model.
+        "billed_input_tokens": int(input_tokens) + int(cache_write) + int(cache_read),
         "output_tokens": int(output_tokens),
-        "cost_usd": compute_cost(model, input_tokens, output_tokens),
+        "cost_usd": compute_cost(
+            model, input_tokens, output_tokens, cache_write, cache_read
+        ),
     }
     with _lock:
         records: list[dict[str, Any]] = json.loads(USAGE_FILE.read_text())

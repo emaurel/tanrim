@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
-from . import state
+from . import state, workers
 from .agents import tinker, ultron
 from .runners import AGENT_RUNNERS
 from .world import World
@@ -21,6 +22,21 @@ class Orchestrator:
     def __init__(self, world: World) -> None:
         self.world = world
         self._tasks: list[asyncio.Task] = []
+        # Last stage we saw each lead at. Seeded from the board on boot so
+        # nothing fires retroactively for work that is already settled; after
+        # that, a CHANGE is what triggers the next room.
+        self._lead_stages: dict[str, str] = {
+            lead["id"]: lead.get("stage", "") for lead in state.list_leads(limit=10_000)
+        }
+        # (lead_id, stage) pairs already dispatched, so recovery of a stalled
+        # lead happens once rather than every tick.
+        self._dispatched: set[tuple[str, str]] = set()
+        # Mark all current reports as already processed so we don't replay
+        # history on every restart. Only NEW reports trigger a Sonnet reaction.
+        self._processed_reports: set[str] = {
+            e["id"] for e in state.list_events(limit=500)
+            if e["kind"] == "agent_report"
+        }
 
     def start(self) -> None:
         if self._tasks:
@@ -44,6 +60,79 @@ class Orchestrator:
         while True:
             await self.world.tick()
             await asyncio.sleep(0.1)
+
+    async def _advance_leads(self) -> None:
+        """Move a lead to the next room the moment its stage changes.
+
+        This is the pipeline's transport, and it is deliberately deterministic.
+        It used to run through Ultron reacting to `report_to_ultron`, which
+        meant an LLM had to read an event log and infer what happened next —
+        and it got it wrong: Forge finished a rebuild, Ultron saw the PREVIOUS
+        cycle's QA pass and courier dispatch still in its memory, decided the
+        lead was already handled, and the build sat at `built` with nobody
+        looking at it.
+
+        Stage → room is already declared by the workbenches, so no inference is
+        needed. Ultron still reacts to reports, but as commentary and
+        supervision rather than as the wire the work travels on.
+        """
+        from .rooms import role_for_stage
+
+        from .agent_helpers import in_flight_for_role
+
+        recovered = 0
+        for lead in state.list_leads(limit=500):
+            lead_id = lead["id"]
+            stage = lead.get("stage") or ""
+            changed = self._lead_stages.get(lead_id) != stage
+            self._lead_stages[lead_id] = stage
+
+            role = role_for_stage(stage)
+            if role is None:
+                continue
+
+            if not changed:
+                # Recovery for a lead that is sitting at a workable stage with
+                # nobody on it — a restart, or a run that died. Bounded to one
+                # per tick and once per (lead, stage), so a boot with a full
+                # board doesn't fire every agent at once.
+                if (lead_id, stage) in self._dispatched or recovered >= 1:
+                    continue
+                if any(w.get("lead_id") == lead_id for w in in_flight_for_role(role)):
+                    continue
+                # Old leads that were parked deliberately stay parked.
+                if time.time() - float(lead.get("updated_ts") or 0) > 6 * 3600:
+                    continue
+                recovered += 1
+
+            if role is None:
+                continue  # terminal, or nobody works this stage
+            runner = AGENT_RUNNERS.get(role)
+            if runner is None:
+                continue
+            self._dispatched.add((lead_id, stage))
+            # Gates are the operator's. Courier and Echo raise an approval card
+            # rather than acting, so dispatching them here is safe — but a lead
+            # already carrying a pending card for this room needs nothing.
+            pending = [
+                a for a in state.list_user_approvals(status="pending", limit=200)
+                if a["payload"].get("lead_id") == lead_id
+            ]
+            if pending:
+                continue
+            state.log_event(
+                "dispatch_end", from_="system", to=role,
+                summary=f"{lead.get('name')} "
+                        + (f"reached '{stage}'" if changed
+                           else f"was stalled at '{stage}'")
+                        + f" → {role}",
+                outcome="dispatched",
+                details={"lead_id": lead_id, "stage": stage},
+            )
+            asyncio.create_task(runner(self.world, {
+                "lead_id": lead_id,
+                "prompt": f"This lead just reached '{stage}'.",
+            }))
 
     async def _gatekeeper_loop(self) -> None:
         """Routes pending tool requests through Ultron → Tinker."""
@@ -80,13 +169,32 @@ class Orchestrator:
                 for req in denied:
                     if req.get("rerun_count", 0) > 0:
                         continue
-                    if not req.get("original_task"):
+                    task = req.get("original_task")
+                    if not task:
                         continue
                     runner = AGENT_RUNNERS.get(req["requesting_agent"])
                     if runner is None:
                         continue
+                    if not state.may_rerun_task(req["requesting_agent"], task):
+                        state.update_tool_request(req["id"], rerun_count=1)
+                        continue
                     state.update_tool_request(req["id"], rerun_count=1)
-                    asyncio.create_task(runner(self.world, req["original_task"]))
+                    state.bump_task_rerun(req["requesting_agent"], task)
+                    asyncio.create_task(runner(self.world, task))
+
+                # Leads that changed stage → dispatch the room that works it.
+                await self._advance_leads()
+
+                # Retire ephemeral workers whose lead has finished its run
+                # through the pipeline. Rooms keep their base agent, so a room
+                # never looks abandoned; only the extra hires go.
+                retired = await workers.sweep(self.world)
+                if retired:
+                    state.log_event(
+                        "run_end", from_="system",
+                        summary=f"retired idle workers: {', '.join(retired)}",
+                        outcome="completed",
+                    )
 
                 # Pending agent escalations → Ultron responds.
                 pending_esc = state.list_escalations(status="pending", limit=10)
@@ -94,19 +202,90 @@ class Orchestrator:
                     await ultron.respond_to_escalation(self.world, esc["id"])
                     await self.world.publish({"type": "approvals_updated"})
 
-                # Resolved escalations not yet rerun → re-fire the agent so
-                # they see Ultron's guidance via format_escalations() context.
+                # Resolved escalations → re-fire the agent so the rerun sees
+                # Ultron's guidance via format_escalations().
+                #
+                # Two brakes, because this path is a natural infinite loop: a
+                # rerun with nothing new to do escalates again, which is
+                # answered again, which reruns again. Marking the record as
+                # dispatched is NOT enough — the new escalation is a new record
+                # with a fresh allowance.
                 resolved_esc = state.list_escalations(status="resolved", limit=10)
                 for esc in resolved_esc:
                     if esc.get("rerun_dispatched"):
                         continue
-                    if not esc.get("original_task"):
+                    task = esc.get("original_task")
+                    if not task:
                         continue
                     runner = AGENT_RUNNERS.get(esc["agent"])
                     if runner is None:
                         continue
+
+                    # Brake 1: Ultron's own judgement. If he told them to stand
+                    # down, re-firing them contradicts the instruction he just
+                    # gave and starts the loop.
+                    response = esc.get("ultron_response") or {}
+                    if response.get("rerun_agent") is False:
+                        state.update_escalation(esc["id"], rerun_dispatched=True)
+                        state.log_event(
+                            "ask_response", from_="ultron", to=esc["agent"],
+                            summary=f"no rerun: guidance was to stand down — "
+                                    f"{(response.get('guidance') or '')[:120]}",
+                            outcome="no_rerun",
+                            details={"escalation_id": esc["id"]},
+                        )
+                        continue
+
+                    # Brake 2: a hard ceiling per task, whatever anyone thinks.
+                    if not state.may_rerun_task(esc["agent"], task):
+                        state.update_escalation(esc["id"], rerun_dispatched=True)
+                        state.log_event(
+                            "run_end", from_="system", to=esc["agent"],
+                            summary=f"rerun ceiling reached for {esc['agent']} on this "
+                                    f"task ({state.MAX_TASK_RERUNS}); not re-firing. "
+                                    f"The task needs the operator, not another attempt.",
+                            outcome="halted",
+                            details={"escalation_id": esc["id"]},
+                        )
+                        # Surface it once rather than silently giving up.
+                        already = [
+                            a for a in state.list_user_approvals(status="pending", limit=200)
+                            if a["kind"] == "rerun_halted"
+                            and a["payload"].get("agent") == esc["agent"]
+                        ]
+                        if not already:
+                            state.add_user_approval(
+                                kind="rerun_halted",
+                                room_id=esc.get("room") or "throne",
+                                requesting_agent=esc["agent"],
+                                summary=f"{esc['agent']} is stuck in a loop on the same "
+                                        f"task and has been stopped",
+                                payload={
+                                    "agent": esc["agent"],
+                                    "task": task,
+                                    "attempts": state.task_rerun_count(esc["agent"], task),
+                                    "last_question": esc.get("message", "")[:400],
+                                    "last_guidance": (response.get("guidance") or "")[:400],
+                                },
+                            )
+                            await self.world.publish({"type": "approvals_updated"})
+                        continue
+
                     state.update_escalation(esc["id"], rerun_dispatched=True)
-                    asyncio.create_task(runner(self.world, esc["original_task"]))
+                    state.bump_task_rerun(esc["agent"], task)
+                    asyncio.create_task(runner(self.world, task))
+
+                # New agent_report events → Ultron reacts (Sonnet call) and
+                # decides whether to chain-dispatch the next agent.
+                events = state.list_events(limit=30)
+                new_reports = [
+                    e for e in events
+                    if e["kind"] == "agent_report" and e["id"] not in self._processed_reports
+                ]
+                # Process oldest first so chains form in the right order.
+                for report in reversed(new_reports):
+                    self._processed_reports.add(report["id"])
+                    await ultron.react_to_report(self.world, report)
             except Exception as e:  # never let this loop die silently
                 print(f"[gatekeeper] {type(e).__name__}: {e}")
             await asyncio.sleep(3.0)

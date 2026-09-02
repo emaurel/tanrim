@@ -1,12 +1,17 @@
 id: armory
 name: Armory
-purpose: Tinker forges new tools and skills (MCP servers, agent definitions) and equips the other agents.
-position: { x: 24, y: 12 }
+purpose: Tinker forges new tools on demand when an agent hits a capability it doesn't have.
+position: { x: 0, y: 20 }
 size: { w: 12, h: 8 }
 color: "#3a2b3a"
 agents:
   - id: tinker
     name: Tinker
-    role: Builds and registers new MCP tools and AgentDefinitions on demand.
-    color: "#b0a0d0"
+    role: Toolsmith. Writes and registers new MCP tools at runtime.
+    color: "#b8b8ff"
 tools: []
+workbenches:
+  - id: forge_bench
+    name: The Tool Forge
+    job: Writing and registering new MCP tools at runtime
+    stages: []

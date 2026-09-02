@@ -8,6 +8,9 @@ export default defineConfig({
       "/rooms":     "http://127.0.0.1:8765",
       "/approvals": "http://127.0.0.1:8765",
       "/health":    "http://127.0.0.1:8765",
+      "/leads":     "http://127.0.0.1:8765",
+      // Published preview sites are served by the backend off disk.
+      "/preview":   "http://127.0.0.1:8765",
     },
   },
 });

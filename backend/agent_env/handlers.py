@@ -15,9 +15,11 @@ import time
 from typing import Any, TYPE_CHECKING
 
 from . import secrets as secrets_store
-from . import state, usage
-from .agents import forge, nova, scribe, ultron
+from . import config, state, usage
+from .agent_helpers import AgentBusy, all_in_flight, in_flight_for_role
+from .agents import courier, echo, forge, lens, nova, probe, scribe, ultron
 from .runners import AGENT_RUNNERS
+from .workers import RoomAtCapacity, crew_status, max_workers
 from .tools import registry as tool_registry
 
 if TYPE_CHECKING:
@@ -118,108 +120,16 @@ class TreasuryHandler(RoomHandler):
 
     @staticmethod
     def _totals(records: list[dict[str, Any]]) -> dict[str, Any]:
+        # `billed_input_tokens` includes cached input; older records predate the
+        # field and only ever counted fresh input, so fall back to that.
         return {
             "calls": len(records),
-            "input_tokens": sum(r["input_tokens"] for r in records),
+            "input_tokens": sum(
+                r.get("billed_input_tokens", r["input_tokens"]) for r in records
+            ),
             "output_tokens": sum(r["output_tokens"] for r in records),
             "cost_usd": sum(r["cost_usd"] for r in records),
         }
-
-
-class ResearchHandler(RoomHandler):
-    """Nova's room. Triggers a real Claude (Haiku) call to produce an Etsy trend brief."""
-
-    def __init__(self, world: "World") -> None:
-        super().__init__(world)
-        self._task: asyncio.Task | None = None
-        self._last_error: str | None = None
-
-    async def state(self) -> dict[str, Any]:
-        running = self._task is not None and not self._task.done()
-        return {
-            "running": running,
-            "model": nova.MODEL,
-            "briefs": state.list_briefs(limit=20),
-            "last_error": self._last_error,
-        }
-
-    async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if name == "run_research":
-            if self._task is not None and not self._task.done():
-                return {"ok": False, "error": "Nova is already running"}
-            prompt = (payload.get("prompt") or "").strip()
-            if not prompt:
-                return {"ok": False, "error": "prompt required"}
-            self._last_error = None
-            self._task = asyncio.create_task(self._run(prompt))
-            return {"ok": True, "started": True}
-        if name == "cancel":
-            if self._task is not None and not self._task.done():
-                self._task.cancel()
-                return {"ok": True}
-            return {"ok": False, "error": "nothing running"}
-        if name == "delete_brief":
-            brief_id = payload.get("id")
-            if not brief_id:
-                return {"ok": False, "error": "id required"}
-            return {"ok": state.delete_brief(brief_id)}
-        if name == "reset_memory":
-            cleared = state.clear_agent_memory("nova", state.BRIEFS_FILE)
-            return {"ok": True, "cleared": cleared}
-        return await super().action(name, payload)
-
-    async def _run(self, prompt: str) -> None:
-        try:
-            await nova.run_research(self.world, prompt)
-        except asyncio.CancelledError:
-            self._last_error = "cancelled"
-            raise
-        except Exception as e:
-            self._last_error = f"{type(e).__name__}: {e}"
-
-
-class ThroneHandler(RoomHandler):
-    """Ultron's room. The operator dispatches tasks here; Ultron also reviews
-    tool-request escalations from agents.
-    """
-
-    def __init__(self, world: "World") -> None:
-        super().__init__(world)
-        self._dispatch_task: asyncio.Task | None = None
-        self._last_dispatch: dict[str, Any] | None = None
-
-    async def state(self) -> dict[str, Any]:
-        return {
-            "dispatching": self._dispatch_task is not None and not self._dispatch_task.done(),
-            "last_dispatch": self._last_dispatch,
-            "model": ultron.MODEL,
-            "available_agents": sorted(AGENT_RUNNERS.keys()),
-            "pending": state.list_tool_requests(status="pending", limit=20),
-            "awaiting_user": state.list_tool_requests(status="awaiting_user", limit=20),
-            "recent": [
-                r for r in state.list_tool_requests(limit=30)
-                if r["status"] in ("approved", "denied", "ready", "failed")
-            ][:10],
-        }
-
-    async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if name == "dispatch":
-            if self._dispatch_task is not None and not self._dispatch_task.done():
-                return {"ok": False, "error": "Ultron is already planning"}
-            task = (payload.get("task") or "").strip()
-            if not task:
-                return {"ok": False, "error": "task required"}
-            self._dispatch_task = asyncio.create_task(self._do_dispatch(task))
-            return {"ok": True, "started": True}
-        return await super().action(name, payload)
-
-    async def _do_dispatch(self, task: str) -> None:
-        result = await ultron.dispatch(self.world, task)
-        self._last_dispatch = {"ts": time.time(), **result}
-        if result.get("ok") and result.get("agent"):
-            runner = AGENT_RUNNERS.get(result["agent"])
-            if runner is not None:
-                asyncio.create_task(runner(self.world, {"prompt": result["prompt"]}))
 
 
 class ArmoryHandler(RoomHandler):
@@ -264,99 +174,389 @@ class ArmoryHandler(RoomHandler):
         return await super().action(name, payload)
 
 
-class FactoryHandler(RoomHandler):
-    """Forge's room. Generates design specs from the most recent brief."""
+class LeadRoomHandler(RoomHandler):
+    """Base for every room that moves a lead one stage forward.
+
+    They all differ in only four ways — which agent, which runner, which stages
+    they accept work from, and what the run is called — so the queue, the
+    one-at-a-time guard, and the error surface live here once.
+    """
+
+    agent_id: str = ""
+    action_name: str = "run"
+    accepts_stages: tuple[str, ...] = ()
+    model: str = ""
 
     def __init__(self, world: "World") -> None:
         super().__init__(world)
         self._task: asyncio.Task | None = None
+        self._tasks: set[asyncio.Task] = set()
         self._last_error: str | None = None
+        self._last_result: dict[str, Any] | None = None
+
+    async def run(self, payload: dict[str, Any]) -> Any:
+        raise NotImplementedError
 
     async def state(self) -> dict[str, Any]:
+        # A room may be staffed by several workers, so this reports the whole
+        # room rather than one agent. `running` means "something is in flight
+        # here" — which is what the map shows, so the panel must agree — and
+        # `at_capacity` is what actually disables the buttons.
+        live = in_flight_for_role(self.agent_id)
+        started_here = self._task is not None and not self._task.done()
+        limit = max_workers(self.agent_id)
         return {
-            "running": self._task is not None and not self._task.done(),
-            "model": forge.MODEL,
-            "designs": state.list_designs(limit=20),
+            "running": bool(live),
+            "started_here": started_here,
+            "in_flight": live,
+            "worker_limit": limit,
+            "workers_busy": len(live),
+            "at_capacity": len(live) >= limit,
+            "agent_id": self.agent_id,
+            "model": self.model,
+            "action_name": self.action_name,
+            "accepts_stages": list(self.accepts_stages),
+            # The work waiting for THIS room, so the panel is a to-do list.
+            "queue": state.list_leads(stages=list(self.accepts_stages), limit=40),
+            "recent": [
+                lead for lead in state.list_leads(limit=40)
+                if any(h.get("agent") == self.agent_id for h in (lead.get("history") or []))
+            ][:12],
             "last_error": self._last_error,
+            "last_result": self._last_result,
         }
 
     async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if name == "run_design":
-            if self._task is not None and not self._task.done():
-                return {"ok": False, "error": "Forge is already running"}
-            prompt = (payload.get("prompt") or "").strip()
-            if not prompt:
-                return {"ok": False, "error": "prompt required"}
+        if name == self.action_name:
+            # Capacity is enforced inside the worker pool, which is the only
+            # thing that knows how many workers are free. Starting is allowed
+            # here; being refused is a normal outcome, not an error state.
+            busy = len(in_flight_for_role(self.agent_id))
+            limit = max_workers(self.agent_id)
+            if busy >= limit:
+                return {
+                    "ok": False,
+                    "error": f"all {limit} {self.agent_id} worker(s) are busy",
+                }
             self._last_error = None
-            self._task = asyncio.create_task(self._run(prompt))
+            task = asyncio.create_task(self._guarded(payload))
+            self._task = task
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
             return {"ok": True, "started": True}
-        if name == "delete_design":
-            design_id = payload.get("id")
-            if not design_id:
-                return {"ok": False, "error": "id required"}
-            return {"ok": state.delete_design(design_id)}
-        if name == "reset_memory":
-            cleared = state.clear_agent_memory("forge", state.DESIGNS_FILE)
-            return {"ok": True, "cleared": cleared}
+        if name == "cancel":
+            live = [t for t in self._tasks if not t.done()]
+            for t in live:
+                t.cancel()
+            return {"ok": bool(live)} if live else {"ok": False, "error": "nothing running"}
         return await super().action(name, payload)
 
-    async def _run(self, prompt: str) -> None:
+    async def _guarded(self, payload: dict[str, Any]) -> None:
         try:
-            await forge.run_design(self.world, prompt)
-        except Exception as e:
+            self._last_result = await self.run(payload)
+        except asyncio.CancelledError:
+            self._last_error = "cancelled"
+            raise
+        except AgentBusy:
+            # Not a failure — Ultron's chained dispatch got there first. Say so
+            # plainly instead of showing the operator a red exception.
+            self._last_result = {
+                "ok": False,
+                "error": f"{self.agent_id} was already working on something; "
+                         f"this request was skipped. Try again in a moment.",
+            }
+        except RoomAtCapacity as e:
+            self._last_result = {"ok": False, "error": str(e)}
+        except Exception as e:  # noqa: BLE001
             self._last_error = f"{type(e).__name__}: {e}"
 
 
-class ListingHandler(RoomHandler):
-    """Scribe's room. Writes Etsy listing copy from the latest brief + design."""
+class ResearchHandler(LeadRoomHandler):
+    """Nova's Watchtower. Sources businesses without websites from OSM."""
+
+    agent_id, action_name, model = "nova", "run_scout", nova.MODEL
+
+    async def state(self) -> dict[str, Any]:
+        base = await super().state()
+        # Nova doesn't consume a queue — it creates one.
+        base["queue"] = []
+        base["sourced"] = state.list_leads(stage="sourced", limit=40)
+        base["counts"] = state.lead_counts_by_stage()
+        return base
+
+    async def run(self, payload: dict[str, Any]) -> Any:
+        prompt = (payload.get("prompt") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "tell Nova where to look"}
+        return await nova.run_scout(self.world, prompt)
+
+
+class AssayHandler(LeadRoomHandler):
+    """Probe's Assay Room. Two jobs, chosen by the lead's stage:
+
+    `sourced`   → qualify it, cheaply, from map data and a quick look.
+    `qualified` → research it properly and build the dossier the Factory needs.
+
+    They're split because qualification is the gate most leads fail, and deep
+    research is expensive — there's no sense researching a business we're about
+    to reject.
+    """
+
+    agent_id, action_name, model = "probe", "run_probe", probe.MODEL
+    accepts_stages = ("sourced", "qualified")
+
+    async def state(self) -> dict[str, Any]:
+        base = await super().state()
+        base["qualify_queue"] = state.list_leads(stage="sourced", limit=40)
+        base["research_queue"] = state.list_leads(stage="qualified", limit=40)
+        return base
+
+    async def run(self, payload: dict[str, Any]) -> Any:
+        lead_id = payload.get("lead_id")
+        if not lead_id:
+            return {"ok": False, "error": "lead_id required"}
+        instruction = payload.get("instruction", "")
+        lead = state.get_lead(lead_id)
+        if lead is None:
+            return {"ok": False, "error": "no such lead"}
+        if lead.get("stage") == "qualified":
+            return await probe.run_enrich(self.world, lead_id, instruction)
+        return await probe.run_probe(self.world, lead_id, instruction)
+
+    async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if name == "delete_lead":
+            lead_id = payload.get("lead_id")
+            return {"ok": bool(lead_id) and state.delete_lead(lead_id)}
+        return await super().action(name, payload)
+
+
+class FactoryHandler(LeadRoomHandler):
+    """Forge's Factory. Writes the actual website to disk."""
+
+    agent_id, action_name, model = "forge", "run_build", forge.MODEL
+    accepts_stages = ("visualised", "qa_failed")
+
+    async def run(self, payload: dict[str, Any]) -> Any:
+        lead_id = payload.get("lead_id")
+        if not lead_id:
+            return {"ok": False, "error": "lead_id required"}
+        return await forge.run_build(self.world, lead_id, payload.get("instruction", ""))
+
+
+class GalleryHandler(LeadRoomHandler):
+    """Lens's Gallery. Everything here is looking at pictures — three jobs:
+
+    `needs_review` → judge the site the business ALREADY has, and decide whether
+    a rebuild is even worth pitching.
+    `enriched` → read their published photographs: chalkboards, palette, feel.
+    `built` → judge the site we just made, before anyone sees it.
+    """
+
+    agent_id, action_name, model = "lens", "run_qa", lens.MODEL
+    accepts_stages = ("needs_review", "enriched", "built")
+
+    async def state(self) -> dict[str, Any]:
+        base = await super().state()
+        # Split the queue so the panel can label the three jobs distinctly.
+        base["incumbent_queue"] = state.list_leads(stage="needs_review", limit=40)
+        base["photo_queue"] = state.list_leads(stage="enriched", limit=40)
+        base["build_queue"] = state.list_leads(stage="built", limit=40)
+        # Leads Lens has already ruled on — including the ones it sent away,
+        # which are the most informative for calibrating how strict it is.
+        base["recent_reviews"] = [
+            lead for lead in state.list_leads(limit=60)
+            if lead.get("incumbent_review") or lead.get("qa")
+        ][:15]
+        return base
+
+    async def run(self, payload: dict[str, Any]) -> Any:
+        lead_id = payload.get("lead_id")
+        if not lead_id:
+            return {"ok": False, "error": "lead_id required"}
+        instruction = payload.get("instruction", "")
+        lead = state.get_lead(lead_id)
+        if lead is None:
+            return {"ok": False, "error": "no such lead"}
+        stage = lead.get("stage")
+        if stage == "needs_review":
+            return await lens.run_incumbent_review(self.world, lead_id, instruction)
+        if stage == "enriched":
+            return await lens.run_visual_research(self.world, lead_id, instruction)
+        return await lens.run_qa(self.world, lead_id, instruction)
+
+
+class ListingHandler(LeadRoomHandler):
+    """Scribe's Copy Desk. Site copy, and the outreach email + quote."""
+
+    agent_id, action_name, model = "scribe", "run_scribe", scribe.MODEL
+    accepts_stages = ("visualised", "published")
+
+    async def state(self) -> dict[str, Any]:
+        base = await super().state()
+        base["quote"] = {
+            "amount": config.QUOTE_AMOUNT,
+            "currency": config.QUOTE_CURRENCY,
+        }
+        base["footer"] = config.outreach_footer()
+        base["config_problems"] = config.outreach_config_problems()
+        return base
+
+    async def run(self, payload: dict[str, Any]) -> Any:
+        lead_id = payload.get("lead_id")
+        if not lead_id:
+            return {"ok": False, "error": "lead_id required"}
+        instruction = payload.get("instruction", "")
+        if payload.get("mode") == "copy":
+            return await scribe.run_copy(self.world, lead_id, instruction)
+        return await scribe.run_outreach(self.world, lead_id, instruction)
+
+
+class PublishHandler(LeadRoomHandler):
+    """Courier's Shipping Bay. Gate 1 — nothing is published without approval."""
+
+    agent_id, action_name, model = "courier", "request_publish", "(no model)"
+    accepts_stages = ("qa_passed",)
+
+    async def state(self) -> dict[str, Any]:
+        base = await super().state()
+        base["published"] = state.list_leads(
+            stages=["published", "contacted", "replied", "won"], limit=40
+        )
+        base["preview_base"] = config.PREVIEW_BASE
+        # Everything here can be viewed before it is published.
+        base["staging"] = {
+            lead["id"]: courier.staging_url(lead["id"])
+            for lead in base["queue"] + base["published"]
+        }
+        return base
+
+    async def run(self, payload: dict[str, Any]) -> Any:
+        lead_id = payload.get("lead_id")
+        if not lead_id:
+            return {"ok": False, "error": "lead_id required"}
+        return await courier.request_publish(self.world, lead_id)
+
+    async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if name == "unpublish":
+            lead_id = payload.get("lead_id")
+            if not lead_id:
+                return {"ok": False, "error": "lead_id required"}
+            return await courier.unpublish(self.world, lead_id)
+        return await super().action(name, payload)
+
+
+class CommsHandler(LeadRoomHandler):
+    """Echo's Communications. Gate 2 — nothing is sent without approval."""
+
+    agent_id, action_name, model = "echo", "request_send", "(no model)"
+    accepts_stages = ("published",)
+
+    async def state(self) -> dict[str, Any]:
+        base = await super().state()
+        ready = []
+        for lead in state.list_leads(stage="published", limit=40):
+            ready.append({**lead, "preflight_problems": echo.preflight(lead)})
+        base["queue"] = ready
+        base["contacted"] = state.list_leads(
+            stages=["contacted", "replied", "won", "lost"], limit=40
+        )
+        base["smtp_configured"] = echo.smtp_configured()
+        base["config_problems"] = config.outreach_config_problems()
+        return base
+
+    async def run(self, payload: dict[str, Any]) -> Any:
+        lead_id = payload.get("lead_id")
+        if not lead_id:
+            return {"ok": False, "error": "lead_id required"}
+        return await echo.request_send(self.world, lead_id)
+
+    async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if name == "mark_contacted":
+            lead_id = payload.get("lead_id")
+            if not lead_id:
+                return {"ok": False, "error": "lead_id required"}
+            return await echo.mark_contacted(
+                self.world, lead_id, payload.get("note") or "sent manually"
+            )
+        if name == "set_stage":
+            lead_id, stage = payload.get("lead_id"), payload.get("stage")
+            if not lead_id or stage not in state.ALL_STAGES:
+                return {"ok": False, "error": "lead_id and a valid stage required"}
+            state.advance_lead(lead_id, stage, agent="operator",
+                               note=payload.get("note") or "set by operator")
+            return {"ok": True}
+        return await super().action(name, payload)
+
+
+class ThroneHandler(RoomHandler):
+    """Ultron's Throne. The operator dispatches here; Ultron reads the board
+    and routes one lead to one room."""
 
     def __init__(self, world: "World") -> None:
         super().__init__(world)
-        self._task: asyncio.Task | None = None
-        self._last_error: str | None = None
+        self._dispatch_task: asyncio.Task | None = None
+        self._last_dispatch: dict[str, Any] | None = None
 
     async def state(self) -> dict[str, Any]:
         return {
-            "running": self._task is not None and not self._task.done(),
-            "model": scribe.MODEL,
-            "listings": state.list_listings(limit=20),
-            "last_error": self._last_error,
+            "dispatching": self._dispatch_task is not None and not self._dispatch_task.done(),
+            "last_dispatch": self._last_dispatch,
+            # Ultron's own view: who is actually busy right now, whoever
+            # started them, plus how each room is staffed.
+            "in_flight": all_in_flight(),
+            "crew": crew_status(self.world),
+            "model": ultron.MODEL,
+            "available_agents": sorted(AGENT_RUNNERS.keys()),
+            "counts": state.lead_counts_by_stage(),
+            "board": state.list_leads(limit=60),
+            "stages": state.STAGES,
+            "dead_stages": state.DEAD_STAGES,
+            "pending": state.list_tool_requests(status="pending", limit=20),
+            "awaiting_user": state.list_tool_requests(status="awaiting_user", limit=20),
+            "recent": [
+                r for r in state.list_tool_requests(limit=30)
+                if r["status"] in ("approved", "denied", "ready", "failed")
+            ][:10],
         }
 
     async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if name == "run_listing":
-            if self._task is not None and not self._task.done():
-                return {"ok": False, "error": "Scribe is already running"}
-            prompt = (payload.get("prompt") or "").strip()
-            if not prompt:
-                return {"ok": False, "error": "prompt required"}
-            self._last_error = None
-            self._task = asyncio.create_task(self._run(prompt))
+        if name == "dispatch":
+            if self._dispatch_task is not None and not self._dispatch_task.done():
+                return {"ok": False, "error": "Ultron is already planning"}
+            task = (payload.get("task") or "").strip()
+            if not task:
+                return {"ok": False, "error": "task required"}
+            self._dispatch_task = asyncio.create_task(self._do_dispatch(task))
             return {"ok": True, "started": True}
-        if name == "delete_listing":
-            listing_id = payload.get("id")
-            if not listing_id:
-                return {"ok": False, "error": "id required"}
-            return {"ok": state.delete_listing(listing_id)}
-        if name == "reset_memory":
-            cleared = state.clear_agent_memory("scribe", state.LISTINGS_FILE)
-            return {"ok": True, "cleared": cleared}
+        if name == "delete_lead":
+            lead_id = payload.get("lead_id")
+            return {"ok": bool(lead_id) and state.delete_lead(lead_id)}
         return await super().action(name, payload)
 
-    async def _run(self, prompt: str) -> None:
-        try:
-            await scribe.run_listing(self.world, prompt)
-        except Exception as e:
-            self._last_error = f"{type(e).__name__}: {e}"
+    async def _do_dispatch(self, task: str) -> None:
+        result = await ultron.dispatch(self.world, task)
+        self._last_dispatch = {"ts": time.time(), **result}
+        if result.get("ok") and result.get("agent"):
+            runner = AGENT_RUNNERS.get(result["agent"])
+            if runner is not None:
+                asyncio.create_task(runner(self.world, {
+                    "prompt": result["prompt"],
+                    "lead_id": result.get("lead_id"),
+                    "mode": result.get("mode"),
+                }))
 
 
 def build_handlers(world: "World") -> dict[str, RoomHandler]:
     return {
         "archives": ArchivesHandler(world),
         "treasury": TreasuryHandler(world),
-        "research": ResearchHandler(world),
-        "throne":   ThroneHandler(world),
         "armory":   ArmoryHandler(world),
+        "throne":   ThroneHandler(world),
+        "research": ResearchHandler(world),
+        "assay":    AssayHandler(world),
         "factory":  FactoryHandler(world),
+        "gallery":  GalleryHandler(world),
         "listing":  ListingHandler(world),
+        "publish":  PublishHandler(world),
+        "comms":    CommsHandler(world),
     }

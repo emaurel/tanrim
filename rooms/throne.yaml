@@ -1,12 +1,18 @@
 id: throne
 name: Throne
-purpose: Overseer's chamber. Ultron supervises the dungeon and assigns work.
+purpose: Overseer's chamber. Ultron watches the lead board and dispatches the next stage.
 position: { x: 0, y: 0 }
 size: { w: 48, h: 4 }
 color: "#2b1b3a"
 agents:
   - id: ultron
     name: Ultron
-    role: Head agent. Plans the day, dispatches briefs, enforces SLAs.
+    role: Head agent. Reads the lead board, decides which lead moves to which room next.
     color: "#c084fc"
+    station: board
 tools: []
+workbenches:
+  - id: board
+    name: The Lead Board
+    job: Reading the whole pipeline and choosing the next move
+    stages: []

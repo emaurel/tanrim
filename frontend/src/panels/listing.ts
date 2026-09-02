@@ -1,202 +1,62 @@
+/** Copy Desk — Scribe writes site copy, and the outreach email + quote. */
 import { postRoomAction } from "../api";
-import { openPanel, type PanelContext } from "./base";
+import { field, makeLeadRoom, secondaryButton, tagRow, type Lead } from "./leadRoom";
 
-interface Listing {
-  id: string;
-  ts: number;
-  prompt: string;
-  brief_id: string | null;
-  design_id: string | null;
-  raw: string;
-  data: ListingData | null;
-  full_prompt?: string;
-  input_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-}
-interface ListingData {
-  title?: string;
-  description?: string;
-  tags?: string[];
-  alt_text?: string;
-  category_suggestion?: string;
-}
-
-let pollTimer: number | null = null;
-
-async function render({ roomId, data, body, reload }: PanelContext) {
-  if (pollTimer !== null) {
-    clearTimeout(pollTimer);
-    pollTimer = null;
-  }
-  const running: boolean = data.running;
-  const lastError: string | null = data.last_error;
-  const listings: Listing[] = data.listings ?? [];
-  const model: string = data.model ?? "claude-haiku-4-5";
-
-  const form = document.createElement("form");
-  form.className = "rp-form";
-  form.innerHTML = `
-    <textarea name="prompt" rows="3"
-      placeholder="what should Scribe write? — e.g. 'an Etsy listing for the latest design'. Auto-uses the latest brief and design."></textarea>
-    <div class="rp-row">
-      <span class="rp-form-hint">${model} · ~$0.05–0.10 per run</span>
-      <button type="submit"></button>
-    </div>
-  `;
-  const submit = form.querySelector("button") as HTMLButtonElement;
-  submit.textContent = running ? "running…" : "run listing";
-  submit.disabled = running;
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(form);
-    const prompt = (fd.get("prompt") as string).trim();
-    if (!prompt) return;
-    submit.disabled = true;
-    const res = await postRoomAction(roomId, "run_listing", { prompt });
-    if (!res.ok) {
-      submit.disabled = false;
-      flashError(form, res.error ?? "failed to start");
-      return;
-    }
-    (form.elements.namedItem("prompt") as HTMLTextAreaElement).value = "";
-    await reload();
-  });
-  body.appendChild(form);
-
-  if (running) {
-    const status = document.createElement("div");
-    status.className = "rp-running";
-    status.innerHTML = `<div class="rp-spinner"></div>
-      <div class="rp-running-text">Scribe is drafting copy…</div>`;
-    body.appendChild(status);
-    pollTimer = window.setTimeout(() => reload(), 1500);
-  } else if (lastError) {
-    const err = document.createElement("div");
-    err.className = "rp-error";
-    err.textContent = `last run failed: ${lastError}`;
-    body.appendChild(err);
-  }
-
-  const heading = document.createElement("h4");
-  heading.className = "rp-h";
-  heading.textContent = `Listings · ${listings.length}`;
-  body.appendChild(heading);
-
-  if (!listings.length) {
-    const empty = document.createElement("div");
-    empty.className = "rp-empty";
-    empty.textContent = "no listings yet. ask Scribe to draft copy above.";
-    body.appendChild(empty);
-    return;
-  }
-  const list = document.createElement("div");
-  list.className = "rp-briefs";
-  for (const l of listings) list.appendChild(renderListing(l, roomId, reload));
-  body.appendChild(list);
-
-  const resetWrap = document.createElement("div");
-  resetWrap.className = "rp-reset-memory";
-  const reset = document.createElement("button");
-  reset.type = "button";
-  reset.className = "rp-secondary rp-danger-light";
-  reset.textContent = "reset Scribe's memory";
-  reset.title = "Wipe Scribe's listings, escalations, and tool requests. Notes, secrets, and registered tools are untouched.";
-  reset.addEventListener("click", async () => {
-    if (!confirm("Wipe Scribe's memory? Clears listings, escalations, tool requests.")) return;
-    const res = await postRoomAction(roomId, "reset_memory");
-    if (res.ok) {
-      const c = res.cleared ?? {};
-      alert(`Cleared: ${c.outputs} outputs, ${c.escalations} escalations, ${c.tool_requests} tool requests.`);
-    }
-    await reload();
-  });
-  resetWrap.appendChild(reset);
-  body.appendChild(resetWrap);
-}
-
-function renderListing(l: Listing, roomId: string, reload: () => Promise<void>): HTMLElement {
-  const card = document.createElement("article");
-  card.className = "rp-brief";
-  const ts = new Date(l.ts * 1000).toLocaleString();
-  const title = l.data?.title ?? "(unparsed listing)";
-  const header = document.createElement("header");
-  header.innerHTML = `
-    <span class="rp-brief-niche"></span>
-    <span class="rp-brief-meta"></span>
-    <button class="rp-del" type="button" aria-label="delete">×</button>
-  `;
-  header.querySelector(".rp-brief-niche")!.textContent = title;
-  header.querySelector(".rp-brief-meta")!.textContent =
-    `${ts} · $${l.cost_usd.toFixed(3)} · ${l.input_tokens + l.output_tokens} tok`;
-  header.querySelector(".rp-del")!.addEventListener("click", async () => {
-    if (!confirm("delete this listing?")) return;
-    await postRoomAction(roomId, "delete_listing", { id: l.id });
-    await reload();
-  });
-  card.appendChild(header);
-
-  const promptLine = document.createElement("div");
-  promptLine.className = "rp-brief-prompt";
-  promptLine.textContent = `▸ ${l.prompt}`;
-  card.appendChild(promptLine);
-
-  if (l.data) {
-    const v = l.data;
-    if (v.description) card.appendChild(field("Description", v.description));
-    if (v.tags?.length) {
-      card.appendChild(label(`Tags (${v.tags.length}/13)`));
-      const tags = document.createElement("div");
-      tags.className = "rp-brief-tags";
-      for (const t of v.tags) {
-        const li = document.createElement("span");
-        li.textContent = t;
-        tags.appendChild(li);
-      }
-      card.appendChild(tags);
-    }
-    if (v.alt_text) card.appendChild(field("Alt text", v.alt_text));
-    if (v.category_suggestion) card.appendChild(field("Category", v.category_suggestion));
-  } else {
-    const raw = document.createElement("pre");
-    raw.className = "rp-brief-raw";
-    raw.textContent = l.raw;
-    card.appendChild(raw);
-  }
-  return card;
-}
-
-function field(labelText: string, value: string): HTMLElement {
+function detail(lead: Lead): HTMLElement | null {
   const wrap = document.createElement("div");
-  wrap.className = "rp-brief-field";
-  const lab = document.createElement("span");
-  lab.className = "rp-brief-label";
-  lab.textContent = labelText;
-  const val = document.createElement("span");
-  val.className = "rp-brief-value";
-  val.textContent = value;
-  wrap.append(lab, val);
-  return wrap;
-}
+  let used = false;
+  if (lead.copy?.h1) { wrap.appendChild(field("Headline", lead.copy.h1)); used = true; }
 
-function label(text: string): HTMLElement {
-  const lab = document.createElement("div");
-  lab.className = "rp-brief-label";
-  lab.textContent = text;
-  return lab;
-}
-
-function flashError(form: HTMLElement, msg: string) {
-  let bar = form.querySelector(".rp-error-flash") as HTMLElement | null;
-  if (!bar) {
-    bar = document.createElement("div");
-    bar.className = "rp-error-flash";
-    form.appendChild(bar);
+  const o = lead.outreach;
+  if (o) {
+    used = true;
+    if (o.subject) wrap.appendChild(field("Subject", o.subject));
+    if (o.body_final) {
+      const pre = document.createElement("pre");
+      pre.className = "rp-email-body";
+      pre.textContent = o.body_final;
+      wrap.appendChild(pre);
+    }
+    if (o.quote) {
+      wrap.appendChild(field("Quote", `${o.quote.amount} ${o.quote.currency} — ${(o.quote.includes ?? []).join(", ")}`));
+    }
+    const personal = tagRow("Personalised on", o.personalisation ?? []);
+    if (personal) wrap.appendChild(personal);
+    if (o.billing_language_flags?.length) {
+      const warn = document.createElement("div");
+      warn.className = "rp-error";
+      warn.textContent =
+        `this draft reads like a bill (${o.billing_language_flags.join(", ")}). ` +
+        `It must be a quote — rewrite it before sending.`;
+      wrap.appendChild(warn);
+    }
   }
-  bar.textContent = msg;
-  setTimeout(() => bar?.remove(), 4000);
+  return used ? wrap : null;
 }
 
-export async function open(roomId: string) {
-  await openPanel(roomId, render);
+function banner(data: any): HTMLElement | null {
+  const problems: string[] = data.config_problems ?? [];
+  if (!problems.length) return null;
+  const el = document.createElement("div");
+  el.className = "rp-error";
+  el.textContent =
+    `Outreach cannot be sent until the sender is identifiable: ${problems.join("; ")}. ` +
+    `Set them in your .env — cold email without a real sender identity and a ` +
+    `working opt-out is both illegal and undeliverable.`;
+  return el;
 }
+
+export const open = makeLeadRoom({
+  agentName: "Scribe",
+  verb: "write outreach",
+  emptyQueue: "nothing to write. Qualify a lead, or publish a preview to pitch.",
+  instructionPlaceholder: "optional: angle or tone",
+  banner,
+  detail,
+  extraActions: (lead, ctx) => [
+    secondaryButton("write site copy instead", async () => {
+      await postRoomAction("listing", "run_scribe", { lead_id: lead.id, mode: "copy" });
+      await ctx.reload();
+    }),
+  ],
+});

@@ -1,5 +1,6 @@
 import type { AgentState, RoomSpec, WireEvent } from "./types";
 import { subscribe } from "./net/ws";
+import { buildToggle } from "./notify";
 import { openRoomPanel } from "./panels";
 
 interface State {
@@ -17,7 +18,7 @@ export function mount(): void {
   aside.id = "crew";
   aside.innerHTML = `
     <header>
-      <span class="crew-title">CREW</span>
+      <button class="crew-toggle" type="button" aria-expanded="true">CREW</button>
       <span class="crew-count">0</span>
     </header>
     <ul class="crew-list"></ul>
@@ -25,6 +26,34 @@ export function mount(): void {
   document.body.appendChild(aside);
   listEl = aside.querySelector(".crew-list");
   countEl = aside.querySelector(".crew-count");
+  aside.querySelector("header")!.appendChild(buildToggle());
+
+  // Collapse the crew list so it isn't permanently over the map. The choice
+  // persists, because someone who closed it once meant it.
+  const collapseBtn = aside.querySelector(".crew-toggle") as HTMLButtonElement;
+  const KEY = "agent_env.crewCollapsed";
+  const applyCollapsed = (collapsed: boolean) => {
+    aside.classList.toggle("crew--collapsed", collapsed);
+    collapseBtn.setAttribute("aria-expanded", String(!collapsed));
+    collapseBtn.textContent = collapsed ? "CREW ▸" : "CREW ▾";
+    collapseBtn.title = collapsed ? "Show the crew list" : "Hide the crew list";
+  };
+  let collapsed = false;
+  try {
+    collapsed = localStorage.getItem(KEY) === "1";
+  } catch {
+    /* storage blocked; default to open */
+  }
+  applyCollapsed(collapsed);
+  collapseBtn.addEventListener("click", () => {
+    collapsed = !collapsed;
+    applyCollapsed(collapsed);
+    try {
+      localStorage.setItem(KEY, collapsed ? "1" : "0");
+    } catch {
+      /* nothing to do */
+    }
+  });
 
   subscribe((e: WireEvent) => {
     if (e.type === "snapshot") {
@@ -36,6 +65,9 @@ export function mount(): void {
     } else if (e.type === "agent_update") {
       state.agents.set(e.agent.id, e.agent);
       updateOne(e.agent);
+    } else if (e.type === "agent_removed") {
+      state.agents.delete(e.agent_id);
+      removeOne(e.agent_id);
     }
   });
 }
@@ -93,6 +125,16 @@ function updateOne(a: AgentState): void {
   paintCell(li, a);
 }
 
+/** A room's extra workers are retired once their lead is done. */
+function removeOne(agentId: string): void {
+  const li = cells.get(agentId);
+  if (li) {
+    li.remove();
+    cells.delete(agentId);
+  }
+  if (countEl) countEl.textContent = String(state.agents.size);
+}
+
 function paintCell(li: HTMLLIElement, a: AgentState): void {
   const room = state.rooms.get(a.room_id);
   const home = state.rooms.get(a.home_room);
@@ -100,6 +142,7 @@ function paintCell(li: HTMLLIElement, a: AgentState): void {
   li.classList.toggle("crew-away", Boolean(awayFromHome));
   li.classList.toggle(`crew-status-${a.status}`, true);
   li.dataset.status = a.status;
+  li.dataset.workbench = a.workbench ?? "";
 
   (li.querySelector(".crew-dot") as HTMLElement).style.background = a.color;
   li.querySelector(".crew-name")!.textContent = a.name;

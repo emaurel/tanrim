@@ -5,11 +5,16 @@ Ultron for review and (if approved) Tinker for fabrication.
 """
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from . import prompts as _prompts
 from . import state
+
+_P = _prompts.loader("meta_tools")
 
 
 def make_meta_server(
@@ -17,20 +22,32 @@ def make_meta_server(
     room_id: str,
     world: Any = None,
     original_task: dict[str, Any] | None = None,
+    worker_id: str | None = None,
+    model: str | None = None,
+    delegation_depth: int = 0,
+    delegation_context: dict[str, Any] | None = None,
 ) -> Any:
-    """Return an MCP server scoped to a particular agent's identity.
-    `original_task` (e.g., {"prompt": "..."}) is stored on the request so the
-    orchestrator can auto-rerun this agent with the same task once Tinker has
+    """Return an MCP server scoped to a particular agent ROLE.
+
+    `agent_id` is the role ("forge"), which is what everything persistent is
+    keyed on — tool requests, escalations and reports are shared by every
+    worker filling that role. `worker_id` is the individual sprite ("forge-2")
+    and is used only for the on-screen communication line, so you can see which
+    Forge is talking to Ultron.
+
+    `original_task` (e.g., {"lead_id": "..."}) is stored on the request so the
+    orchestrator can auto-rerun this role with the same task once Tinker has
     delivered the new tool.
     """
+    speaker = worker_id or agent_id
+    ctx = delegation_context or {}
+    # Budget lives in this closure, so it is per-run: a fresh server is built
+    # for every agent turn.
+    budget = {"used": 0}
 
     @tool(
         "request_tool",
-        "Request a new capability you don't currently have. The Armory will "
-        "review and fabricate it. As soon as it's ready you will be auto-rerun "
-        "with this same prompt and the new tool available — do NOT wait or "
-        "loop here; finish this run with your best training-data answer and "
-        "note that real data is coming on the rerun.",
+        _P("request_tool"),
         {
             "name": str,
             "description": str,
@@ -54,7 +71,7 @@ def make_meta_server(
             details={"request_id": req["id"], "name": args["name"]},
         )
         if world is not None:
-            await world.talk(agent_id, "ultron", seconds=6.0, label=f"requests {args['name']}")
+            await world.talk(speaker, "ultron", seconds=6.0, label=f"requests {args['name']}")
         return {
             "content": [{
                 "type": "text",
@@ -68,11 +85,7 @@ def make_meta_server(
 
     @tool(
         "ask_ultron",
-        "Ping Ultron when you hit a blocker or question that's NOT a tool request. "
-        "Use for: missing API credentials, ambiguous instructions, deciding between "
-        "approaches, scope clarifications, anything that needs his judgment. He'll "
-        "respond and you'll be auto-rerun with his guidance on the next iteration. "
-        "Don't use this for tool requests — use `request_tool` for those.",
+        _P("ask_ultron"),
         {"message": str},
     )
     async def ask_ultron_fn(args: dict[str, Any]) -> dict[str, Any]:
@@ -90,7 +103,7 @@ def make_meta_server(
             details={"escalation_id": rec["id"]},
         )
         if world is not None:
-            await world.talk(agent_id, "ultron", seconds=6.0, label=f"asks: {args['message'][:30]}")
+            await world.talk(speaker, "ultron", seconds=6.0, label=f"asks: {args['message'][:30]}")
         return {
             "content": [{
                 "type": "text",
@@ -103,8 +116,123 @@ def make_meta_server(
             }]
         }
 
+    @tool(
+        "report_to_ultron",
+        _P("report_to_ultron"),
+        {"summary": str},
+    )
+    async def report_to_ultron_fn(args: dict[str, Any]) -> dict[str, Any]:
+        summary = (args.get("summary") or "").strip()
+        if not summary:
+            return {"content": [{"type": "text", "text": "summary required"}]}
+        state.log_event(
+            "agent_report",
+            from_=speaker, to="ultron",
+            summary=summary[:240],
+            outcome=None,
+        )
+        if world is not None:
+            await world.talk(speaker, "ultron", seconds=4.0, label=f"reports: {summary[:30]}")
+        return {
+            "content": [{
+                "type": "text",
+                "text": "Report logged. Ultron will see it on his next run via his memory context.",
+            }]
+        }
+
+    # ---- Delegation ----
+    #
+    # Only offered when this agent is allowed to hire (a specialist is not) and
+    # only when it has a working directory for the helper to write into.
+    from .delegation import MAX_DEPTH, MAX_PER_RUN
+
+    tools = [request_tool_fn, ask_ultron_fn, report_to_ultron_fn]
+
+    @tool(
+        "delegate_subtask",
+        _P("delegate_subtask"),
+        {"name": str, "instruction": str, "deliverable": str},
+    )
+    async def delegate_subtask_fn(args: dict[str, Any]) -> dict[str, Any]:
+        from pathlib import Path
+
+        from .delegation import run_specialist
+        from .workers import RoomAtCapacity
+
+        if budget["used"] >= MAX_PER_RUN:
+            return {"content": [{"type": "text", "text":
+                f"Delegation budget for this run is spent ({MAX_PER_RUN}). "
+                f"Do the rest yourself."}]}
+        cwd = ctx.get("cwd")
+        if not cwd:
+            return {"content": [{"type": "text", "text":
+                "You have no working directory, so there is nowhere for a "
+                "specialist to write. Do it yourself."}]}
+        name = (args.get("name") or "subtask").strip()[:60]
+        budget["used"] += 1
+        try:
+            out = await run_specialist(
+                world,
+                parent_role=agent_id,
+                room_id=room_id,
+                model=model or "claude-sonnet-4-6",
+                name=name,
+                instruction=args.get("instruction") or "",
+                deliverable=args.get("deliverable") or "",
+                cwd=Path(cwd),
+                lead_id=ctx.get("lead_id"),
+                depth=MAX_DEPTH,
+            )
+        except RoomAtCapacity as e:
+            return {"content": [{"type": "text", "text":
+                f"No free worker to hire in this room ({e}). Do it yourself."}]}
+        except Exception as e:  # noqa: BLE001
+            return {"content": [{"type": "text", "text":
+                f"The specialist failed: {type(e).__name__}: {e}. Do it yourself."}]}
+        return {"content": [{"type": "text", "text": json.dumps(out, ensure_ascii=False, indent=2)}]}
+
+    @tool(
+        "request_review",
+        _P("request_review"),
+        {"reviewer": str, "question": str, "files": str},
+    )
+    async def request_review_fn(args: dict[str, Any]) -> dict[str, Any]:
+        from pathlib import Path
+
+        from .delegation import run_review
+
+        cwd = ctx.get("cwd")
+        if not cwd:
+            return {"content": [{"type": "text", "text":
+                "No working directory, so there is nothing to review."}]}
+        reviewer = (args.get("reviewer") or "lens").strip().lower()
+        files = [f.strip() for f in re.split(r"[,\n]+", args.get("files") or "") if f.strip()]
+        try:
+            out = await run_review(
+                world,
+                reviewer_role=reviewer,
+                question=args.get("question") or "Is this good enough to use?",
+                cwd=Path(cwd),
+                files=files,
+                lead_id=ctx.get("lead_id"),
+                requested_by=speaker,
+            )
+        except Exception as e:  # noqa: BLE001
+            return {"content": [{"type": "text", "text":
+                f"Review unavailable: {type(e).__name__}: {e}. Use your own judgement."}]}
+        if world is not None:
+            await world.talk(speaker, reviewer, seconds=5.0,
+                             label=f"review: {out.get('verdict')}")
+        return {"content": [{"type": "text", "text": json.dumps(out, ensure_ascii=False, indent=2)}]}
+
+    if delegation_depth < MAX_DEPTH:
+        tools.append(delegate_subtask_fn)
+    # Anyone with a directory may ask for a review — a specialist most of all.
+    if ctx.get("cwd"):
+        tools.append(request_review_fn)
+
     return create_sdk_mcp_server(
         name=f"meta_{agent_id}",
         version="1.0.0",
-        tools=[request_tool_fn, ask_ultron_fn],
+        tools=tools,
     )

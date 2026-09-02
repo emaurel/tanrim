@@ -140,6 +140,8 @@ export class World extends Phaser.Scene {
       }
     } else if (e.type === "agent_update") {
       this.upsertAgent(e.agent);
+    } else if (e.type === "agent_removed") {
+      this.removeAgent(e.agent_id);
     } else if (e.type === "agent_talk") {
       this.spawnTalkLine(e.from, e.to, e.duration_ms, e.label);
     }
@@ -227,12 +229,30 @@ export class World extends Phaser.Scene {
         fontFamily: "monospace", fontSize: "20px", color: "#f4f1de",
         fontStyle: "bold",
       }).setResolution(TEXT_DPR);
-      const purpose = this.add.text(px + 10, py + 36, room.purpose, {
-        fontFamily: "monospace", fontSize: "13px", color: "#dcd6c0",
-        wordWrap: { width: pw - 20 },
-        lineSpacing: 2,
-      }).setResolution(TEXT_DPR);
-      this.worldLayer.add([floor, border, title, purpose]);
+      // The room's purpose lives in its panel, not on the floor — with
+      // workbenches drawn inside, a paragraph per room made the map unreadable.
+      this.worldLayer.add([floor, border, title]);
+
+      // Workbenches: the stations inside a room where each kind of job is done.
+      // Drawn under the sprites so an agent standing at one reads as being AT
+      // it. Geometry comes from the manifest (auto-laid-out server-side).
+      for (const bench of room.workbenches ?? []) {
+        if (!bench.position || !bench.size) continue;
+        const bx = (room.position.x + bench.position.x) * TILE;
+        const by = (room.position.y + bench.position.y) * TILE;
+        const bw = bench.size.w * TILE;
+        const bh = bench.size.h * TILE;
+        const plate = this.add.rectangle(bx, by, bw, bh, 0x000000, 0.16)
+          .setOrigin(0, 0);
+        const edge = this.add.rectangle(bx, by, bw, bh)
+          .setOrigin(0, 0)
+          .setStrokeStyle(1, 0xffffff, 0.16)
+          .setFillStyle(0, 0);
+        const label = this.add.text(bx + 6, by + 5, bench.name, {
+          fontFamily: "monospace", fontSize: "11px", color: "#efe9d8",
+        }).setAlpha(0.85).setResolution(TEXT_DPR);
+        this.worldLayer.add([plate, edge, label]);
+      }
     }
     this.badges.clear();
     this.refreshBadges();
@@ -267,6 +287,30 @@ export class World extends Phaser.Scene {
       this.worldLayer.add([bg, text]);
       this.badges.set(room.id, { bg, text });
     }
+  }
+
+  /** A room's extra workers are hired and retired as leads come and go. */
+  private removeAgent(agentId: string) {
+    const s = this.sprites.get(agentId);
+    if (!s) return;
+    // Fade out rather than vanish, so it reads as "that one went home".
+    this.tweens.add({
+      targets: [s.body, s.label, s.speech],
+      alpha: 0,
+      duration: 260,
+      onComplete: () => {
+        s.body.destroy();
+        s.label.destroy();
+        s.speech.destroy();
+      },
+    });
+    this.sprites.delete(agentId);
+    this.talkLines = this.talkLines.filter((t) => {
+      if (t.fromId !== agentId && t.toId !== agentId) return true;
+      t.line.destroy();
+      t.label?.destroy();
+      return false;
+    });
   }
 
   private upsertAgent(a: AgentState) {

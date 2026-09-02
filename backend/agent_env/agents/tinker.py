@@ -13,6 +13,7 @@ from typing import Any
 from claude_agent_sdk import ClaudeAgentOptions, query
 
 from .. import state, usage
+from ..agent_helpers import format_secret_names
 from ..tools import registry as tool_registry
 from ..world import World
 
@@ -28,58 +29,11 @@ FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 
-ROLE = """\
-You are Tinker, the Armory's tool-fabricator. Generate a single Python module
-that exports a top-level `mcp_server` built from the Claude Agent SDK.
+from .. import prompts as _prompts
 
-THE @tool DECORATOR HAS EXACTLY THREE POSITIONAL ARGUMENTS:
-  @tool(name: str, description: str, input_schema: dict)
-where input_schema maps each argument name to its Python type (str, int, etc.).
+_P = _prompts.loader("tinker")
 
-THE TOOL FUNCTION MUST:
-- be `async`, accept a single `args: dict` parameter,
-- return `{"content": [{"type": "text", "text": "..."}]}`.
-
-USE THIS TEMPLATE EXACTLY (adapt names, schema, and body):
-
-```python
-import httpx
-from claude_agent_sdk import create_sdk_mcp_server, tool
-
-@tool(
-    "search_news",
-    "Search news headlines for a given topic and return the top results.",
-    {"query": str, "limit": int},
-)
-async def search_news(args: dict) -> dict:
-    query = args["query"]
-    limit = args.get("limit") or 5
-    async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "agent_env/1.0"}) as client:
-        r = await client.get("https://example.com/api/search", params={"q": query, "n": limit})
-        r.raise_for_status()
-    return {"content": [{"type": "text", "text": r.text[:2000]}]}
-
-mcp_server = create_sdk_mcp_server(
-    name="search_news",
-    version="1.0.0",
-    tools=[search_news],
-)
-```
-
-REQUIREMENTS:
-- Use ONLY: stdlib, httpx, json, typing.
-- Tool must be SAFE: no shell, no subprocess, no filesystem writes, no eval/exec,
-  no destructive operations. Read-only HTTP calls only.
-- If a free unauthenticated public API exists for the requested capability,
-  call it via httpx (10s timeout, User-Agent header). Otherwise return a
-  clear-and-honest stub message explaining what the user must wire.
-- The `name` arg of @tool, the `name` of create_sdk_mcp_server, and the
-  function name must all match the requested tool name (snake_case).
-- Keep the module under 80 lines.
-
-OUTPUT FORMAT: a fenced ```python ... ``` block containing the full module.
-Nothing else — no preamble, no commentary.
-"""
+ROLE = _P("ROLE")
 
 
 def _safe_filename(name: str) -> str:
@@ -96,7 +50,25 @@ def _extract_python(text: str) -> str | None:
 
 
 def _build_prompt(req: dict[str, Any]) -> str:
-    return ROLE + "\n\n" + (
+    secrets_block = format_secret_names()
+    secrets_section = ""
+    if secrets_block:
+        secrets_section = (
+            "\n\n"
+            + secrets_block
+            + "\n\nIf the tool you're generating needs an API key, USE one of "
+            "these names via `os.environ.get(NAME)`. Do NOT invent new env var "
+            "names — the operator only has the secrets listed above wired up. "
+            "If none of the listed secrets match the API the tool needs, return "
+            "a clear stub that explains which env var the operator should add."
+        )
+    else:
+        secrets_section = (
+            "\n\nNo secrets are stored on this machine yet. If the tool needs "
+            "an API key, return a clear stub explaining which env var the "
+            "operator should set."
+        )
+    return ROLE + secrets_section + "\n\n" + (
         f"Tool name (use as the @tool name and create_sdk_mcp_server name): {req['name']}\n"
         f"Description: {req['description']}\n"
         f"Why the requesting agent needs it: {req['why']}\n\n"

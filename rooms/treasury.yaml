@@ -1,12 +1,17 @@
 id: treasury
 name: Treasury
-purpose: Coin tracks API spend per agent per day and warns when a room burns above budget.
-position: { x: 36, y: 12 }
+purpose: Coin counts the spend — tokens per agent, and what each lead cost to chase.
+position: { x: 12, y: 20 }
 size: { w: 12, h: 8 }
 color: "#3a3a1a"
 agents:
   - id: coin
     name: Coin
-    role: Cost accountant. Watches token usage and external-API spend.
-    color: "#f4d35e"
+    role: Bookkeeper. Tracks API spend per agent and cost per lead.
+    color: "#e9c46a"
 tools: []
+workbenches:
+  - id: counting
+    name: The Counting Table
+    job: Token spend per agent, and what each lead cost to chase
+    stages: []

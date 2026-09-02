@@ -1,8 +1,13 @@
 id: war_room
 name: War Room
-purpose: Daily and weekly retro. All agents converge here to review numbers and adjust strategy. No permanent inhabitant.
-position: { x: 0, y: 20 }
-size: { w: 48, h: 6 }
+purpose: Where everyone gathers for the retro — what converted, what got ignored, what to change.
+position: { x: 24, y: 20 }
+size: { w: 24, h: 8 }
 color: "#4a1a1a"
 agents: []
 tools: []
+workbenches:
+  - id: retro
+    name: The Round Table
+    job: What converted, what got ignored, what to change
+    stages: []

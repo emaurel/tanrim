@@ -1,0 +1,31 @@
+id: gallery
+name: Gallery
+purpose: Lens looks at pictures — their existing site, their published photos, and our build before anyone sees it.
+position: { x: 0, y: 12 }
+size: { w: 12, h: 8 }
+color: "#2b4a4a"
+agents:
+  - id: lens
+    name: Lens
+    role: Inspector. Renders sites in a real browser and judges them by eye.
+    color: "#7ad7d7"
+tools: ["site_inspect", "site_audit", "image_collect"]
+max_workers: 3
+workbenches:
+  - id: incumbent
+    name: Incumbent Wall
+    job: Rendering the site they already have, to judge if a rebuild is worth it
+    stages: [needs_review]
+  - id: photos
+    name: The Light Box
+    job: Reading their published photos — chalkboards, signage, the real palette
+    stages: [enriched]
+  - id: qa
+    name: Inspection Bay
+    job: Rendering our own build at 390px and 1280px and judging it by eye
+    stages: [built]
+  - id: review
+    name: Comparison Bench
+    job: Quick verdicts for other agents — does this logo work, is this right?
+    stages: []
+    tasks: [review]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -13,9 +14,11 @@ NOTES_FILE = STATE_DIR / "notes.json"
 BRIEFS_FILE = STATE_DIR / "briefs.json"
 DESIGNS_FILE = STATE_DIR / "designs.json"
 LISTINGS_FILE = STATE_DIR / "listings.json"
+LEADS_FILE = STATE_DIR / "leads.json"
 TOOL_REQUESTS_FILE = STATE_DIR / "tool_requests.json"
 ROOM_TOOL_OVERRIDES_FILE = STATE_DIR / "room_tool_overrides.json"
 EVENTS_FILE = STATE_DIR / "events.json"
+TASK_RERUNS_FILE = STATE_DIR / "task_reruns.json"
 ESCALATIONS_FILE = STATE_DIR / "agent_escalations.json"
 _lock = Lock()
 
@@ -27,9 +30,11 @@ def _ensure() -> None:
         (BRIEFS_FILE, "[]"),
         (DESIGNS_FILE, "[]"),
         (LISTINGS_FILE, "[]"),
+        (LEADS_FILE, "[]"),
         (TOOL_REQUESTS_FILE, "[]"),
         (ROOM_TOOL_OVERRIDES_FILE, "{}"),
         (EVENTS_FILE, "[]"),
+        (TASK_RERUNS_FILE, "{}"),
         (ESCALATIONS_FILE, "[]"),
     ]:
         if not f.exists():
@@ -460,3 +465,203 @@ def update_escalation(esc_id: str, **fields: Any) -> dict[str, Any] | None:
                 ESCALATIONS_FILE.write_text(json.dumps(items, indent=2))
                 return r
     return None
+
+
+# ---------- Leads (the core record of the agency pipeline) ----------
+#
+# Unlike the old Etsy ledgers — where each agent wrote its own file and
+# downstream agents read "the most recent upstream artifact" — a Lead is ONE
+# record that every agent enriches in place. Many leads sit at different
+# stages simultaneously, so agents are always addressed with a `lead_id`;
+# nothing in this pipeline means "the latest thing".
+
+STAGES = [
+    "sourced",        # Scout found it
+    "needs_review",   # it HAS a site — Lens must render and judge it first
+    "qualified",      # confirmed real, earning, and genuinely web-deficient
+    "enriched",       # deep-researched: we know enough to build something real
+    "visualised",     # their published photos have been read — palette, board, feel
+    "built",          # Forge generated a site
+    "qa_passed",      # Lens verified the UI
+    "published",      # Courier deployed a preview (gate 1 passed)
+    "contacted",      # Echo sent the outreach (gate 2 passed)
+    "replied",        # the owner answered
+    "won",
+]
+# Terminal states a lead can fall into from anywhere.
+DEAD_STAGES = ["disqualified", "qa_failed", "lost"]
+ALL_STAGES = STAGES + DEAD_STAGES
+
+
+def add_lead(
+    name: str,
+    *,
+    source: dict[str, Any] | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Create a lead at stage `sourced`. `fields` may carry anything Scout
+    already knows (address, phone, website, category, raw payload)."""
+    _ensure()
+    rec: dict[str, Any] = {
+        "id": str(uuid.uuid4()),
+        "ts": time.time(),
+        "updated_ts": time.time(),
+        "stage": "sourced",
+        "name": name,
+        "source": source or {},
+        # Enrichment slots, filled in by each room as the lead moves through.
+        "audit": None,      # Probe
+        "site": None,       # Forge
+        "qa": None,         # Lens
+        "outreach": None,   # Scribe
+        "preview_url": None,
+        "history": [],
+        **fields,
+    }
+    with _lock:
+        items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
+        items.append(rec)
+        LEADS_FILE.write_text(json.dumps(items, indent=2))
+    return rec
+
+
+def list_leads(
+    stage: str | None = None,
+    stages: list[str] | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    _ensure()
+    items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
+    if stage is not None:
+        items = [r for r in items if r.get("stage") == stage]
+    if stages is not None:
+        items = [r for r in items if r.get("stage") in stages]
+    items.sort(key=lambda r: r.get("updated_ts", r["ts"]), reverse=True)
+    return items[:limit]
+
+
+def get_lead(lead_id: str) -> dict[str, Any] | None:
+    _ensure()
+    items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
+    for r in items:
+        if r["id"] == lead_id:
+            return r
+    return None
+
+
+def update_lead(lead_id: str, **fields: Any) -> dict[str, Any] | None:
+    """Patch a lead without touching its stage."""
+    _ensure()
+    with _lock:
+        items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
+        for r in items:
+            if r["id"] == lead_id:
+                r.update(fields)
+                r["updated_ts"] = time.time()
+                LEADS_FILE.write_text(json.dumps(items, indent=2))
+                return r
+    return None
+
+
+def advance_lead(
+    lead_id: str,
+    stage: str,
+    *,
+    agent: str | None = None,
+    note: str = "",
+    **fields: Any,
+) -> dict[str, Any] | None:
+    """Move a lead to a new stage, append to its history, and patch fields in
+    the same write. This is the ONLY way stage should change, so the history
+    is always a complete record of who moved the lead and why."""
+    if stage not in ALL_STAGES:
+        raise ValueError(f"unknown stage: {stage}")
+    _ensure()
+    with _lock:
+        items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
+        for r in items:
+            if r["id"] == lead_id:
+                r.update(fields)
+                r["history"] = list(r.get("history") or [])
+                r["history"].append({
+                    "ts": time.time(),
+                    "from_stage": r.get("stage"),
+                    "stage": stage,
+                    "agent": agent,
+                    "note": note[:400],
+                })
+                r["stage"] = stage
+                r["updated_ts"] = time.time()
+                LEADS_FILE.write_text(json.dumps(items, indent=2))
+                return r
+    return None
+
+
+def delete_lead(lead_id: str) -> bool:
+    return _crud_delete(LEADS_FILE, lead_id)
+
+
+def lead_counts_by_stage() -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for r in list_leads(limit=10_000):
+        counts[r.get("stage", "?")] = counts.get(r.get("stage", "?"), 0) + 1
+    return counts
+
+
+def find_lead_by_website_host(host: str) -> dict[str, Any] | None:
+    """Dedupe helper — Scout shouldn't re-source a business already in the board."""
+    host = (host or "").lower().lstrip("www.")
+    if not host:
+        return None
+    for r in list_leads(limit=10_000):
+        w = (r.get("website") or "").lower()
+        if w and host in w:
+            return r
+    return None
+
+
+# ---------- Rerun ceiling (loop protection) ----------
+#
+# The orchestrator re-fires an agent after its escalation is answered so the
+# rerun can see the guidance. That is only safe if it is bounded PER TASK.
+# Bounding it per escalation record is not enough: an agent that re-asks the
+# same question creates a fresh record with a fresh allowance, which is an
+# infinite loop — and it happened, costing a Nova run plus an Ultron run every
+# forty seconds until the agent happened to stop asking.
+
+MAX_TASK_RERUNS = 3
+
+
+def _task_key(agent: str, task: dict[str, Any] | None) -> str:
+    payload = json.dumps(task or {}, sort_keys=True, ensure_ascii=False)
+    return f"{agent}:{hashlib.sha1(payload.encode()).hexdigest()[:16]}"
+
+
+def task_rerun_count(agent: str, task: dict[str, Any] | None) -> int:
+    _ensure()
+    counts: dict[str, Any] = json.loads(TASK_RERUNS_FILE.read_text())
+    return int((counts.get(_task_key(agent, task)) or {}).get("n", 0))
+
+
+def bump_task_rerun(agent: str, task: dict[str, Any] | None) -> int:
+    """Record another rerun of this exact task and return the new total."""
+    _ensure()
+    key = _task_key(agent, task)
+    with _lock:
+        counts: dict[str, Any] = json.loads(TASK_RERUNS_FILE.read_text())
+        entry = counts.setdefault(key, {"n": 0, "agent": agent})
+        entry["n"] = int(entry.get("n", 0)) + 1
+        entry["last_ts"] = time.time()
+        entry["task"] = json.dumps(task or {}, ensure_ascii=False)[:300]
+        TASK_RERUNS_FILE.write_text(json.dumps(counts, indent=2))
+        return entry["n"]
+
+
+def may_rerun_task(agent: str, task: dict[str, Any] | None) -> bool:
+    return task_rerun_count(agent, task) < MAX_TASK_RERUNS
+
+
+def clear_task_reruns() -> None:
+    _ensure()
+    with _lock:
+        TASK_RERUNS_FILE.write_text("{}")

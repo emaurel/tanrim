@@ -12,3 +12,13 @@ state/secrets.json
 # Runtime data (briefs, designs, listings, escalations, usage, log, fabricated tools).
 # All regenerable; nothing here is code worth tracking.
 state/
+
+# Agent prompts. These are the part of this project worth keeping private, so
+# the working copies stay local. `prompts.example/` is committed and documents
+# what each file is for — copy it to `prompts/` and write your own.
+prompts/
+
+# Vendored third-party skill data (3.6 MB of CSVs). Re-fetch with:
+#   git clone --depth 1 https://github.com/nextlevelbuilder/ui-ux-pro-max-skill
+#   cp -r ui-ux-pro-max-skill/.claude/skills/ui-ux-pro-max .claude/skills/
+.claude/skills/ui-ux-pro-max/

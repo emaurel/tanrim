@@ -4,13 +4,19 @@
  *   2. register it below
  *   3. (optional) add a backend handler in agent_env/handlers.py to power actions
  *
- * Rooms not listed here fall back to the generic info panel.
+ * Rooms not listed here fall back to the generic info panel. Most pipeline
+ * rooms are built from the shared `leadRoom` factory — they differ only in how
+ * they render what a lead carries.
  */
 import { open as openArchives } from "./archives";
 import { open as openArmory } from "./armory";
+import { open as openAssay } from "./assay";
+import { open as openComms } from "./comms";
 import { open as openFactory } from "./factory";
+import { open as openGallery } from "./gallery";
 import { open as openGeneric } from "./generic";
 import { open as openListing } from "./listing";
+import { open as openPublish } from "./publish";
 import { open as openResearch } from "./research";
 import { open as openThrone } from "./throne";
 import { open as openTreasury } from "./treasury";
@@ -18,8 +24,12 @@ import { open as openTreasury } from "./treasury";
 const REGISTRY: Record<string, (id: string) => Promise<void>> = {
   archives: openArchives,
   armory:   openArmory,
+  assay:    openAssay,
+  comms:    openComms,
   factory:  openFactory,
+  gallery:  openGallery,
   listing:  openListing,
+  publish:  openPublish,
   research: openResearch,
   throne:   openThrone,
   treasury: openTreasury,

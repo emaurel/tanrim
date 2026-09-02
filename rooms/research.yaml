@@ -1,12 +1,18 @@
 id: research
-name: Research Lab
-purpose: Nova studies winning Etsy stores and AI news, hands concept briefs to Forge.
+name: Watchtower
+purpose: Nova scans the map for businesses that earn money but have no website — or a bad one.
 position: { x: 0, y: 4 }
 size: { w: 12, h: 8 }
 color: "#3a5a40"
 agents:
   - id: nova
     name: Nova
-    role: Etsy/eRank/Trends scraper, briefs the Factory with proven concepts.
+    role: Prospector. Sources candidate businesses and opens a lead for each one.
     color: "#a3b18a"
-tools: []
+tools: ["osm_business_search"]
+max_workers: 3
+workbenches:
+  - id: map
+    name: The Map Table
+    job: Scanning OpenStreetMap for businesses with no website
+    stages: []

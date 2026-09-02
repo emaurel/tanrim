@@ -3,6 +3,11 @@
  * adding a new room panel = drop a file under panels/<id>.ts that exports `render`,
  * then register it in panels/index.ts. No backend handler is required for the
  * generic fallback; a backend handler in agent_env/handlers.py unlocks actions.
+ *
+ * Panels poll while an agent is running, so a re-render is a frequent event, not
+ * a rare one. `ctx.reload()` is therefore a SOFT refresh: it keeps the scroll
+ * position, keeps whatever the user is typing, and never shows the loading
+ * placeholder. Only opening a room for the first time gets the full treatment.
  */
 
 export interface PanelContext {
@@ -16,6 +21,8 @@ export type Renderer = (ctx: PanelContext) => void | Promise<void>;
 
 let panelEl: HTMLElement | null = null;
 let currentRoomId: string | null = null;
+/** Guards against overlapping refreshes when a poll and a click coincide. */
+let refreshing = false;
 
 export function getCurrentRoomId(): string | null {
   return currentRoomId;
@@ -68,37 +75,153 @@ export function closePanel(): void {
   currentRoomId = null;
 }
 
-export async function openPanel(roomId: string, render: Renderer): Promise<void> {
+// ---------- Preserving what the user is doing across a re-render ----------
+
+interface UiState {
+  scrollTop: number;
+  fields: { key: string; value: string }[];
+  focusKey: string | null;
+  selStart: number | null;
+  selEnd: number | null;
+}
+
+type Field = HTMLInputElement | HTMLTextAreaElement;
+
+/**
+ * A stable-ish identity for a form field across re-renders. The elements are
+ * destroyed and rebuilt, so we key on what the markup declares — name, then
+ * class — plus the index among its peers.
+ */
+function fieldKey(el: Field, all: Field[]): string {
+  const base = el.name
+    ? `${el.tagName}[name=${el.name}]`
+    : `${el.tagName}.${el.className || "-"}`;
+  const peers = all.filter(
+    (o) =>
+      (o.name ? `${o.tagName}[name=${o.name}]` : `${o.tagName}.${o.className || "-"}`) === base,
+  );
+  return `${base}#${peers.indexOf(el)}`;
+}
+
+function captureUi(body: HTMLElement): UiState {
+  const all = Array.from(body.querySelectorAll("input, textarea")) as Field[];
+  const active = document.activeElement as Field | null;
+  const focused = active && all.includes(active) ? active : null;
+  return {
+    scrollTop: body.scrollTop,
+    // Only carry over fields the user actually typed into — restoring empty
+    // values would clobber anything a renderer means to prefill.
+    fields: all
+      .filter((el) => el.value !== "")
+      .map((el) => ({ key: fieldKey(el, all), value: el.value })),
+    focusKey: focused ? fieldKey(focused, all) : null,
+    selStart: focused ? focused.selectionStart : null,
+    selEnd: focused ? focused.selectionEnd : null,
+  };
+}
+
+function restoreUi(body: HTMLElement, ui: UiState): void {
+  const all = Array.from(body.querySelectorAll("input, textarea")) as Field[];
+  const byKey = new Map<string, Field>();
+  for (const el of all) byKey.set(fieldKey(el, all), el);
+
+  for (const { key, value } of ui.fields) {
+    const el = byKey.get(key);
+    // Don't overwrite a value the fresh render deliberately put there.
+    if (el && el.value === "") el.value = value;
+  }
+  if (ui.focusKey) {
+    const el = byKey.get(ui.focusKey);
+    if (el) {
+      el.focus();
+      if (ui.selStart !== null && ui.selEnd !== null) {
+        try {
+          el.setSelectionRange(ui.selStart, ui.selEnd);
+        } catch {
+          /* not all input types support selection */
+        }
+      }
+    }
+  }
+  body.scrollTop = ui.scrollTop;
+}
+
+// ---------- Render ----------
+
+async function paint(
+  roomId: string,
+  render: Renderer,
+  opts: { soft: boolean },
+): Promise<void> {
   const { root, body, title, subtitle } = ensurePanel();
   root.classList.add("open");
   root.dataset.roomId = roomId;
   currentRoomId = roomId;
-  body.innerHTML = `<div class="rp-loading">loading…</div>`;
+
+  const ui = opts.soft ? captureUi(body) : null;
+  if (!opts.soft) {
+    body.innerHTML = `<div class="rp-loading">loading…</div>`;
+  }
+
   const { getRoomState } = await import("../api");
-  const data = await getRoomState(roomId);
+  let data: any;
+  try {
+    data = await getRoomState(roomId);
+  } catch (e) {
+    // A soft refresh that fails should leave the panel as it is rather than
+    // replacing live content with an error.
+    if (opts.soft) return;
+    throw e;
+  }
   // Bail if the user closed the panel or switched rooms while we were fetching.
   if (currentRoomId !== roomId) return;
+
   title.textContent = data.room?.name ?? roomId;
   subtitle.textContent = data.room?.purpose ?? "";
-  body.innerHTML = "";
+
+  // Build off-DOM so the panel never shows a half-rendered or empty state.
+  //
+  // The container itself is what gets swapped in, rather than its children —
+  // so `ctx.body` is still ATTACHED once the paint completes. Moving the child
+  // nodes out of a scratch div instead leaves `ctx.body` detached, and any
+  // handler that later queries it (a tab bar re-rendering itself, say) silently
+  // finds nothing. That is exactly how the Archives tabs stopped working.
+  const content = document.createElement("div");
+  content.className = "rp-panel-content";
   const ctx: PanelContext = {
     roomId,
     data,
-    body,
-    reload: async () => {
-      // Only re-render if the panel is still open on this room.
-      if (currentRoomId !== roomId) return;
-      await openPanel(roomId, render);
-    },
+    body: content,
+    reload: () => refreshPanel(roomId, render),
   };
-  // Pending user approvals always render at the very top.
   if (data.pending_approvals?.length) {
     const { renderPendingApprovals } = await import("../approvals");
-    await renderPendingApprovals(body, data.pending_approvals, ctx.reload);
+    await renderPendingApprovals(content, data.pending_approvals, ctx.reload);
   }
   // Standard room info (purpose / inhabitants / tools) renders next, before
   // any room-specific UI, so every panel has consistent context at the top.
   const { renderRoomInfo } = await import("./info");
-  renderRoomInfo(body, data);
+  renderRoomInfo(content, data);
   await render(ctx);
+  if (currentRoomId !== roomId) return;
+
+  body.replaceChildren(content);
+  if (ui) restoreUi(body, ui);
+}
+
+async function refreshPanel(roomId: string, render: Renderer): Promise<void> {
+  if (currentRoomId !== roomId || refreshing) return;
+  refreshing = true;
+  try {
+    await paint(roomId, render, { soft: true });
+  } finally {
+    refreshing = false;
+  }
+}
+
+export async function openPanel(roomId: string, render: Renderer): Promise<void> {
+  // Reopening the room you're already on is a refresh, not a fresh open —
+  // otherwise clicking the same room flashes the whole panel.
+  const soft = currentRoomId === roomId && panelEl?.classList.contains("open") === true;
+  await paint(roomId, render, { soft });
 }

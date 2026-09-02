@@ -1,12 +1,24 @@
 id: factory
 name: Factory
-purpose: Forge generates print-ready designs and pushes them to Printify/Printful.
-position: { x: 12, y: 4 }
+purpose: Forge builds the actual website for a qualified lead — real files, on disk.
+position: { x: 24, y: 4 }
 size: { w: 12, h: 8 }
 color: "#3d5a80"
 agents:
   - id: forge
     name: Forge
-    role: Writes prompts, generates artwork (GPT Image / Ideogram), composes mockups.
+    role: Builder. Turns a qualified lead into a complete, responsive static site.
     color: "#98c1d9"
 tools: []
+skills: ["ui-ux-pro-max"]
+max_workers: 3
+workbenches:
+  - id: site
+    name: The Build Floor
+    job: Writing the site itself from the dossier and the visual report
+    stages: [visualised, qa_failed]
+  - id: craft
+    name: Craft Bench
+    job: Delegated pieces — logos, icons, CSS motifs — made with geometry, not photos
+    stages: []
+    tasks: [subtask]

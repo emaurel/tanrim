@@ -8,6 +8,7 @@ Two responsibilities:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -16,36 +17,30 @@ from typing import Any
 from claude_agent_sdk import ClaudeAgentOptions, query
 
 from .. import state, usage
+from ..agent_helpers import (
+    format_lead_board,
+    parse_json_block,
+    format_secret_names,
+    format_ultron_memory,
+)
 from ..tools import registry as tool_registry
 from ..world import World
+
+from .. import prompts as _prompts
+
+_P = _prompts.loader("ultron")
 
 MODEL = "claude-sonnet-4-6"
 AGENT_ID = "ultron"
 
-ROLE = """\
-You are Ultron, the overseer of an Etsy print-on-demand agent dungeon. Your
-agents (Nova, Forge, Scribe, etc.) ask you to authorize new capabilities (tools)
-that will be fabricated by the Armory. Decide whether each request is worth it.
-
-Approve when:
-- The capability is clearly useful for the requesting agent's role.
-- A tool of this kind doesn't already exist.
-- It can be implemented as a thin HTTP-API or stdlib wrapper (no shell, no fs writes outside scope).
-
-Deny when:
-- The request duplicates an existing tool.
-- The capability is too vague to fabricate.
-- It would obviously violate Etsy/POD partner ToS.
-
-Output ONLY a JSON object:
-  {"decision": "approve" | "deny", "reason": "1 short sentence"}
-"""
+ROLE = _P("ROLE")
 
 # Patterns we'll never auto-approve — escalate to user instead.
 DANGEROUS = re.compile(
     r"\b(shell|subprocess|exec|eval|os\.system|delete|drop|rm |sudo|format)\b",
     re.IGNORECASE,
 )
+
 
 
 def _is_dangerous(req: dict[str, Any]) -> bool:
@@ -59,7 +54,14 @@ def _is_dangerous(req: dict[str, Any]) -> bool:
 
 def _build_prompt(req: dict[str, Any]) -> str:
     existing = tool_registry.list_tools()
-    return ROLE + "\n\n" + (
+    sections = [ROLE.strip()]
+    mem = format_ultron_memory()
+    if mem:
+        sections.append(mem)
+    sec = format_secret_names()
+    if sec:
+        sections.append(sec)
+    sections.append(
         "Tool request:\n"
         f"  - requesting agent: {req['requesting_agent']}\n"
         f"  - requesting room: {req['requesting_room']}\n"
@@ -69,21 +71,13 @@ def _build_prompt(req: dict[str, Any]) -> str:
         f"Currently registered tools: {existing or '(none)'}\n\n"
         "Decide now."
     )
+    return "\n\n".join(sections)
 
 
 def _parse_decision(text: str) -> dict[str, Any] | None:
-    text = text.strip()
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
-    if fence:
-        text = fence.group(1)
-    s = text.find("{")
-    e = text.rfind("}")
-    if s == -1 or e <= s:
-        return None
-    try:
-        return json.loads(text[s : e + 1])
-    except json.JSONDecodeError:
-        return None
+    """Shared with every other agent — see `parse_json_block` for why the naive
+    first-brace-to-last-brace slice isn't good enough."""
+    return parse_json_block(text)
 
 
 async def review(world: World, request_id: str) -> None:
@@ -185,38 +179,7 @@ async def review(world: World, request_id: str) -> None:
         await world.set_status(AGENT_ID, "idle")
 
 
-DISPATCH_PROMPT = """\
-You are Ultron, the overseer of an Etsy print-on-demand agent dungeon. The
-operator just gave you a task. Decide which agent should handle it.
-
-Available agents (only these are runnable right now):
-- nova (Research Lab): scans Etsy/web for trending niches, produces structured
-  JSON briefs (niche, audience, product types, style, example titles, rationale).
-  Best for "find me trending X" / "research Y" / "what's selling now".
-- forge (Factory): takes the latest research brief and produces a design spec —
-  a high-level concept, 3 image-gen-ready prompts, color palette, composition
-  notes. Best for "design something for X" / "give me visuals" / "draft mockups".
-  Auto-uses the most recent Nova brief as constraint if one exists.
-- scribe (Copy Desk): takes the latest brief (and design, if any) and writes
-  Etsy listing copy — title, description, exactly 13 tags, alt text, category.
-  Best for "write a listing for X" / "Etsy copy" / "tags".
-  Auto-uses the most recent brief and design if they exist.
-
-Pipeline order: nova → forge → scribe. Each downstream agent reads the most
-recent upstream output. If the operator says "do the whole pipeline", pick the
-first missing step (start at nova if no brief exists).
-
-If a task is clearly out of scope right now (publishing listings, deletion,
-ad spend, anything destructive, anything no available agent can do), refuse
-politely with a one-sentence reason.
-
-If you dispatch, refine the operator's task into a clean prompt for the chosen
-agent — be specific, but don't add details the operator didn't imply.
-
-Output ONLY a JSON object, no preamble, no markdown:
-  - to dispatch: {"agent": "nova"|"forge"|"scribe", "prompt": "<refined>", "rationale": "<1 sentence>"}
-  - to refuse:   {"agent": null, "rationale": "<why>"}
-"""
+DISPATCH_PROMPT = _P("DISPATCH_PROMPT")
 
 
 async def dispatch(world: World, task: str) -> dict[str, Any]:
@@ -233,7 +196,15 @@ async def dispatch(world: World, task: str) -> dict[str, Any]:
     response_text = ""
     in_tok = out_tok = 0
     try:
-        prompt = DISPATCH_PROMPT + "\n\nOperator task: " + task + "\n\nDecide now."
+        sections = [DISPATCH_PROMPT.strip(), format_lead_board()]
+        mem = format_ultron_memory()
+        if mem:
+            sections.append(mem)
+        sec = format_secret_names()
+        if sec:
+            sections.append(sec)
+        sections.append("Operator task: " + task + "\n\nDecide now.")
+        prompt = "\n\n".join(sections)
         options = ClaudeAgentOptions(model=MODEL)
         async for message in query(prompt=prompt, options=options):
             content = getattr(message, "content", None)
@@ -278,7 +249,11 @@ async def dispatch(world: World, task: str) -> dict[str, Any]:
             outcome="dispatched",
             details={"task": task, "refined_prompt": refined},
         )
-        return {"ok": True, "agent": agent, "prompt": refined, "rationale": rationale, "task": task}
+        return {
+            "ok": True, "agent": agent, "prompt": refined, "rationale": rationale,
+            "task": task, "lead_id": decision.get("lead_id"),
+            "mode": decision.get("mode"),
+        }
     except Exception as e:
         await world.say(AGENT_ID, f"failed: {type(e).__name__}", seconds=6)
         state.log_event(
@@ -294,37 +269,7 @@ async def dispatch(world: World, task: str) -> dict[str, Any]:
         await world.set_status(AGENT_ID, "idle")
 
 
-RESPOND_PROMPT = """\
-You are Ultron. One of your agents hit a blocker or has a question. Respond.
-
-Two independent decisions to make on every escalation:
-
-A. ALWAYS provide `guidance`: a concrete instruction so the agent can keep
-   working RIGHT NOW with what they have. Be specific — name approaches,
-   alternative tools, what to caveat. Don't punt with "do your best".
-
-B. SEPARATELY decide `alert_operator`. Set it to TRUE whenever the operator
-   (Edgar) could meaningfully change the outcome by giving us something —
-   API credentials, an account login, a strategic decision he's best placed
-   to make, or just awareness that a gap exists. You can give guidance AND
-   alert the operator at the same time — they're not mutually exclusive.
-
-   Bias TOWARD alerting on credential blockers and structural gaps. The
-   operator wants visibility. Don't hide gaps from him just because there's
-   a workaround. The operator can write a reply when resolving the alert
-   (e.g., "here's the key" or "skip it"); that reply gets passed back to
-   the agent on its next run.
-
-`operator_summary` (only if alerting): what specifically you'd like from
-Edgar, and what changes if he provides it. One short paragraph.
-
-Output ONLY a JSON object, no preamble, no markdown:
-{
-  "guidance": "<concrete instruction for the agent, 1-3 sentences>",
-  "alert_operator": true|false,
-  "operator_summary": "<what you need from Edgar; only if alerting>"
-}
-"""
+RESPOND_PROMPT = _P("RESPOND_PROMPT")
 
 
 async def respond_to_escalation(world: World, escalation_id: str) -> None:
@@ -339,13 +284,20 @@ async def respond_to_escalation(world: World, escalation_id: str) -> None:
     response_text = ""
     in_tok = out_tok = 0
     try:
-        prompt = (
-            RESPOND_PROMPT
-            + "\n\nAgent: " + esc["agent"]
+        sections = [RESPOND_PROMPT.strip()]
+        mem = format_ultron_memory()
+        if mem:
+            sections.append(mem)
+        sec = format_secret_names()
+        if sec:
+            sections.append(sec)
+        sections.append(
+            "Agent: " + esc["agent"]
             + "\nTheir room: " + esc["room"]
             + "\nMessage:\n" + esc["message"]
             + "\n\nDecide now."
         )
+        prompt = "\n\n".join(sections)
         options = ClaudeAgentOptions(model=MODEL)
         async for message in query(prompt=prompt, options=options):
             content = getattr(message, "content", None)
@@ -369,6 +321,22 @@ async def respond_to_escalation(world: World, escalation_id: str) -> None:
         guidance = (decision.get("guidance") or "").strip() or "Proceed best-effort with what you have."
         alert_op = bool(decision.get("alert_operator"))
         op_summary = (decision.get("operator_summary") or "").strip()
+        # Default to re-firing, since that's the useful case, but let Ultron
+        # veto it — a rerun with nothing new to attempt escalates again and
+        # loops. Absent an explicit answer, infer it from the guidance: if he
+        # is telling them to stand down, don't re-fire them.
+        rerun = decision.get("rerun_agent")
+        if rerun is None:
+            stand_down = any(
+                phrase in guidance.lower()
+                for phrase in (
+                    "stand down", "remain idle", "stay idle", "do nothing",
+                    "do not search", "don't search", "stop searching",
+                    "no further action", "take no action", "hold off",
+                )
+            )
+            rerun = not stand_down
+        rerun = bool(rerun)
 
         state.update_escalation(
             escalation_id,
@@ -378,6 +346,7 @@ async def respond_to_escalation(world: World, escalation_id: str) -> None:
                 "guidance": guidance,
                 "alert_operator": alert_op,
                 "operator_summary": op_summary,
+                "rerun_agent": rerun,
             },
         )
 
@@ -418,27 +387,7 @@ async def respond_to_escalation(world: World, escalation_id: str) -> None:
         await world.set_status(AGENT_ID, "idle")
 
 
-FOLLOWUP_PROMPT = """\
-You are Ultron. You previously responded to an agent's escalation with some
-guidance and alerted the operator (Edgar). Edgar has now resolved your alert
-with a reply. You need to integrate that reply.
-
-You do TWO things in this follow-up:
-
-1. UPDATE GUIDANCE for the agent — incorporate Edgar's directive (e.g., "here
-   is the API key", "skip credentials, proceed without", "use approach X").
-   Be concrete; the agent will be auto-rerun with this updated guidance.
-
-2. RESPOND TO THE OPERATOR — ONLY if Edgar asked you a question or requested
-   information. Otherwise leave `operator_response` empty. Don't echo back if
-   he simply gave a directive.
-
-Output ONLY a JSON object, no preamble, no markdown:
-{
-  "guidance": "<concrete updated instruction for the agent, 1-3 sentences>",
-  "operator_response": "<answer to Edgar's question, or empty string>"
-}
-"""
+FOLLOWUP_PROMPT = _P("FOLLOWUP_PROMPT")
 
 
 async def followup_on_escalation(
@@ -463,15 +412,22 @@ async def followup_on_escalation(
     in_tok = out_tok = 0
     try:
         prior = (esc.get("ultron_response") or {}).get("guidance") or ""
-        prompt = (
-            FOLLOWUP_PROMPT
-            + "\n\nAgent: " + esc["agent"]
+        sections = [FOLLOWUP_PROMPT.strip()]
+        mem = format_ultron_memory()
+        if mem:
+            sections.append(mem)
+        sec = format_secret_names()
+        if sec:
+            sections.append(sec)
+        sections.append(
+            "Agent: " + esc["agent"]
             + "\nTheir original message:\n" + (esc.get("message") or "")
             + "\n\nYour prior guidance to them:\n" + prior
             + f"\n\nEdgar's reply (decision={operator_decision}):\n"
             + (operator_reply or "(no extra text)")
             + "\n\nIntegrate now."
         )
+        prompt = "\n\n".join(sections)
         options = ClaudeAgentOptions(model=MODEL)
         async for message in query(prompt=prompt, options=options):
             content = getattr(message, "content", None)
@@ -501,10 +457,23 @@ async def followup_on_escalation(
         ultron_response["followup_ts"] = time.time()
         ultron_response["operator_decision"] = operator_decision
         ultron_response["operator_reply"] = operator_reply
+        # The operator's reply is new information, so a retry is usually the
+        # point of this path — but honour an explicit veto, and re-derive one
+        # from the updated guidance rather than inheriting a stale allowance.
+        followup_rerun = decision.get("rerun_agent")
+        if followup_rerun is None:
+            followup_rerun = not any(
+                phrase in new_guidance.lower()
+                for phrase in (
+                    "stand down", "remain idle", "stay idle", "do nothing",
+                    "no further action", "take no action",
+                )
+            )
+        ultron_response["rerun_agent"] = bool(followup_rerun)
         state.update_escalation(
             escalation_id,
             ultron_response=ultron_response,
-            rerun_dispatched=False,  # gatekeeper will re-fire the agent
+            rerun_dispatched=False,  # gatekeeper decides, honouring the veto
         )
 
         # Surface Ultron's response to the operator if he had something to say.
@@ -534,6 +503,116 @@ async def followup_on_escalation(
             details={"escalation_id": escalation_id},
         )
         await world.say(AGENT_ID, f"followup failed: {type(e).__name__}", seconds=6)
+    finally:
+        world.agents[AGENT_ID].busy = False
+        await world.set_status(AGENT_ID, "idle")
+
+
+REACT_PROMPT = _P("REACT_PROMPT")
+
+
+async def react_to_report(world: World, report: dict[str, Any]) -> None:
+    """Sonnet call: Ultron reads an agent's report + memory and decides
+    whether to dispatch the next agent, acknowledge, or do nothing."""
+    from ..runners import AGENT_RUNNERS  # local import to avoid cycle
+
+    reporter = report.get("from") or "unknown"
+
+    world.agents[AGENT_ID].busy = True
+    await world.set_status(AGENT_ID, "thinking")
+    await world.say(AGENT_ID, f"reading {reporter}'s report…", seconds=20)
+
+    response_text = ""
+    in_tok = out_tok = 0
+    try:
+        sections = [REACT_PROMPT.strip(), format_lead_board()]
+        mem = format_ultron_memory()
+        if mem:
+            sections.append(mem)
+        sec = format_secret_names()
+        if sec:
+            sections.append(sec)
+        # The board is the truth about where a lead is. Your memory is a log of
+        # what happened, and a log read out of order is how a finished rebuild
+        # gets mistaken for one already handled.
+        sections.append(
+            f"Reporting agent: {reporter}\n"
+            f"Their report: {report.get('summary', '')}\n\n"
+            "The pipeline now moves leads between rooms automatically the moment "
+            "their stage changes, so you do NOT need to dispatch to keep work "
+            "flowing — and dispatching a lead whose stage has already moved on "
+            "does nothing. Prefer 'acknowledge' or 'ignore' unless the board "
+            "shows a lead genuinely stuck at a stage with nobody on it.\n\n"
+            "Decide now."
+        )
+        prompt = "\n\n".join(sections)
+
+        options = ClaudeAgentOptions(model=MODEL)
+        async for message in query(prompt=prompt, options=options):
+            content = getattr(message, "content", None)
+            if isinstance(content, list):
+                for block in content:
+                    text = getattr(block, "text", None)
+                    if text:
+                        response_text += text
+            result = getattr(message, "result", None)
+            if isinstance(result, str) and result:
+                response_text = result
+            u = getattr(message, "usage", None)
+            if u is not None:
+                in_tok = _u(u, "input_tokens")
+                out_tok = _u(u, "output_tokens")
+
+        if in_tok or out_tok:
+            usage.record(AGENT_ID, MODEL, in_tok, out_tok)
+
+        decision = _parse_decision(response_text) or {}
+        action = decision.get("action") or "ignore"
+        agent = decision.get("agent")
+        refined = (decision.get("prompt") or "").strip()
+        rationale = (decision.get("rationale") or "").strip()
+
+        if action == "dispatch" and agent in AGENT_RUNNERS and refined:
+            await world.talk(AGENT_ID, agent, seconds=6.0, label=f"next: {agent}")
+            await world.say(AGENT_ID, f"→ {agent}: {rationale[:36]}", seconds=8)
+            state.log_event(
+                "dispatch_end",
+                from_=AGENT_ID, to=agent,
+                summary=f"chained → {agent}: {rationale[:160]}",
+                outcome="dispatched",
+                details={"chained_after_report": report["id"], "refined_prompt": refined},
+            )
+            asyncio.create_task(AGENT_RUNNERS[agent](world, {
+                "prompt": refined,
+                "lead_id": decision.get("lead_id"),
+                "mode": decision.get("mode"),
+            }))
+        elif action == "acknowledge":
+            await world.say(AGENT_ID, f"✓ {rationale[:40]}", seconds=8)
+            state.log_event(
+                "ask_response",  # reuse the kind so it shows in the same column
+                from_=AGENT_ID, to="operator",
+                summary=f"acknowledged {reporter}'s report: {rationale[:160]}",
+                outcome="acknowledged",
+                details={"in_reply_to_report": report["id"]},
+            )
+        else:  # ignore
+            state.log_event(
+                "ask_response",
+                from_=AGENT_ID, to=reporter,
+                summary=f"no action on {reporter}'s report: {rationale[:160] or 'tangential'}",
+                outcome="ignored",
+                details={"in_reply_to_report": report["id"]},
+            )
+    except Exception as e:
+        state.log_event(
+            "ask_response",
+            from_=AGENT_ID,
+            summary=f"react_to_report failed: {type(e).__name__}: {e}",
+            outcome="failed",
+            details={"in_reply_to_report": report["id"]},
+        )
+        await world.say(AGENT_ID, f"react failed: {type(e).__name__}", seconds=6)
     finally:
         world.agents[AGENT_ID].busy = False
         await world.set_status(AGENT_ID, "idle")

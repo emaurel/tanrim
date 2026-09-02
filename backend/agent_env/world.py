@@ -23,7 +23,21 @@ class AgentState:
     status: str = "idle"
     say: str = ""
     say_until: float = 0.0
-    busy: bool = False  # True while a real agent task owns this sprite — fidget loop yields
+    busy: bool = False  # True while a real agent task owns this sprite
+    # A room's work is done by one or more interchangeable workers of the same
+    # role. `role` is the manifest agent id ("forge"); `id` identifies the
+    # individual ("forge", "forge-2"). Memory and context belong to the role;
+    # locks, sprites and status belong to the worker.
+    role: str = ""
+    # Workers beyond the first are spawned on demand and retired when the lead
+    # they were hired for finishes its run through the pipeline.
+    ephemeral: bool = False
+    lead_id: str | None = None
+    # Which station in the room this worker is at, if any. Set for the duration
+    # of a job so the map shows what kind of work is happening where.
+    workbench: str | None = None
+    # A bench this agent returns to when idle rather than stepping away.
+    station: str | None = None
 
 
 @dataclass
@@ -38,20 +52,94 @@ class World:
         w = cls(rooms=rooms)
         for room in rooms:
             for spec in room.agents:
-                cx = room.position.x + room.size.w / 2
-                cy = room.position.y + room.size.h / 2
+                # Start where they idle, not at the room's centre — the centre
+                # is where the workbenches are, and an idle agent standing on a
+                # bench reads as working when it isn't.
+                x, y = w._idle_spot(room, spec.station)
                 w.agents[spec.id] = AgentState(
                     id=spec.id,
                     name=spec.name,
                     color=spec.color,
                     home_room=room.id,
                     room_id=room.id,
-                    x=cx,
-                    y=cy,
-                    target_x=cx,
-                    target_y=cy,
+                    x=x,
+                    y=y,
+                    target_x=x,
+                    target_y=y,
+                    role=spec.id,
+                    station=spec.station,
+                    workbench=spec.station,
                 )
         return w
+
+    @staticmethod
+    def _idle_spot(room: RoomSpec, station: str | None = None) -> tuple[float, float]:
+        """Where an agent stands when it has nothing to do.
+
+        The strip along the bottom of the room, which the bench auto-layout
+        keeps clear. An agent with a `station` stands at that bench instead.
+        """
+        from .rooms import workbench as find_bench
+
+        if station:
+            bench = find_bench(room, station)
+            if bench is not None and bench.position and bench.size:
+                return (
+                    room.position.x + bench.position.x + bench.size.w * random.uniform(0.3, 0.7),
+                    room.position.y + bench.position.y + bench.size.h * random.uniform(0.4, 0.8),
+                )
+        return (
+            room.position.x + room.size.w * random.uniform(0.35, 0.65),
+            room.position.y + room.size.h * random.uniform(0.72, 0.92),
+        )
+
+    # ---------- Workers ----------
+
+    def workers(self, role: str) -> list[AgentState]:
+        """Every agent currently filling this role, base and ephemeral."""
+        return [a for a in self.agents.values() if (a.role or a.id) == role]
+
+    ROMAN = ["", "II", "III", "IV", "V", "VI"]
+
+    async def spawn_worker(self, role: str, lead_id: str | None = None) -> AgentState:
+        """Hire another agent for a role that's already busy. The new sprite
+        appears in the same room — the frontend creates it on first sight."""
+        base = self.agents.get(role)
+        if base is None:
+            raise KeyError(f"no base agent for role {role}")
+        existing = {a.id for a in self.workers(role)}
+        n = 2
+        while f"{role}-{n}" in existing:
+            n += 1
+        room = self.room(base.home_room)
+        x, y = self._idle_spot(room, base.station)
+        suffix = self.ROMAN[n - 1] if n - 1 < len(self.ROMAN) else str(n)
+        worker = AgentState(
+            id=f"{role}-{n}",
+            name=f"{base.name} {suffix}".strip(),
+            color=base.color,
+            home_room=base.home_room,
+            room_id=base.home_room,
+            x=x, y=y, target_x=x, target_y=y,
+            role=role,
+            ephemeral=True,
+            lead_id=lead_id,
+            station=base.station,
+            workbench=base.station,
+        )
+        self.agents[worker.id] = worker
+        await self.publish({"type": "agent_update", "agent": worker.__dict__})
+        return worker
+
+    async def despawn_worker(self, agent_id: str) -> bool:
+        """Retire an ephemeral worker. The base agent of a role is never
+        removed — a room should never look abandoned."""
+        agent = self.agents.get(agent_id)
+        if agent is None or not agent.ephemeral or agent.busy:
+            return False
+        del self.agents[agent_id]
+        await self.publish({"type": "agent_removed", "agent_id": agent_id})
+        return True
 
     def snapshot(self) -> dict[str, Any]:
         from . import state  # avoid import cycle on boot
@@ -88,12 +176,57 @@ class World:
         agent = self.agents[agent_id]
         target = self.room(room_id)
         agent.room_id = room_id
-        # Pick a spot inside the room with a margin so agents don't overlap on a center pile.
-        margin_x = max(1.0, target.size.w * 0.2)
-        margin_y = max(1.0, target.size.h * 0.3)
-        agent.target_x = target.position.x + random.uniform(margin_x, target.size.w - margin_x)
-        agent.target_y = target.position.y + random.uniform(margin_y, target.size.h - margin_y)
+        # Land in the visiting area, not on top of whatever bench is in the
+        # middle — a visitor standing at a bench reads as working there.
+        agent.workbench = None
+        agent.target_x, agent.target_y = self._idle_spot(target)
         agent.status = status
+        await self.publish({"type": "agent_update", "agent": agent.__dict__})
+
+    async def move_to_workbench(
+        self, agent_id: str, room_id: str, bench_id: str
+    ) -> None:
+        """Walk a worker to a station inside its room for the duration of a job."""
+        from .rooms import workbench as find_bench
+
+        agent = self.agents.get(agent_id)
+        if agent is None:
+            return
+        try:
+            room = self.room(room_id)
+        except KeyError:
+            return
+        bench = find_bench(room, bench_id)
+        agent.workbench = bench_id
+        if bench is None or bench.position is None or bench.size is None:
+            await self.publish({"type": "agent_update", "agent": agent.__dict__})
+            return
+        # Several workers can share a bench, so scatter them within it rather
+        # than stacking on the exact centre.
+        bx = room.position.x + bench.position.x
+        by = room.position.y + bench.position.y
+        agent.room_id = room_id
+        agent.target_x = bx + random.uniform(bench.size.w * 0.25, bench.size.w * 0.75)
+        agent.target_y = by + random.uniform(bench.size.h * 0.3, bench.size.h * 0.8)
+        await self.publish({"type": "agent_update", "agent": agent.__dict__})
+
+    async def leave_workbench(self, agent_id: str) -> None:
+        """Step away from the bench when the job is done.
+
+        Back to the idle strip along the bottom of the room — or to this
+        agent's own station, if it has one.
+        """
+        agent = self.agents.get(agent_id)
+        if agent is None:
+            return
+        agent.workbench = agent.station
+        try:
+            room = self.room(agent.home_room)
+        except KeyError:
+            await self.publish({"type": "agent_update", "agent": agent.__dict__})
+            return
+        agent.room_id = room.id
+        agent.target_x, agent.target_y = self._idle_spot(room, agent.station)
         await self.publish({"type": "agent_update", "agent": agent.__dict__})
 
     async def say(self, agent_id: str, text: str, seconds: float = 4.0) -> None:

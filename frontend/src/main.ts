@@ -2,8 +2,11 @@ import Phaser from "phaser";
 import { World } from "./scenes/World";
 import { mount as mountCrew } from "./agentList";
 import { startApprovalSync } from "./approvals";
+import { installUnlockHandlers } from "./notify";
 
 mountCrew();
+// Browsers block audio until the user has interacted with the page.
+installUnlockHandlers();
 startApprovalSync();
 
 new Phaser.Game({

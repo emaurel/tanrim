@@ -1,192 +1,260 @@
-"""Forge — Factory. Takes a research brief and produces a design specification:
-a high-level concept plus image-gen-ready prompts in 3-4 variants.
+"""Forge — the Factory. Builds the actual website.
+
+Unlike every other agent here, Forge is not a single JSON completion: it is a
+file-writing agent scoped to `state/sites/<lead_id>/`, using the SDK's built-in
+Write/Read/Edit tools. It produces a real, openable site on disk, which is what
+Lens inspects and Courier publishes.
 """
 from __future__ import annotations
 
+import json
+import shutil
+import time
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, query
-
-from .. import state, usage
+from .. import skills, state
 from ..agent_helpers import (
     format_escalations,
     format_feedback,
+    format_lead,
     format_tool_history,
-    parse_json_block,
-    resolve_room_tools,
-    usage_int,
+    run_agent,
 )
-from ..meta_tools import make_meta_server
-from ..tools import registry as tool_registry
+from ..config import SITES_DIR
 from ..world import World
 
-MODEL = "claude-haiku-4-5"
+from .. import prompts as _prompts
+_P = _prompts.loader("forge")
+
+MODEL = "claude-sonnet-4-6"
 AGENT_ID = "forge"
 ROOM_ID = "factory"
 
-ROLE = """\
-You are Forge, the design agent in an Etsy print-on-demand operation. You take
-a research brief from Nova and produce concrete design specifications the image
-generator can act on.
+ROLE = _P("ROLE")
 
-Lean on the brief — niche, audience, style — but don't copy its language; produce
-visual ideas grounded in those constraints. Generate 3 variants so the operator
-has options. Each prompt should be self-contained and detailed enough that an
-image-gen model (GPT Image / Ideogram / SDXL) needs no additional context.
-"""
-
-SCHEMA = """\
-Output ONE of these two JSON shapes — no preamble, no markdown fence:
-
-A. DESIGN (you have a real spec to deliver):
-{
-  "design_concept": "1-2 sentence high-level concept this whole batch shares",
-  "image_prompts": ["3 detailed prompts, each ~30-60 words, ready for image-gen"],
-  "color_palette": ["#hex", "#hex", "#hex", "#hex"],
-  "composition_notes": "framing, focal point, negative space, do/don't",
-  "product_application_notes": "how this design works on the brief's product types"
-}
-
-B. DEFERRED (you only escalated or requested a tool this run):
-{"deferred": true, "reason": "<1 sentence — what you escalated or requested>"}
-
-DO NOT stub a design with training-data guesses when you've escalated. The
-auto-rerun gives you a real chance next round.
-"""
+SCHEMA = _P("SCHEMA")
 
 
-def _format_brief(brief: dict[str, Any] | None) -> str:
-    if not brief or not brief.get("data"):
-        return ""
-    d = brief["data"]
-    parts = [
-        "RESEARCH BRIEF (most recent — use as your design constraint):",
-        f"- niche: {d.get('niche', '')}",
-        f"- audience: {d.get('target_audience', '')}",
-        f"- style direction: {d.get('style_direction', '')}",
-        f"- product types: {', '.join(d.get('product_types') or [])}",
-    ]
-    return "\n".join(parts)
+def _room_skills() -> list[str]:
+    """Skills granted to the Factory in rooms/factory.yaml."""
+    from ..rooms import load_rooms
+
+    for room in load_rooms():
+        if room.id == ROOM_ID:
+            return list(room.skills)
+    return []
 
 
-def _build_prompt(
-    prompt: str,
-    latest_brief: dict[str, Any] | None,
-    feedback: list[dict[str, Any]],
-) -> str:
+def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
     sections = [ROLE.strip()]
-    fb = format_feedback(feedback, ROOM_ID)
-    if fb:
-        sections.append(fb)
-    es = format_escalations(AGENT_ID)
-    if es:
-        sections.append(es)
-    th = format_tool_history(AGENT_ID)
-    if th:
-        sections.append(th)
-    bf = _format_brief(latest_brief)
-    if bf:
-        sections.append(bf)
+    sk = skills.describe(_room_skills())
+    if sk:
+        sections.append(sk)
+    for block in (
+        format_feedback(state.list_notes(limit=20), ROOM_ID),
+        format_escalations(AGENT_ID),
+        format_tool_history(AGENT_ID),
+    ):
+        if block:
+            sections.append(block)
+    sections.append(format_lead(lead, include=("audit",)))
+
+    visual = lead.get("visual")
+    if visual:
+        sections.append(
+            "WHAT LENS SAW IN THEIR OWN PHOTOGRAPHS. This is the real room, not "
+            "a guess from the trade. Use the observed palette, the transcribed "
+            "boards, and the concrete details — they are what make the page look "
+            "like THIS business:\n"
+            + json.dumps({
+                k: visual.get(k) for k in (
+                    "palette_observed", "text_in_photos", "atmosphere", "signage",
+                    "proves", "photo_slots_needed", "design_direction",
+                ) if visual.get(k)
+            }, ensure_ascii=False, indent=2)[:6000]
+        )
+
+    profile = lead.get("profile")
+    if profile:
+        sections.append(
+            "THE DOSSIER — everything Probe researched and sourced. This is the "
+            "content of the site. Build from it; invent nothing beyond it:\n"
+            + json.dumps(profile, ensure_ascii=False, indent=2)[:9000]
+        )
+    else:
+        sections.append(
+            "NO DOSSIER EXISTS for this lead. You have only map data — a name, an "
+            "address, a phone number. Build the most honest thing that can be "
+            "built from that, mark every content section as a placeholder, and "
+            "say clearly in `placeholders` that the site has no real content yet."
+        )
+    copy = lead.get("copy")
+    if copy:
+        sections.append(
+            "COPY FROM THE COPY DESK (Scribe wrote this for the site — use it):\n"
+            + json.dumps(copy, ensure_ascii=False, indent=2)[:2500]
+        )
+    qa = lead.get("qa")
+    if qa and (qa.get("problems") or []):
+        failed = qa.get("verdict") == "fail"
+        header = (
+            "LENS REJECTED YOUR PREVIOUS BUILD. Fix exactly these, then rebuild:"
+            if failed else
+            "LENS PASSED YOUR PREVIOUS BUILD BUT FOUND THESE. A rebuild that "
+            "reproduces any of them is a worse build than the one it replaces — "
+            "fix them all:"
+        )
+        sections.append(
+            header + "\n"
+            + json.dumps(qa.get("problems") or [], ensure_ascii=False, indent=2)[:2000]
+        )
+        if qa.get("strengths"):
+            sections.append(
+                "WHAT LENS SAID ALREADY WORKED — do not throw these away:\n"
+                + json.dumps(qa["strengths"], ensure_ascii=False, indent=2)[:1200]
+            )
     sections.append(SCHEMA.strip())
-    sections.append(f"Operator request: {prompt}\n\nReturn the JSON design spec now.")
+    sections.append(
+        (instruction or "Build this business a website.")
+        + "\n\nWrite the files into your working directory now."
+    )
     return "\n\n".join(sections)
 
 
-async def run_design(world: World, prompt: str) -> dict[str, Any]:
-    latest_brief = (state.list_briefs(limit=1) or [None])[0]
-    feedback = state.list_notes(limit=20)
-    full_prompt = _build_prompt(prompt, latest_brief, feedback)
+async def run_build(world: World, lead_id: str, instruction: str = "") -> dict[str, Any]:
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        return {"ok": False, "error": f"no such lead: {lead_id}"}
 
-    response_text = ""
-    in_tok = out_tok = 0
+    site_dir = SITES_DIR / lead_id
+    site_dir.mkdir(parents=True, exist_ok=True)
 
-    world.agents[AGENT_ID].busy = True
-    await world.set_status(AGENT_ID, "working")
-    await world.say(AGENT_ID, "sketching…", seconds=30)
-    state.log_event("run_start", from_=AGENT_ID, summary=f"design: {prompt[:160]}")
+    # Snapshot whatever is already there. A rebuild that fails part-way used to
+    # leave its debris in place, overwriting a build that had already passed QA
+    # — the failure cost us the good site as well as the run.
+    backup = site_dir / ".previous"
+    existing = [p for p in site_dir.glob("*") if p.is_file() and not p.name.startswith("shot-")]
+    if existing:
+        if backup.exists():
+            shutil.rmtree(backup)
+        backup.mkdir(parents=True, exist_ok=True)
+        for path in existing:
+            shutil.copy2(path, backup / path.name)
+
+
+    def _rollback() -> list[str]:
+        """Put the previous build back. Returns the files restored."""
+        if not backup.is_dir():
+            return []
+        restored = []
+        for path in backup.glob("*"):
+            shutil.copy2(path, site_dir / path.name)
+            restored.append(path.name)
+        return restored
 
     try:
-        mcp_servers: dict[str, Any] = {
-            f"meta_{AGENT_ID}": make_meta_server(
-                AGENT_ID, ROOM_ID, world, original_task={"prompt": prompt},
-            )
-        }
-        room_tools = resolve_room_tools(ROOM_ID)
-        for tool_name in room_tools:
-            srv = tool_registry.get(tool_name)
-            if srv is not None:
-                mcp_servers[tool_name] = srv
-        allowed = [f"mcp__meta_{AGENT_ID}__*"]
-        for tn in room_tools:
-            allowed.append(f"mcp__{tn}__*")
-
-        options = ClaudeAgentOptions(
-            model=MODEL,
-            mcp_servers=mcp_servers,
-            allowed_tools=allowed,
+        result = await run_agent(
+            world,
+            role=AGENT_ID, room_id=ROOM_ID, model=MODEL,
+            prompt=_build_prompt(lead, instruction),
+            summary=f"building site: {lead.get('name')}",
+            workbench="site",
+            say=f"building {str(lead.get('name'))[:24]}…",
+            original_task={"lead_id": lead_id, "instruction": instruction},
+            # Bash is here because the design skill works by shelling out to its
+            # own Python search script. Scoped to the lead's build directory.
+            builtin_tools=["Write", "Read", "Edit", "Glob", "Bash", "Skill"],
+            cwd=site_dir,
+            permission_mode="acceptEdits",
+            # 60 was too many (the tail was full-file rewrites); 32 was too few and
+            # runs hit the cap mid-build. The real lever is the write-once rule
+            # above, not the ceiling — this is a backstop, not a budget.
+            max_turns=45,
+            # A runaway build must not be able to spend without bound.
+            max_budget_usd=2.50,
+            schema=SCHEMA,
+            skills=_room_skills(),
         )
-
-        first_text = False
-        async for message in query(prompt=full_prompt, options=options):
-            content = getattr(message, "content", None)
-            if isinstance(content, list):
-                for block in content:
-                    text = getattr(block, "text", None)
-                    if text:
-                        response_text += text
-                        if not first_text:
-                            await world.say(AGENT_ID, "rendering variants…", seconds=30)
-                            first_text = True
-            result = getattr(message, "result", None)
-            if isinstance(result, str) and result:
-                response_text = result
-            u = getattr(message, "usage", None)
-            if u is not None:
-                in_tok = usage_int(u, "input_tokens")
-                out_tok = usage_int(u, "output_tokens")
-
-        parsed = parse_json_block(response_text)
-        if in_tok or out_tok:
-            usage.record(AGENT_ID, MODEL, in_tok, out_tok)
-
-        if parsed and parsed.get("deferred"):
-            reason = (parsed.get("reason") or "").strip() or "deferred to next run"
-            await world.say(AGENT_ID, f"deferred: {reason[:40]}", seconds=6)
+    except Exception:
+        # A half-finished rebuild must not replace a build that worked. Put the
+        # previous one back before letting the error surface.
+        restored = _rollback()
+        if restored:
             state.log_event(
                 "run_end", from_=AGENT_ID,
-                summary=f"deferred: {reason[:160]}", outcome="deferred",
+                summary=f"build failed for {lead.get('name')}; restored the "
+                        f"previous build ({', '.join(restored)})",
+                outcome="rolled_back", details={"lead_id": lead_id},
             )
-            return {"deferred": True, "reason": reason}
-
-        design = state.add_design({
-            "agent_id": AGENT_ID,
-            "model": MODEL,
-            "prompt": prompt,
-            "full_prompt": full_prompt,
-            "brief_id": latest_brief["id"] if latest_brief else None,
-            "raw": response_text,
-            "data": parsed,
-            "input_tokens": in_tok,
-            "output_tokens": out_tok,
-            "cost_usd": usage.compute_cost(MODEL, in_tok, out_tok),
-        })
-
-        if parsed and parsed.get("design_concept"):
-            await world.say(AGENT_ID, parsed["design_concept"][:48], seconds=8)
-        else:
-            await world.say(AGENT_ID, "design ready", seconds=4)
-        state.log_event(
-            "run_end", from_=AGENT_ID,
-            summary=f"design: {(parsed or {}).get('design_concept', '(unparsed)')[:160]}",
-            outcome="completed",
-            details={"design_id": design["id"], "tokens": in_tok + out_tok, "cost_usd": design["cost_usd"]},
-        )
-        return design
-    except Exception as e:
-        await world.say(AGENT_ID, f"failed: {type(e).__name__}", seconds=6)
-        state.log_event("run_end", from_=AGENT_ID,
-                        summary=f"failed: {type(e).__name__}: {e}", outcome="failed")
         raise
-    finally:
-        world.agents[AGENT_ID].busy = False
-        await world.set_status(AGENT_ID, "idle")
+
+    # Forge sometimes creates stray empty directories while feeling around the
+    # filesystem. Harmless, but the site dir should stay flat and inspectable.
+    # Never follow symlinks here — `.claude` points at the whole skills tree.
+    for path in sorted(site_dir.rglob("*"), reverse=True):
+        if path.is_symlink() or path.name in ("incumbent", ".claude"):
+            continue
+        if path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+
+    written = sorted(p.name for p in site_dir.glob("*") if p.is_file())
+    index = site_dir / "index.html"
+    if not index.exists():
+        restored = _rollback()
+        state.advance_lead(
+            lead_id, "qualified", agent=AGENT_ID,
+            note="build produced no index.html"
+                 + (f"; restored previous build ({len(restored)} files)" if restored else ""),
+        )
+        await world.say(AGENT_ID, "build failed — no index.html", seconds=8)
+        state.log_event("run_end", from_=result.worker_id or AGENT_ID,
+                        summary=f"build failed for {lead.get('name')}: no index.html",
+                        outcome="failed", details={"lead_id": lead_id})
+        return {"ok": False, "error": "no index.html produced", "files": written}
+
+    site = {
+        **(result.data or {}),
+        "dir": str(site_dir),
+        "files_on_disk": written,
+        # Site payload only — the QA screenshots live here too but aren't the site.
+        "bytes": sum(
+            (site_dir / f).stat().st_size
+            for f in written if not f.startswith("shot-")
+        ),
+        "build_cost_usd": result.cost_usd,
+        "built_by": result.worker_id or AGENT_ID,
+        "skills_used": _room_skills(),
+        "delegated": (result.data or {}).get("delegated") or [],
+        # How the run was spent — the thing you need when a build takes 15
+        # minutes and you want to know why.
+        "run_stats": {
+            "output_tokens": result.output_tokens,
+            "cache_write_tokens": result.cache_write,
+            "cache_read_tokens": result.cache_read,
+            "tool_calls": len(result.tool_names),
+            "writes": sum(1 for t in result.tool_names if t == "Write"),
+            "edits": sum(1 for t in result.tool_names if t == "Edit"),
+            "tools_used": sorted(set(result.tool_names)),
+        },
+    }
+    # A rebuild overwrites the files on disk, so keep the record of what the
+    # previous attempt claimed — otherwise there's nothing to compare against
+    # when judging whether a rebuild actually improved anything.
+    history = list(lead.get("site_history") or [])
+    if lead.get("site"):
+        history.append({**lead["site"], "superseded_ts": time.time()})
+    state.advance_lead(
+        lead_id, "built", agent=AGENT_ID,
+        note=(result.data or {}).get("headline") or "site built",
+        site=site,
+        site_history=history[-5:],
+    )
+
+    await world.say(AGENT_ID, f"built: {len(written)} files", seconds=8)
+    state.log_event(
+        "run_end", from_=result.worker_id or AGENT_ID,
+        summary=f"built site for {lead.get('name')} ({', '.join(written)})",
+        outcome="completed",
+        details={"lead_id": lead_id, "cost_usd": result.cost_usd},
+    )
+    return {"ok": True, "lead_id": lead_id, "site": site}
