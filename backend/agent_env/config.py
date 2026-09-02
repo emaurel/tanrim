@@ -138,6 +138,11 @@ PAYMENT_TERMS_DAYS = int(os.getenv("AGENT_ENV_PAYMENT_TERMS_DAYS", "0"))
 VAT_MENTION = os.getenv(
     "AGENT_ENV_VAT_MENTION", "TVA non applicable, article 293 B du CGI").strip()
 
+# Invoice series. French rules allow distinct series (art. 242 nonies A CGI) as
+# long as each one is itself continuous and chronological — so the web-agency
+# work numbers separately from the consulting, and neither sequence has holes.
+INVOICE_PREFIX = os.getenv("AGENT_ENV_INVOICE_PREFIX", "MADEONSPEC").strip()
+
 
 def invoice_config_problems() -> list[str]:
     """Everything that must be set before a facture may be generated."""

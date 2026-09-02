@@ -58,21 +58,27 @@ def _read_ledger() -> list[dict[str, Any]]:
         return []
 
 
-def next_number(year: int | None = None) -> str:
-    """`FAC-<year>-<nnn>`, continuing from whatever the ledger already holds.
+def next_number(year: int | None = None, prefix: str | None = None) -> str:
+    """`<PREFIX>-<year>-<nnn>`, continuing this series and no other.
 
-    Sequential and gapless is a legal requirement, not a nicety, so the read
-    and the reserve happen under one lock.
+    Sequential and gapless within a series is a legal requirement, not a
+    nicety, so the read and the reserve happen under one lock. Counting only
+    this prefix is what keeps the series independent: invoices issued for other
+    work must not advance this sequence or leave holes in it.
     """
     year = year or date.today().year
+    prefix = (prefix or config.INVOICE_PREFIX).strip()
+    head = f"{prefix}-{year}-"
     with _lock:
         rows = _read_ledger()
-        used = [
-            int(r["number"].rsplit("-", 1)[1])
-            for r in rows
-            if r.get("number", "").startswith(f"FAC-{year}-")
-        ]
-        return f"FAC-{year}-{(max(used) + 1) if used else 1:03d}"
+        used = []
+        for r in rows:
+            num = r.get("number", "")
+            if num.startswith(head):
+                tail = num[len(head):]
+                if tail.isdigit():
+                    used.append(int(tail))
+        return f"{head}{(max(used) + 1) if used else 1:03d}"
 
 
 def _record(entry: dict[str, Any]) -> None:
@@ -308,11 +314,23 @@ async def write_pdf(html: str, out: Path) -> Path:
     return out
 
 
-async def create_for_lead(lead_id: str) -> dict[str, Any]:
-    """Generate and record the facture for a lead that has accepted."""
+async def create_for_lead(lead_id: str, force: bool = False) -> dict[str, Any]:
+    """Generate and record the facture for a lead that has accepted.
+
+    Idempotent per lead unless forced. Each call would otherwise consume the
+    next number in the series, and a number consumed by a document nobody sends
+    is a hole in a sequence that is legally required not to have one.
+    """
     lead = state.get_lead(lead_id)
     if lead is None:
         return {"ok": False, "error": f"no such lead: {lead_id}"}
+
+    existing = for_lead(lead_id)
+    if existing and not force:
+        return {"ok": True, "number": existing["number"], "pdf": existing.get("pdf"),
+                "total": existing.get("total"), "currency": existing.get("currency"),
+                "client": existing.get("client"), "existing": True,
+                "due": "À réception de la présente facture"}
     try:
         inv = build(lead)
     except InvoiceRefused as e:
@@ -331,6 +349,7 @@ async def create_for_lead(lead_id: str) -> dict[str, Any]:
         "ts": time.time(), "number": inv.number, "lead_id": lead_id,
         "client": inv.client_name, "total": inv.total, "currency": inv.currency,
         "issued": inv.issued, "pdf": str(pdf), "paid": False,
+        "series": config.INVOICE_PREFIX,
         "margin": split["margin"], "domain_cost": split["domain_cost"],
         "domain_years": split["domain_years"], "domain": inv.domain,
     })
@@ -364,3 +383,36 @@ def for_lead(lead_id: str) -> dict[str, Any] | None:
         if r.get("lead_id") == lead_id:
             return r
     return None
+
+
+def discard(number: str) -> bool:
+    """Remove an invoice that was generated but never sent.
+
+    Deleting an ISSUED invoice would leave a hole in the sequence, which is
+    exactly what the numbering rules forbid — so this only removes the highest
+    number in its series, where taking it back leaves no gap behind.
+    """
+    with _lock:
+        rows = _read_ledger()
+        row = next((r for r in rows if r.get("number") == number), None)
+        if row is None:
+            return False
+        prefix = str(row.get("number", "")).rsplit("-", 2)[0]
+        year = str(row.get("number", "")).rsplit("-", 2)[1]
+        head = f"{prefix}-{year}-"
+        peers = [int(r["number"][len(head):]) for r in rows
+                 if r.get("number", "").startswith(head)
+                 and r["number"][len(head):].isdigit()]
+        mine = int(number[len(head):])
+        if peers and mine != max(peers):
+            return False           # would leave a gap; refuse
+        pdf = row.get("pdf")
+        if pdf:
+            for f in (Path(pdf), Path(pdf).with_suffix(".html")):
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+        rows = [r for r in rows if r.get("number") != number]
+        LEDGER.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
+        return True

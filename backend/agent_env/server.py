@@ -297,6 +297,8 @@ async def lead_timeline(lead_id: str):
         "lead": {k: v for k, v in lead.items() if k not in _LEAD_BULK},
         "entries": entries,
         "active": active,
+        "invoice": invoices_mod.for_lead(lead_id),
+        "invoice_blocked_by": config.invoice_config_problems(),
         # The activity log is a ring buffer. Say so, rather than letting a page
         # imply nothing happened during a window that simply rolled off.
         "events_complete": len(events) < 1000,

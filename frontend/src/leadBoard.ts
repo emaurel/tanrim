@@ -374,6 +374,84 @@ function stageControl(lead: any): HTMLElement {
   return box;
 }
 
+/**
+ * The facture for this lead: a link once it exists, a button when it does not.
+ *
+ * Generating consumes the next number in a series that is legally required to
+ * have no holes, so the button says so — and the backend is idempotent per
+ * lead, returning the existing invoice rather than burning another number.
+ */
+function invoiceControl(lead: any, invoice: any, blockedBy: string[]): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "lb-move";
+
+  const lbl = document.createElement("span");
+  lbl.className = "lb-fact-k";
+  lbl.textContent = "facture";
+  box.appendChild(lbl);
+
+  if (invoice?.number) {
+    const link = document.createElement("a");
+    link.className = "lb-invoice-link";
+    link.href = `/invoices/${invoice.number}.pdf`;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent =
+      `${invoice.number} — ${invoice.total} ${invoice.currency}` +
+      (invoice.paid ? " · paid" : " · unpaid");
+    box.appendChild(link);
+    if (!invoice.paid) {
+      const paid = document.createElement("button");
+      paid.type = "button";
+      paid.className = "lb-move-go";
+      paid.textContent = "mark paid";
+      paid.addEventListener("click", async () => {
+        paid.disabled = true;
+        await fetch(`/invoices/${invoice.number}/paid`, { method: "POST" });
+        dirty = true;
+        await rerender();
+      });
+      box.appendChild(paid);
+    }
+    return box;
+  }
+
+  if (blockedBy.length) {
+    const why = document.createElement("span");
+    why.className = "lb-move-msg";
+    why.textContent = `cannot be generated — ${blockedBy.join("; ")}`;
+    box.appendChild(why);
+    return box;
+  }
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "lb-move-go";
+  go.textContent = "generate";
+  go.title = "Takes the next number in the series. Only do this when they have said yes.";
+  const msg = document.createElement("span");
+  msg.className = "lb-move-msg";
+  msg.textContent = "takes the next invoice number — only once they have accepted";
+
+  go.addEventListener("click", async () => {
+    go.disabled = true;
+    msg.textContent = "generating…";
+    try {
+      const r = await fetch(`/leads/${lead.id}/invoice`, { method: "POST" });
+      const d = await r.json();
+      msg.textContent = d.ok ? `created ${d.number}` : `refused: ${d.error}`;
+      if (d.ok) { dirty = true; await rerender(); }
+    } catch (err) {
+      msg.textContent = `failed: ${String(err)}`;
+    } finally {
+      go.disabled = false;
+    }
+  });
+
+  box.append(go, msg);
+  return box;
+}
+
 async function buildTimeline(): Promise<HTMLElement> {
   const wrap = document.createElement("div");
   wrap.className = "lb-timeline-wrap";
@@ -431,7 +509,8 @@ async function buildTimeline(): Promise<HTMLElement> {
   fact("record", `${c.stage_changes ?? 0} stage changes · ${c.runs ?? 0} agent runs · `
     + `${c.escalations ?? 0} escalations · ${c.gates ?? 0} gates`);
 
-  wrap.append(head, facts, stageControl(lead));
+  wrap.append(head, facts, stageControl(lead),
+              invoiceControl(lead, data.invoice, data.invoice_blocked_by ?? []));
 
   if (data.events_complete === false) {
     const warn = document.createElement("p");
