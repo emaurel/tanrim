@@ -1823,6 +1823,7 @@ html, body {
 }
 .lb-card .lb-facts { margin: 10px 0 12px; }
 .lb-card .lb-move { background: #14141c; }
+.lb-card-sections[hidden] { display: none; }
 .lb-card-sections {
   display: flex;
   flex-direction: column;
@@ -1836,8 +1837,7 @@ html, body {
   width: 100%;
   text-align: left;
   background: #14141c;
-  border: 0;
-  border-bottom: 1px solid #1f1f29;
+  border: 1px solid #1f1f29;
   color: #c9bce8;
   font: inherit;
   font-size: 10px;

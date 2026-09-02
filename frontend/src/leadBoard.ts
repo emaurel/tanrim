@@ -660,11 +660,15 @@ function invoiceControl(lead: any, invoice: any, blockedBy: string[]): HTMLEleme
   return box;
 }
 
+let dossierOpen = false;
 let dossierCache: { leadId: string; data: any } | null = null;
 
-/** Sections the dossier opens with. Everything else waits to be asked for. */
-const OPEN_BY_DEFAULT = new Set(["Files", "Identity"]);
-const openSections = new Set<string>(OPEN_BY_DEFAULT);
+/**
+ * Which dossier sections are open. Empty to begin with and cleared every time
+ * the dossier is opened, so it always presents as a menu of what we hold
+ * rather than a wall — the research alone is a hundred and twenty rows.
+ */
+const openSections = new Set<string>();
 
 /**
  * One collapsible section.
@@ -850,19 +854,48 @@ async function buildTimeline(): Promise<HTMLElement> {
   card.append(head, factsEl, stageControl(lead),
               invoiceControl(lead, data.invoice, data.invoice_blocked_by ?? []));
 
+  // Everything we hold, behind one toggle. Open, it is thousands of pixels;
+  // closed, the card stays a card.
   const sections = document.createElement("div");
   sections.className = "lb-card-sections";
-  card.appendChild(sections);
-  try {
-    const dossier = await loadDossier(lead.id);
-    sections.replaceChildren(...dossierSections(dossier));
-  } catch (err) {
-    const p = document.createElement("p");
-    p.className = "lb-x-text";
-    p.textContent = `could not load the dossier: ${String(err)}`;
-    sections.appendChild(p);
-  }
+  sections.hidden = !dossierOpen;
 
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "lb-dossier-h";
+  const paintToggle = () => {
+    toggle.textContent = `${dossierOpen ? "▾" : "▸"} DOSSIER`;
+    toggle.setAttribute("aria-expanded", String(dossierOpen));
+  };
+  paintToggle();
+
+  let loaded = false;
+  const fillSections = async () => {
+    if (loaded) return;
+    loaded = true;
+    sections.textContent = "loading…";
+    try {
+      const dossier = await loadDossier(lead.id);
+      sections.replaceChildren(...dossierSections(dossier));
+    } catch (err) {
+      sections.textContent = `could not load the dossier: ${String(err)}`;
+    }
+  };
+
+  toggle.addEventListener("click", () => {
+    dossierOpen = !dossierOpen;
+    if (dossierOpen) {
+      // A fresh open shows the menu, not whatever was left expanded last time.
+      openSections.clear();
+      loaded = false;
+      void fillSections();
+    }
+    sections.hidden = !dossierOpen;
+    paintToggle();
+  });
+  if (dossierOpen) void fillSections();
+
+  card.append(toggle, sections);
   wrap.append(card);
 
   if (data.events_complete === false) {
