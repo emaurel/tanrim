@@ -23,6 +23,7 @@ from . import skills as skills_mod
 from . import state
 from .agents import courier as courier_mod
 from .agents import echo as echo_mod
+from .agents import probe as probe_mod
 from .config import SITES_DIR
 from .handlers import build_handlers
 from .orchestrator import Orchestrator
@@ -652,10 +653,47 @@ class ApprovalDecision(BaseModel):
     reason: str | None = None
 
 
+def _decision_problem(approval: dict[str, Any], body: "ApprovalDecision") -> str | None:
+    """Why this decision cannot be carried out, or None.
+
+    Checked while the card is still pending, so refusing costs the operator
+    nothing but a message.
+    """
+    if body.decision != "approved":
+        return None
+    if approval["kind"] == "bad_address":
+        lead = state.get_lead((approval.get("payload") or {}).get("lead_id")) or {}
+        reason = (body.reason or "")
+        # An address in the reply is the address to use. No address is not an
+        # error — it is a request to go and find one — so only refuse when the
+        # operator asked for neither.
+        if state.EMAIL_RE.search(reason) or lead.get("email"):
+            return None
+        if reason.strip():
+            return None
+        return ("Put a working address in the reply box, or say what to do "
+                "(for example \"find another address\") — approving with an "
+                "empty reply leaves the email nowhere to go.")
+    return None
+
+
 @app.post("/approvals/{approval_id}")
 async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str, Any]:
     if body.decision not in {"approved", "rejected", "ignored"}:
         raise HTTPException(400, "decision must be approved, rejected, or ignored")
+
+    # Validate BEFORE resolving. The resolve used to come first, so a branch
+    # that then refused left the card consumed and the work undone: a
+    # `bad_address` card was approved with "probe should go fishing for another
+    # mail address", the handler found no email in that text, raised a 400, and
+    # the card was gone with nothing changed.
+    pending = next((a for a in state.list_user_approvals(status="pending", limit=500)
+                    if a["id"] == approval_id), None)
+    if pending is not None:
+        problem = _decision_problem(pending, body)
+        if problem:
+            raise HTTPException(400, problem)
+
     rec = state.resolve_user_approval(approval_id, body.decision, body.reason)
     if rec is None:
         raise HTTPException(404, "approval not found")
@@ -721,18 +759,24 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
         lead = state.get_lead(lead_id) or {} if lead_id else {}
         reason = (body.reason or "").strip()
         if lead_id and body.decision == "approved":
-            # A reason that contains an address is the address.
+            # A reason that contains an address IS the address. A reason with no
+            # address is an instruction — usually "go and find one" — and that
+            # is a job for Probe, which has the web tools and whose whole
+            # purpose is finding a contact route. It used to be an error.
             found = state.EMAIL_RE.search(reason or "")
             if found:
                 state.update_lead(lead_id, email=found.group(0))
-            if not (state.get_lead(lead_id) or {}).get("email"):
-                raise HTTPException(
-                    400, "this lead still has no address — put one in the reply "
-                         "box (or on the lead) before approving, otherwise the "
-                         "email has nowhere to go")
-            state.advance_lead(
-                lead_id, "drafted", agent="operator",
-                note=f"new address supplied: {(state.get_lead(lead_id) or {}).get('email')}")
+                state.advance_lead(
+                    lead_id, "drafted", agent="operator",
+                    note=f"new address supplied by hand: {found.group(0)}")
+            else:
+                state.log_event(
+                    "dispatch_start", from_="operator", to="probe",
+                    summary=f"hunting a contact route for {lead.get('name')}"
+                            f" — {reason[:120]}",
+                    details={"lead_id": lead_id})
+                asyncio.create_task(
+                    probe_mod.find_contact(world, lead_id, reason))
         elif lead_id:
             state.advance_lead(
                 lead_id, "lost", agent="operator",

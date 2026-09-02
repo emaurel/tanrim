@@ -343,6 +343,15 @@ class AssayHandler(LeadRoomHandler):
         if name == "delete_lead":
             lead_id = payload.get("lead_id")
             return {"ok": bool(lead_id) and state.delete_lead(lead_id)}
+        # A bounced address is not a re-research: the dossier is fine, only the
+        # contact route is dead. Available at any stage, because a bounce can
+        # happen long after the lead has left this room.
+        if name == "find_contact":
+            lead_id = payload.get("lead_id")
+            if not lead_id:
+                return {"ok": False, "error": "lead_id required"}
+            return await probe.find_contact(self.world, lead_id,
+                                            payload.get("instruction", ""))
         return await super().action(name, payload)
 
 

@@ -7,6 +7,7 @@ and, eventually, lands in a real person's inbox.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .. import state
@@ -279,3 +280,117 @@ async def run_enrich(world: World, lead_id: str, instruction: str = "") -> dict[
         details={"lead_id": lead_id, "cost_usd": result.cost_usd},
     )
     return {"ok": True, "readiness": readiness, "lead_id": lead_id, "profile": profile}
+
+
+# ---------------------------------------------------------------------------
+# Finding a contact route after a bounce.
+#
+# Separate from `run_enrich` on purpose. The dossier is already good — the only
+# thing wrong is the address — and re-running the full research would spend a
+# WebSearch budget rewriting facts we already have, with a real chance of
+# contradicting them. This asks one question.
+# ---------------------------------------------------------------------------
+
+CONTACT_ROLE = _P("CONTACT_ROLE")
+CONTACT_SCHEMA = _P("CONTACT_SCHEMA")
+
+
+async def find_contact(world: World, lead_id: str, instruction: str = "") -> dict[str, Any]:
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        return {"ok": False, "error": f"no such lead: {lead_id}"}
+
+    prof = lead.get("profile") or {}
+    bounced = lead.get("email_bounced") or ""
+    known = json.dumps({
+        "name": lead.get("name"),
+        "address": lead.get("address"),
+        "phone": lead.get("phone"),
+        "bounced_email": bounced,
+        "known_contact_routes": prof.get("contact"),
+        "identity": prof.get("identity"),
+    }, ensure_ascii=False, indent=2)
+
+    sections = [CONTACT_ROLE.strip(),
+                f"THE BUSINESS, and what we already hold:\n{known}"]
+    if bounced:
+        sections.append(
+            f"THE ADDRESS THAT BOUNCED: {bounced}\nDo not offer it back, and "
+            "tell us if it is still published somewhere — the owner may not "
+            "know their mailbox is dead.")
+    if instruction:
+        sections.append(f"THE OPERATOR ADDED: {instruction}")
+    sections.append(CONTACT_SCHEMA.strip())
+
+    result = await run_agent(
+        world,
+        role=AGENT_ID, room_id=ROOM_ID, model=MODEL,
+        prompt="\n\n".join(sections),
+        summary=f"hunting a contact route: {lead.get('name')}",
+        workbench="research",
+        say=f"finding contact for {str(lead.get('name'))[:18]}…",
+        original_task={"lead_id": lead_id, "instruction": instruction},
+        builtin_tools=["WebSearch", "WebFetch"],
+        max_turns=20,
+        max_budget_usd=1.00,
+        schema=CONTACT_SCHEMA,
+    )
+    found = result.data or {}
+    if not found:
+        return {"ok": False, "error": "could not parse the contact report",
+                "raw": (result.text or "")[:400]}
+
+    patch: dict[str, Any] = {"contact_hunt": found}
+    route = found.get("recommended_route")
+    value = found.get("recommended_value")
+
+    # Only an EMAIL can be put back on the lead automatically, because that is
+    # the only route the pipeline can use unattended — and only when it is
+    # cited and is not the address that just failed.
+    cited = {e.get("address", "").strip().lower()
+             for e in (found.get("emails") or []) if e.get("source_url")}
+    if (route == "email" and value and value.strip().lower() in cited
+            and value.strip().lower() != (bounced or "").strip().lower()):
+        patch["email"] = value.strip()
+
+    state.update_lead(lead_id, **patch)
+
+    state.add_user_approval(
+        kind="contact_found" if patch.get("email") else "no_contact_route",
+        room_id=ROOM_ID,
+        requesting_agent=AGENT_ID,
+        summary=(f"{lead.get('name')}: found {patch['email']} — send to it?"
+                 if patch.get("email")
+                 else f"{lead.get('name')}: no verifiable email found"),
+        payload={
+            "lead_id": lead_id,
+            "business": lead.get("name"),
+            "bounced_address": bounced,
+            "proposed_email": patch.get("email"),
+            "route": route, "value": value,
+            "emails": found.get("emails") or [],
+            "phones": found.get("phones") or [],
+            "forms": found.get("forms") or [],
+            "still_published_at": found.get("bounced_address_still_published_at") or [],
+            "still_trading": found.get("business_still_trading"),
+            "summary": found.get("summary"),
+            "what_this_means":
+                ("Probe found this address and cited where. It has NOT been "
+                 "sent to — approve to send the outreach there, reject to leave "
+                 "the lead alone."
+                 if patch.get("email") else
+                 "Nobody publishes a verifiable email for this business. The "
+                 "routes below are what exists; reaching them means doing it "
+                 "yourself, or dropping the lead. Guessing an address is what "
+                 "caused the bounce."),
+        },
+    )
+    await world.publish({"type": "approvals_updated"})
+    await world.say(AGENT_ID, "contact hunt done", seconds=8)
+    state.log_event(
+        "run_end", from_=result.worker_id or AGENT_ID,
+        summary=f"contact hunt for {lead.get('name')}: route={route} "
+                f"value={value} — {str(found.get('summary'))[:120]}",
+        outcome="completed",
+        details={"lead_id": lead_id, "cost_usd": result.cost_usd})
+    return {"ok": True, "found": found, "email_set": patch.get("email")}

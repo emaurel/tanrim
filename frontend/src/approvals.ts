@@ -119,6 +119,7 @@ export async function renderPendingApprovals(
       <pre class="rp-approval-payload"></pre>
       <textarea class="rp-approval-reason" rows="2"
         placeholder="optional reply — e.g. 'here is the key: …', 'skip this one', 'make it warmer and shorter'"></textarea>
+      <div class="rp-approval-error" style="display:none"></div>
       <div class="rp-approval-actions">
         <button class="rp-approve" type="button">approve</button>
         <button class="rp-reject" type="button">reject</button>
@@ -147,15 +148,35 @@ export async function renderPendingApprovals(
       // half-typed reply back to the agent.
       const reasonEl = card.querySelector(".rp-approval-reason") as HTMLTextAreaElement | null;
       const reason = decision === "ignored" ? "" : (reasonEl?.value || "").trim();
+      // A refused decision must stay on screen. This used to log to the
+      // console and dismiss the card anyway, so an approval that the backend
+      // rejected looked exactly like one that worked — the card vanished and
+      // nothing happened.
+      const errEl = card.querySelector(".rp-approval-error") as HTMLElement;
+      errEl.textContent = "";
+      errEl.style.display = "none";
       try {
         const r = await fetch(`/approvals/${a.id}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ decision, reason: reason || null }),
         });
-        if (!r.ok) console.error("approval action failed", r.status, await r.text());
+        if (!r.ok) {
+          let detail = `${r.status}`;
+          try {
+            const d = await r.json();
+            detail = d?.detail ?? JSON.stringify(d);
+          } catch {
+            detail = (await r.text()) || detail;
+          }
+          errEl.textContent = detail;
+          errEl.style.display = "";
+          return;                       // leave the card up, decision not taken
+        }
       } catch (err) {
-        console.error("approval fetch error", err);
+        errEl.textContent = String(err);
+        errEl.style.display = "";
+        return;
       }
       await onResolved();
     };
