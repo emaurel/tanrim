@@ -281,7 +281,11 @@ async def run_build(world: World, lead_id: str, instruction: str = "") -> dict[s
             # above, not the ceiling — this is a backstop, not a budget.
             max_turns=45,
             # A runaway build must not be able to spend without bound.
-            max_budget_usd=2.50,
+            # Sized for Opus. At 2.50 — the Sonnet-era ceiling — a revision
+            # with 28 Edit passes hit the budget mid-build and the run died as
+            # a crash, rolling back to the previous site. The ceiling exists to
+            # stop a runaway, not to end ordinary work.
+            max_budget_usd=9.00,
             schema=SCHEMA,
             skills=_room_skills(),
         )

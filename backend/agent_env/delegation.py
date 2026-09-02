@@ -85,7 +85,8 @@ async def run_specialist(
         cwd=cwd,
         permission_mode="acceptEdits",
         max_turns=30,
-        max_budget_usd=1.00,
+        max_budget_usd=3.00,   # a specialist runs on the parent's model
+
         schema='{"ok":bool,"files":[],"summary":"","how_to_use":"","reviewed_by":null,'
                '"review_verdict":null,"notes":[]}',
         delegation_depth=depth,    # blocks this worker from delegating again
@@ -118,6 +119,62 @@ async def run_specialist(
     return out
 
 
+async def _rasterise_svgs(cwd: Path, files: list[str]) -> list[str]:
+    """Render any reviewed SVG to a PNG the reviewer can actually open.
+
+    `Read` on an .svg returns XML, so a reviewer asked to judge a logo was
+    reading its source. A mark is judged by eye or not at all — and the whole
+    point of routing it past Lens is that somebody looks. So we rasterise here,
+    deterministically, rather than granting the reviewer Write and hoping it
+    builds itself a harness.
+
+    Each mark is shown on a light and a dark ground side by side: a logo that
+    only works on one of them is a real defect, and invisible otherwise.
+
+    Named `shot-*` so `hosting.SKIP_PREFIXES` keeps these out of the deploy.
+    """
+    svgs = [f for f in files if f.lower().endswith(".svg")]
+    if not svgs:
+        return []
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:  # noqa: BLE001
+        return []
+
+    made: list[str] = []
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch()
+            page = await browser.new_page(
+                viewport={"width": 560, "height": 300}, device_scale_factor=2)
+            for name in svgs:
+                src = cwd / name
+                if not src.is_file():
+                    continue
+                wrapper = cwd / f".review-{src.stem}.html"
+                wrapper.write_text(
+                    "<style>body{margin:0;display:flex;font:12px system-ui}"
+                    "div{width:280px;height:300px;display:flex;align-items:center;"
+                    "justify-content:center}"
+                    ".l{background:#fff}.d{background:#111}"
+                    "img{width:180px;height:180px}</style>"
+                    f'<div class="l"><img src="{src.name}"></div>'
+                    f'<div class="d"><img src="{src.name}"></div>'
+                )
+                try:
+                    await page.goto(wrapper.as_uri(), wait_until="load")
+                    out = cwd / f"shot-review-{src.stem}.png"
+                    await page.screenshot(path=str(out))
+                    made.append(out.name)
+                finally:
+                    wrapper.unlink(missing_ok=True)
+            await browser.close()
+    except Exception:  # noqa: BLE001
+        return made
+    return made
+
+
+
 async def run_review(
     world: Any,
     *,
@@ -139,7 +196,15 @@ async def run_review(
     if room_id is None:
         return {"verdict": "unavailable", "reasoning": f"no such reviewer: {reviewer_role}"}
 
+    rendered = await _rasterise_svgs(cwd, files)
     listed = "\n".join(f"- {f}" for f in files) or "(everything in this directory)"
+    if rendered:
+        listed += (
+            "\n\nRENDERED FOR YOU — open these with `Read` and look at them. "
+            "Each shows the mark on a light ground and a dark ground side by "
+            "side; one that only reads on one of them is a defect:\n"
+            + "\n".join(f"- {f}" for f in rendered)
+        )
     prompt = REVIEW_PROMPT.format(
         reviewer=reviewer_role, question=question.strip(), files=listed
     )
@@ -159,7 +224,8 @@ async def run_review(
         builtin_tools=tools,
         cwd=cwd,
         max_turns=16,
-        max_budget_usd=0.75,
+        max_budget_usd=2.00,   # a reviewer renders and looks; that is not cheap
+
         schema='{"verdict":"approved|needs_work","reasoning":"","changes":[]}',
         delegation_depth=MAX_DEPTH,  # a reviewer never delegates
     )
