@@ -7,6 +7,7 @@ the Treasury panel reflects real spend.
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from threading import Lock
@@ -17,13 +18,57 @@ from .config import ROOT
 USAGE_FILE = ROOT / "state" / "usage.json"
 _lock = Lock()
 
-# Approximate API pricing (USD per million tokens) as of 2026-05.
-# Update these alongside Anthropic's published pricing.
+# Approximate API pricing (USD per million tokens).
+# Update these alongside Anthropic's published pricing, or override any of them
+# without touching code via AGENT_ENV_PRICING, e.g.
+#   AGENT_ENV_PRICING='{"claude-opus-5": {"in": 15, "out": 75}}'
 PRICING: dict[str, dict[str, float]] = {
     "claude-haiku-4-5":  {"in": 0.80,  "out": 4.00},
     "claude-sonnet-4-6": {"in": 3.00,  "out": 15.00},
+    "claude-sonnet-5":   {"in": 3.00,  "out": 15.00},
     "claude-opus-4-7":   {"in": 15.00, "out": 75.00},
+    # Forge runs on this one. It was absent, and an absent model priced at
+    # zero — so the most expensive agent in the pipeline reported every build
+    # as free, including a 39,756-token one. The rate is the Opus tier and is
+    # worth confirming against current published pricing.
+    "claude-opus-5":     {"in": 15.00, "out": 75.00},
+    "claude-fable-5-1":  {"in": 3.00,  "out": 15.00},
 }
+try:
+    PRICING.update(json.loads(os.getenv("AGENT_ENV_PRICING", "{}")))
+except Exception:  # noqa: BLE001
+    pass
+
+# What to charge a model nobody has priced. Guessing from the family name is
+# wrong sometimes; charging nothing is wrong ALWAYS, and invisibly — a run that
+# costs money and reports zero is worse than one priced approximately, because
+# nothing about it looks unusual.
+_TIERS = (
+    ("haiku",  {"in": 0.80,  "out": 4.00}),
+    ("sonnet", {"in": 3.00,  "out": 15.00}),
+    ("fable",  {"in": 3.00,  "out": 15.00}),
+    ("opus",   {"in": 15.00, "out": 75.00}),
+)
+
+
+def price_for(model: str) -> tuple[dict[str, float], bool]:
+    """The rate for a model, and whether it is a real entry or a guess."""
+    p = PRICING.get(model)
+    if p:
+        return p, True
+    low = (model or "").lower()
+    for name, rate in _TIERS:
+        if name in low:
+            return rate, False
+    # Nothing recognisable. Assume the dearest tier rather than zero: an
+    # over-estimate is noticed, an under-estimate is not.
+    return {"in": 15.00, "out": 75.00}, False
+
+
+def unpriced_models(records: list[dict[str, Any]]) -> list[str]:
+    """Models being billed on a guess. The Treasury says so out loud."""
+    return sorted({r.get("model", "") for r in records
+                   if r.get("model") and r["model"] not in PRICING})
 
 # Cached input is billed differently from fresh input: writing to the cache
 # costs more than a normal input token, reading from it costs far less.
@@ -44,9 +89,7 @@ def compute_cost(
     cache_write: int = 0,
     cache_read: int = 0,
 ) -> float:
-    p = PRICING.get(model)
-    if not p:
-        return 0.0
+    p, _known = price_for(model)
     return (
         (in_tok / 1_000_000) * p["in"]
         + (cache_write / 1_000_000) * p["in"] * CACHE_WRITE_MULTIPLIER

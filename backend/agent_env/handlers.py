@@ -107,6 +107,10 @@ class TreasuryHandler(RoomHandler):
             "by_agent": usage.aggregate(records, "agent_id"),
             "by_model": usage.aggregate(records, "model"),
             "pricing": usage.PRICING,
+            # Models being charged on a guess. A rate nobody has entered used
+            # to price at zero, so the dearest agent in the pipeline reported
+            # every run as free; this makes that state visible instead.
+            "unpriced_models": usage.unpriced_models(all_records),
             "is_empty": len(all_records) == 0,
             # Token spend is what the agency costs to run; invoices are what it
             # earns. Coin's room is the only place both belong together.

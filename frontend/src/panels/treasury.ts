@@ -31,6 +31,18 @@ async function render({ roomId, data, body, reload }: PanelContext) {
   body.appendChild(h("h4", "By model"));
   body.appendChild(table(byModel, totals.cost_usd, "no model activity in the last 24h"));
 
+  const unpriced: string[] = data.unpriced_models ?? [];
+  if (unpriced.length) {
+    const warn = document.createElement("p");
+    warn.className = "rp-hint";
+    warn.textContent =
+      `Charged on a guess: ${unpriced.join(", ")}. No rate is entered for `
+      + `${unpriced.length > 1 ? "these models" : "this model"}, so the figures `
+      + `above assume its family's tier. Add it to usage.PRICING, or set `
+      + `AGENT_ENV_PRICING, to bill it exactly.`;
+    body.appendChild(warn);
+  }
+
   body.appendChild(h("h4", "Invoices"));
   body.appendChild(invoiceSection(roomId, data, reload));
 
