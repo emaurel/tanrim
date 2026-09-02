@@ -57,11 +57,30 @@ def manifest_path(lead_id: str) -> Path:
     return assets_dir(lead_id) / "manifest.json"
 
 
+# A record is only owner-supplied if `ingest()` wrote it. Nothing else may
+# put a file here — see `describe()`.
+INGEST_PROVENANCE = "supplied by the business for use on their site"
+
+
 def read_manifest(lead_id: str) -> list[dict[str, Any]]:
+    """The asset records, whatever shape the file is in.
+
+    An agent with file tools shares this directory, and one rewrote the
+    manifest as `{note, authorisation, files: [...]}` instead of a list —
+    `describe()` then iterated the dict's keys and died on `"note"['path']`.
+    Reading a file a model can write has to be defensive, so this accepts the
+    list, accepts an object with a `files` list, and returns nothing rather
+    than raising on anything else.
+    """
     try:
-        return json.loads(manifest_path(lead_id).read_text())
+        raw = json.loads(manifest_path(lead_id).read_text())
     except (OSError, json.JSONDecodeError):
         return []
+    if isinstance(raw, dict):
+        raw = raw.get("files") or raw.get("records") or []
+    if not isinstance(raw, list):
+        return []
+    return [r for r in raw if isinstance(r, dict)]
 
 
 def _write_manifest(lead_id: str, records: list[dict[str, Any]]) -> None:
@@ -194,6 +213,27 @@ def delete(lead_id: str, file: str) -> bool:
 def describe(lead_id: str) -> str:
     """Prompt context for whoever is about to build with these."""
     records = read_manifest(lead_id)
+
+    # Only files that came through `ingest()` — the operator's upload — count
+    # as the business's own. An agent moved three photographs it had harvested
+    # from Google Places into this directory and wrote its own manifest entries
+    # for them, which is exactly the boundary the two directories exist to
+    # hold: "we could fetch it" is not "we may publish it". Anything without
+    # the ingest provenance is dropped here, and reported so it is visible.
+    genuine = [r for r in records if r.get("provenance") == INGEST_PROVENANCE
+               and r.get("path")]
+    intruders = [r for r in records if r not in genuine]
+    if intruders:
+        names = ", ".join(str(r.get("file") or r.get("path") or "?")
+                          for r in intruders)
+        from . import state as _state
+        _state.log_event(
+            "run_end", from_="assets", to="operator",
+            summary=f"ignored {len(intruders)} file(s) in {lead_id}'s assets/ "
+                    f"that the owner never sent: {names}"[:240],
+            outcome="refused", details={"lead_id": lead_id},
+        )
+    records = genuine
     if not records:
         return ""
     lines = [
