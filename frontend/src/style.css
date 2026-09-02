@@ -1812,6 +1812,25 @@ html, body {
 }
 
 /* ---- lead board: the Dossier ---- */
+/* The lead card: identity, controls and the whole dossier in one block that
+   grows as sections are opened, rather than a second panel for the same
+   business. */
+.lb-card {
+  border: 1px solid #1f1f29;
+  background: #101018;
+  padding: 12px 14px;
+  margin: 0 0 16px;
+}
+.lb-card .lb-facts { margin: 10px 0 12px; }
+.lb-card .lb-move { background: #14141c; }
+.lb-card-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #1f1f29;
+}
 .lb-dossier { margin: 0 0 14px; border: 1px solid #1f1f29; background: #101018; }
 .lb-dossier-h {
   width: 100%;

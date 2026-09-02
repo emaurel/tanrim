@@ -122,6 +122,16 @@ async function loadTimeline(id: string): Promise<any> {
   return r.json();
 }
 
+/** What we hold about the business. Cached per lead — it is the whole dossier. */
+async function loadDossier(id: string): Promise<any> {
+  if (dossierCache && dossierCache.leadId === id) return dossierCache.data;
+  const r = await fetch(`/leads/${id}/dossier`);
+  if (!r.ok) throw new Error(`dossier: ${r.status}`);
+  const data = await r.json();
+  dossierCache = { leadId: id, data };
+  return data;
+}
+
 /* ---------------- rendering ---------------- */
 
 function stageChip(stage: string): HTMLElement {
@@ -650,7 +660,6 @@ function invoiceControl(lead: any, invoice: any, blockedBy: string[]): HTMLEleme
   return box;
 }
 
-let dossierOpen = false;
 let dossierCache: { leadId: string; data: any } | null = null;
 
 /** Sections the dossier opens with. Everything else waits to be asked for. */
@@ -734,60 +743,6 @@ function facts(obj: any, depth = 0): HTMLElement {
   return box;
 }
 
-/**
- * Everything we hold about the business, gathered.
- *
- * Separate from the timeline on purpose: the timeline answers "what happened",
- * this answers "what do we have". Lazy, because it is the whole dossier and
- * most visits do not want it.
- */
-function dossierPanel(lead: any): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = "lb-dossier";
-
-  const head = document.createElement("button");
-  head.type = "button";
-  head.className = "lb-dossier-h";
-  const setLabel = () => {
-    head.textContent = `${dossierOpen ? "▾" : "▸"} DOSSIER`;
-    head.setAttribute("aria-expanded", String(dossierOpen));
-  };
-  setLabel();
-
-  const body = document.createElement("div");
-  body.className = "lb-dossier-body";
-  body.hidden = !dossierOpen;
-
-  let loaded = false;
-  const load = async () => {
-    if (loaded) return;
-    loaded = true;
-    if (dossierCache && dossierCache.leadId === lead.id) {
-      body.replaceChildren(...dossierSections(dossierCache.data));
-      return;
-    }
-    body.textContent = "loading…";
-    try {
-      const d = await fetch(`/leads/${lead.id}/dossier`).then((r) => r.json());
-      dossierCache = { leadId: lead.id, data: d };
-      body.replaceChildren(...dossierSections(d));
-    } catch (err) {
-      body.textContent = `could not load the dossier: ${String(err)}`;
-    }
-  };
-
-  head.addEventListener("click", () => {
-    dossierOpen = !dossierOpen;
-    body.hidden = !dossierOpen;
-    setLabel();
-    if (dossierOpen) void load();
-  });
-  if (dossierOpen) void load();
-
-  wrap.append(head, body);
-  return wrap;
-}
-
 function dossierSections(d: any): HTMLElement[] {
   const out: HTMLElement[] = [];
 
@@ -804,7 +759,6 @@ function dossierSections(d: any): HTMLElement[] {
     const n = typeof value === "object" ? Object.keys(value).length : 0;
     out.push(sub(title, note, facts(value), n));
   };
-  add("Identity", "what the lead record holds", d.identity);
   add("The dossier", "Probe's research — every fact here is sourced", d.profile);
   add("What Lens saw", "read off their own photographs", d.visual);
   add("Their existing site", "if they already had one", d.existing_site ?? d.audit);
@@ -875,7 +829,10 @@ async function buildTimeline(): Promise<HTMLElement> {
   };
   fact("id", lead.id);
   fact("address", lead.address);
+  fact("phone", lead.phone);
   fact("email", lead.email);
+  // A dead address is worth seeing next to the live one, not buried.
+  if (lead.email_bounced) fact("bounced", `${lead.email_bounced} — does not exist`);
   fact("their site", lead.website);
   fact("our preview", lead.preview_url);
   fact("sourced", `${when(lead.ts)} (${ago(lead.ts)})`);
@@ -885,9 +842,28 @@ async function buildTimeline(): Promise<HTMLElement> {
   fact("record", `${c.stage_changes ?? 0} stage changes · ${c.runs ?? 0} agent runs · `
     + `${c.escalations ?? 0} escalations · ${c.gates ?? 0} gates`);
 
-  wrap.append(head, factsEl, stageControl(lead),
-              invoiceControl(lead, data.invoice, data.invoice_blocked_by ?? []),
-              dossierPanel(lead));
+  // One card at the top of the lead: who they are, the controls, and
+  // everything we hold about them. It grows as sections are opened rather
+  // than sending the reader to a separate panel for the same business.
+  const card = document.createElement("div");
+  card.className = "lb-card";
+  card.append(head, factsEl, stageControl(lead),
+              invoiceControl(lead, data.invoice, data.invoice_blocked_by ?? []));
+
+  const sections = document.createElement("div");
+  sections.className = "lb-card-sections";
+  card.appendChild(sections);
+  try {
+    const dossier = await loadDossier(lead.id);
+    sections.replaceChildren(...dossierSections(dossier));
+  } catch (err) {
+    const p = document.createElement("p");
+    p.className = "lb-x-text";
+    p.textContent = `could not load the dossier: ${String(err)}`;
+    sections.appendChild(p);
+  }
+
+  wrap.append(card);
 
   if (data.events_complete === false) {
     const warn = document.createElement("p");
