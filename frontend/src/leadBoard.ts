@@ -209,7 +209,14 @@ function buildList(): HTMLElement {
       : `created ${ago(l.ts)}`;
 
     li.append(line1, line2, line3);
-    const pick = () => { selected = l.id; rerender(); };
+    const pick = () => {
+      if (selected !== l.id) {
+        openEntries.clear();   // the open set belongs to the lead you were reading
+        filesCache = null;
+      }
+      selected = l.id;
+      rerender();
+    };
     li.addEventListener("click", pick);
     li.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); }
@@ -222,6 +229,22 @@ function buildList(): HTMLElement {
 }
 
 let currentLeadId: string | null = null;
+
+/**
+ * Which entries the operator has opened, and the file listing they were shown.
+ *
+ * The pane is rebuilt whenever the wire says something changed, and on a lead
+ * with an agent working that is constantly. Rebuilding used to drop every open
+ * entry, so anything you opened closed itself a second later. The open set is
+ * keyed by entry rather than by index, because a refresh can insert new
+ * entries above the one you were reading.
+ */
+const openEntries = new Set<string>();
+let filesCache: { leadId: string; data: any } | null = null;
+
+function entryKey(e: Entry): string {
+  return `${e.ts}|${e.kind}|${e.agent ?? ""}|${(e.title || "").slice(0, 40)}`;
+}
 
 /** Does this entry have build output worth showing? */
 function touchesTheBuild(e: Entry): boolean {
@@ -395,6 +418,7 @@ function entryEl(e: Entry, olderTs: number | null): HTMLElement[] {
   // Expand on click. The collapsed row is a summary; everything the ledgers
   // hold about the entry is here, plus — for anything that touched the build —
   // the files it produced.
+  const key = entryKey(e);
   const more = document.createElement("div");
   more.className = "lb-expand";
   more.hidden = true;
@@ -403,25 +427,46 @@ function entryEl(e: Entry, olderTs: number | null): HTMLElement[] {
   li.classList.add("lb-entry--clickable");
   li.tabIndex = 0;
   let filled = false;
-  const toggle = async () => {
-    more.hidden = !more.hidden;
-    li.classList.toggle("lb-entry--open", !more.hidden);
-    if (more.hidden || filled) return;
+
+  const fill = async () => {
+    if (filled) return;
     filled = true;
     more.replaceChildren(...expandedDetail(e));
-    if (touchesTheBuild(e)) {
-      const holder = document.createElement("div");
-      holder.className = "lb-files";
-      holder.textContent = "loading files…";
-      more.appendChild(holder);
-      try {
-        const d = await fetch(`/leads/${currentLeadId}/files`).then((r) => r.json());
-        holder.replaceChildren(...fileGroups(d));
-      } catch (err) {
-        holder.textContent = `could not list the files: ${String(err)}`;
-      }
+    if (!touchesTheBuild(e)) return;
+    const holder = document.createElement("div");
+    holder.className = "lb-files";
+    more.appendChild(holder);
+    // Served from the cache when we already have it, so restoring an open
+    // entry after a refresh does not re-fetch on every tick.
+    if (filesCache && filesCache.leadId === currentLeadId) {
+      holder.replaceChildren(...fileGroups(filesCache.data));
+      return;
+    }
+    holder.textContent = "loading files…";
+    try {
+      const leadId = currentLeadId;
+      const d = await fetch(`/leads/${leadId}/files`).then((r) => r.json());
+      filesCache = { leadId: leadId!, data: d };
+      holder.replaceChildren(...fileGroups(d));
+    } catch (err) {
+      holder.textContent = `could not list the files: ${String(err)}`;
     }
   };
+
+  const open = (yes: boolean) => {
+    more.hidden = !yes;
+    li.classList.toggle("lb-entry--open", yes);
+    if (yes) {
+      openEntries.add(key);
+      void fill();
+    } else {
+      openEntries.delete(key);
+    }
+  };
+
+  if (openEntries.has(key)) open(true);
+
+  const toggle = async () => open(more.hidden);
   li.addEventListener("click", (ev) => {
     // Don't hijack a click on a link or a button inside the row.
     if ((ev.target as HTMLElement).closest("a,button")) return;
@@ -721,6 +766,7 @@ async function buildTimeline(): Promise<HTMLElement> {
       what.textContent = a.summary || "working";
       const dur = document.createElement("span");
       dur.className = "lb-live-dur";
+      if (a.started_ts) dur.dataset.since = String(a.started_ts);
       dur.textContent = a.started_ts ? `${elapsed(a.started_ts)} so far` : "";
 
       // Stop it. A run is minutes of output, and watching one head somewhere
@@ -837,10 +883,16 @@ function startTicking(): void {
   if (tick !== null) return;
   tick = window.setInterval(() => {
     if (!open) return;
-    // Only the live card is time-sensitive, and only while someone is on it.
-    if (host?.querySelector(".lb-live-row")) {
-      dirty = true;
-      scheduleRefresh();
+    // Only the elapsed clock is time-sensitive. It used to mark the whole pane
+    // dirty and rebuild it, which closed every entry the operator had opened —
+    // on a lead with an agent working, one second after opening it. Update the
+    // text in place instead and touch nothing else.
+    const clocks = host
+      ? Array.from(host.querySelectorAll<HTMLElement>(".lb-live-dur"))
+      : [];
+    for (const el of clocks) {
+      const since = Number(el.dataset.since || 0);
+      if (since) el.textContent = `${elapsed(since)} so far`;
     }
   }, 5000);
 }
