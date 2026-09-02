@@ -89,6 +89,13 @@ def _record(entry: dict[str, Any]) -> None:
         LEDGER.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
 
 
+def _forget(number: str) -> None:
+    """Drop a ledger row without touching its files — used when replacing it."""
+    with _lock:
+        rows = [r for r in _read_ledger() if r.get("number") != number]
+        LEDGER.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
+
+
 def list_invoices() -> list[dict[str, Any]]:
     return sorted(_read_ledger(), key=lambda r: r.get("ts", 0), reverse=True)
 
@@ -211,15 +218,24 @@ def render_html(inv: Invoice) -> str:
   .parties > div {{ flex: 1; }}
   .lbl {{ font-size: 8pt; text-transform: uppercase; letter-spacing: .12em;
           color: #6a6a72; margin-bottom: 2mm; }}
-  table {{ width: 100%; border-collapse: collapse; margin-bottom: 6mm; }}
+  table {{ width: 100%; border-collapse: collapse; margin-bottom: 6mm;
+           table-layout: fixed; }}
   th {{ text-align: left; font-size: 8pt; text-transform: uppercase;
         letter-spacing: .1em; color: #6a6a72; border-bottom: 1px solid #c8c8ce;
         padding: 0 0 2mm; }}
   td {{ padding: 3mm 0; border-bottom: 1px solid #e4e4e8; vertical-align: top; }}
-  .n {{ text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }}
+  /* Fixed widths and a real gutter. Without them the columns sized to their
+     content and butted together: the quantity and the unit price rendered as
+     "1590,00 €" for a 590 € line, and the two headers ran into "P.U. HTTOTAL HT". */
+  .n {{ text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums;
+        padding-left: 8mm; }}
   .d {{ color: #55555c; font-size: 9pt; }}
-  .totals {{ margin-left: auto; width: 78mm; }}
-  .totals div {{ display: flex; justify-content: space-between; padding: 1.6mm 0; }}
+  .totals {{ margin-left: auto; width: 82mm; }}
+  .totals div {{ display: flex; justify-content: space-between; gap: 8mm;
+                 padding: 1.6mm 0; }}
+  .totals div > span:first-child {{ white-space: nowrap; }}
+  .totals div > span:last-child {{ text-align: right;
+                                   font-variant-numeric: tabular-nums; }}
   .totals .grand {{ border-top: 2px solid #16161a; margin-top: 1mm;
                     padding-top: 2.5mm; font-size: 13pt; font-weight: 700; }}
   .pay {{ background: #f4f4f7; padding: 5mm; margin: 6mm 0; }}
@@ -256,6 +272,9 @@ def render_html(inv: Invoice) -> str:
 </div>
 
 <table>
+  <colgroup>
+    <col><col style="width: 16mm"><col style="width: 30mm"><col style="width: 30mm">
+  </colgroup>
   <thead><tr><th>Prestation</th><th class="n">Qté</th>
   <th class="n">P.U. HT</th><th class="n">Total HT</th></tr></thead>
   <tbody>{rows}</tbody>
@@ -263,7 +282,7 @@ def render_html(inv: Invoice) -> str:
 
 <div class="totals">
   <div><span>Total HT</span><span>{_money(inv.total, inv.currency)}</span></div>
-  <div><span>TVA</span><span>{config.VAT_MENTION}</span></div>
+  <div><span>TVA</span><span>Non applicable</span></div>
   <div class="grand"><span>Total à régler</span>
     <span>{_money(inv.total, inv.currency)}</span></div>
 </div>
@@ -333,6 +352,12 @@ async def create_for_lead(lead_id: str, force: bool = False) -> dict[str, Any]:
                 "due": "À réception de la présente facture"}
     try:
         inv = build(lead)
+        if existing and force:
+            # Regenerate means "this invoice, redone" — same number. Taking a
+            # fresh one would leave the old number orphaned, which is the hole
+            # in the sequence the numbering rules exist to prevent. A layout
+            # fix must not cost an invoice number.
+            inv.number = existing["number"]
     except InvoiceRefused as e:
         # Never a half-legal invoice. Say exactly what to set and stop.
         state.log_event("run_end", from_="operator", to="operator",
@@ -345,10 +370,12 @@ async def create_for_lead(lead_id: str, force: bool = False) -> dict[str, Any]:
     # The split is recorded for the books and never printed on the invoice —
     # the client is quoted one all-in figure.
     split = config.quote_for(inv.domain)
+    if existing and force:
+        _forget(existing["number"])
     _record({
         "ts": time.time(), "number": inv.number, "lead_id": lead_id,
         "client": inv.client_name, "total": inv.total, "currency": inv.currency,
-        "issued": inv.issued, "pdf": str(pdf), "paid": False,
+        "issued": inv.issued, "pdf": str(pdf), "paid": False, "sent": False,
         "series": config.INVOICE_PREFIX,
         "margin": split["margin"], "domain_cost": split["domain_cost"],
         "domain_years": split["domain_years"], "domain": inv.domain,
@@ -376,6 +403,44 @@ def mark_paid(number: str, note: str = "") -> bool:
                 LEDGER.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
                 return True
     return False
+
+
+def mark_sent(number: str, note: str = "") -> bool:
+    """Record that it went to the client. Separate from `paid`: an invoice can
+    be sent and unpaid for weeks, and that gap is the thing worth seeing."""
+    with _lock:
+        rows = _read_ledger()
+        for r in rows:
+            if r.get("number") == number:
+                r["sent"] = True
+                r["sent_ts"] = time.time()
+                if note:
+                    r["sent_note"] = note
+                LEDGER.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
+                return True
+    return False
+
+
+def summary() -> dict[str, Any]:
+    """Totals for the Treasury: what is owed, what has landed, what is idle."""
+    rows = list_invoices()
+    ours = [r for r in rows if r.get("series") == config.INVOICE_PREFIX]
+    def total(rs): return round(sum(float(r.get("total") or 0) for r in rs), 2)
+    unsent = [r for r in ours if not r.get("sent")]
+    outstanding = [r for r in ours if r.get("sent") and not r.get("paid")]
+    paid = [r for r in ours if r.get("paid")]
+    return {
+        "currency": config.QUOTE_CURRENCY,
+        "count": len(ours),
+        "billed": total(ours),
+        "paid": total(paid), "paid_count": len(paid),
+        "outstanding": total(outstanding), "outstanding_count": len(outstanding),
+        "unsent": total(unsent), "unsent_count": len(unsent),
+        # What the work is actually worth to you once the domain is paid for.
+        "margin": round(sum(float(r.get("margin") or 0) for r in paid), 2),
+        "domain_cost_owed": round(
+            sum(float(r.get("domain_cost") or 0) for r in paid), 2),
+    }
 
 
 def for_lead(lead_id: str) -> dict[str, Any] | None:

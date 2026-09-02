@@ -400,19 +400,51 @@ function invoiceControl(lead: any, invoice: any, blockedBy: string[]): HTMLEleme
       `${invoice.number} — ${invoice.total} ${invoice.currency}` +
       (invoice.paid ? " · paid" : " · unpaid");
     box.appendChild(link);
-    if (!invoice.paid) {
-      const paid = document.createElement("button");
-      paid.type = "button";
-      paid.className = "lb-move-go";
-      paid.textContent = "mark paid";
-      paid.addEventListener("click", async () => {
-        paid.disabled = true;
-        await fetch(`/invoices/${invoice.number}/paid`, { method: "POST" });
-        dirty = true;
-        await rerender();
+    const msg = document.createElement("span");
+    msg.className = "lb-move-msg";
+
+    const act = (label: string, run: () => Promise<Response>, confirmText?: string) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "lb-move-go";
+      b.textContent = label;
+      b.addEventListener("click", async () => {
+        if (confirmText && !window.confirm(confirmText)) return;
+        b.disabled = true;
+        msg.textContent = `${label}…`;
+        try {
+          const r = await run();
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) { msg.textContent = d?.detail ?? `failed (${r.status})`; return; }
+          msg.textContent = "";
+          dirty = true;
+          await loadLeads();
+          await rerender();
+        } finally {
+          b.disabled = false;
+        }
       });
-      box.appendChild(paid);
+      return b;
+    };
+
+    if (!invoice.sent) {
+      box.appendChild(act("mark sent",
+        () => fetch(`/invoices/${invoice.number}/sent`, { method: "POST" })));
     }
+    if (!invoice.paid) {
+      box.appendChild(act("mark paid",
+        () => fetch(`/invoices/${invoice.number}/paid`, { method: "POST" })));
+    }
+    // Same number, redone — a layout fix must not consume another.
+    box.appendChild(act("regenerate",
+      () => fetch(`/leads/${lead.id}/invoice?force=1`, { method: "POST" })));
+    if (!invoice.sent) {
+      box.appendChild(act("delete",
+        () => fetch(`/invoices/${invoice.number}`, { method: "DELETE" }),
+        `Delete ${invoice.number}? Only possible because it has not been sent, `
+        + `and only if it is the last number in its series.`));
+    }
+    box.appendChild(msg);
     return box;
   }
 

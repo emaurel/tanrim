@@ -15,7 +15,8 @@ import time
 from typing import Any, TYPE_CHECKING
 
 from . import secrets as secrets_store
-from . import config, state, usage
+from . import config
+from . import invoices, state, usage
 from .agent_helpers import AgentBusy, all_in_flight, in_flight_for_role
 from .agents import courier, echo, forge, lens, nova, probe, scribe, ultron
 from .runners import AGENT_RUNNERS
@@ -107,6 +108,11 @@ class TreasuryHandler(RoomHandler):
             "by_model": usage.aggregate(records, "model"),
             "pricing": usage.PRICING,
             "is_empty": len(all_records) == 0,
+            # Token spend is what the agency costs to run; invoices are what it
+            # earns. Coin's room is the only place both belong together.
+            "invoices": invoices.list_invoices(),
+            "invoice_summary": invoices.summary(),
+            "invoice_problems": config.invoice_config_problems(),
         }
 
     async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -116,6 +122,12 @@ class TreasuryHandler(RoomHandler):
         if name == "seed_demo":
             n = usage.seed_demo()
             return {"ok": True, "seeded": n}
+        if name == "invoice_paid":
+            return {"ok": invoices.mark_paid(payload.get("number", ""),
+                                             payload.get("note", ""))}
+        if name == "invoice_sent":
+            return {"ok": invoices.mark_sent(payload.get("number", ""),
+                                             payload.get("note", ""))}
         return await super().action(name, payload)
 
     @staticmethod

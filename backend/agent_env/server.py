@@ -394,9 +394,48 @@ async def mark_invoice_paid(number: str, body: dict[str, Any] | None = None):
 
 
 @app.post("/leads/{lead_id}/invoice")
-async def make_invoice(lead_id: str):
-    """Generate (or regenerate) the facture for a lead."""
-    return await invoices_mod.create_for_lead(lead_id)
+async def make_invoice(lead_id: str, force: int = 0):
+    """Generate the facture for a lead, or redo it.
+
+    `force=1` regenerates in place, keeping the same number: an invoice redone
+    after a layout fix must not consume a second one and orphan the first.
+    """
+    return await invoices_mod.create_for_lead(lead_id, force=bool(force))
+
+
+@app.delete("/invoices/{number}")
+async def delete_invoice(number: str):
+    """Take back an invoice that was never sent.
+
+    Refuses unless it is the highest number in its series, because removing one
+    from the middle leaves the hole in the sequence the numbering rules exist
+    to prevent. Delete the later ones first, or keep it.
+    """
+    row = next((r for r in invoices_mod.list_invoices()
+                if r.get("number") == number), None)
+    if row is None:
+        raise HTTPException(404, "no such invoice")
+    if row.get("sent"):
+        raise HTTPException(
+            409, "that invoice has been sent — the client holds it, so it "
+                 "cannot be taken back")
+    if not invoices_mod.discard(number):
+        raise HTTPException(
+            409, "refusing: it is not the last number in its series, and "
+                 "removing it would leave a gap")
+    state.log_event("run_end", from_="operator", to="operator",
+                    summary=f"invoice {number} discarded (never sent)",
+                    outcome="completed")
+    await world.publish({"type": "approvals_updated"})
+    return {"ok": True, "discarded": number}
+
+
+@app.post("/invoices/{number}/sent")
+async def mark_invoice_sent(number: str, body: dict[str, Any] | None = None):
+    if not invoices_mod.mark_sent(number, (body or {}).get("note", "")):
+        raise HTTPException(404, "no such invoice")
+    await world.publish({"type": "approvals_updated"})
+    return {"ok": True, "number": number}
 
 
 @app.get("/rooms")

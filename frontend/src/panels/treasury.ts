@@ -31,6 +31,9 @@ async function render({ roomId, data, body, reload }: PanelContext) {
   body.appendChild(h("h4", "By model"));
   body.appendChild(table(byModel, totals.cost_usd, "no model activity in the last 24h"));
 
+  body.appendChild(h("h4", "Invoices"));
+  body.appendChild(invoiceSection(roomId, data, reload));
+
   body.appendChild(actions(roomId, isEmpty, reload));
 }
 
@@ -145,4 +148,140 @@ function fmtTokens(n: number): string {
 
 export async function open(roomId: string) {
   await openPanel(roomId, render);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Invoices.
+ *
+ * Token spend is what the agency costs to run; invoices are what it earns.
+ * Coin's room is the only place both belong side by side, so the number that
+ * matters — is this making money — can be read in one glance.
+ *
+ * `sent` and `paid` are deliberately separate. An invoice can sit sent and
+ * unpaid for weeks, and that gap is the thing worth seeing; collapsing them
+ * into one flag hides exactly the state you would want to chase.
+ * ------------------------------------------------------------------------- */
+
+interface InvoiceRow {
+  number: string;
+  client?: string;
+  total?: number;
+  currency?: string;
+  issued?: string;
+  paid?: boolean;
+  sent?: boolean;
+  series?: string;
+  margin?: number;
+  domain_cost?: number;
+  lead_id?: string | null;
+}
+
+function money(v: number | undefined, cur = "EUR"): string {
+  const n = Number(v ?? 0);
+  return `${n.toLocaleString("fr-FR", { minimumFractionDigits: 2,
+    maximumFractionDigits: 2 })} ${cur === "EUR" ? "€" : cur}`;
+}
+
+function invoiceSection(roomId: string, data: any, reload: () => void): HTMLElement {
+  const wrap = document.createElement("div");
+  const sum = data.invoice_summary ?? {};
+  const rows: InvoiceRow[] = data.invoices ?? [];
+  const problems: string[] = data.invoice_problems ?? [];
+
+  if (problems.length) {
+    const warn = document.createElement("p");
+    warn.className = "rp-hint";
+    warn.textContent = `Invoicing is blocked: ${problems.join("; ")}`;
+    wrap.appendChild(warn);
+  }
+
+  const cur = sum.currency ?? "EUR";
+  const card = document.createElement("div");
+  card.className = "rp-stat-card rp-inv-summary";
+  card.innerHTML = `
+    <div><b>${money(sum.paid, cur)}</b><i>paid · ${sum.paid_count ?? 0}</i></div>
+    <div><b>${money(sum.outstanding, cur)}</b><i>sent, unpaid · ${sum.outstanding_count ?? 0}</i></div>
+    <div><b>${money(sum.unsent, cur)}</b><i>not sent yet · ${sum.unsent_count ?? 0}</i></div>
+    <div><b>${money(sum.billed, cur)}</b><i>billed in total</i></div>
+  `;
+  wrap.appendChild(card);
+
+  if (sum.paid_count) {
+    const note = document.createElement("p");
+    note.className = "rp-hint";
+    note.textContent =
+      `Of what has been paid, ${money(sum.margin, cur)} is the work and `
+      + `${money(sum.domain_cost_owed, cur)} covers the domains you have to buy.`;
+    wrap.appendChild(note);
+  }
+
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "rp-empty-row";
+    empty.textContent = "No invoices yet.";
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "rp-list rp-inv-list";
+  for (const r of rows) {
+    const li = document.createElement("li");
+    li.className = "rp-inv-row";
+    const state = r.paid ? "paid" : r.sent ? "unpaid" : "unsent";
+    li.dataset.state = state;
+
+    const left = document.createElement("div");
+    left.className = "rp-inv-main";
+    const link = document.createElement("a");
+    link.href = `/invoices/${r.number}.pdf`;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = r.number;
+    const who = document.createElement("span");
+    who.className = "rp-inv-client";
+    who.textContent = `${r.client ?? "?"} · ${r.issued ?? ""}`;
+    left.append(link, who);
+
+    const amt = document.createElement("span");
+    amt.className = "rp-inv-amount";
+    amt.textContent = money(r.total, r.currency ?? cur);
+
+    const tag = document.createElement("span");
+    tag.className = "rp-inv-state";
+    tag.textContent = state;
+
+    li.append(left, amt, tag);
+
+    // The Tercen rows are historical records, not something to act on here.
+    if (r.lead_id) {
+      const bar = document.createElement("span");
+      bar.className = "rp-inv-actions";
+      if (!r.sent) bar.appendChild(mark(roomId, "invoice_sent", r.number, "sent", reload));
+      if (!r.paid) bar.appendChild(mark(roomId, "invoice_paid", r.number, "paid", reload));
+      li.appendChild(bar);
+    }
+    list.appendChild(li);
+  }
+  wrap.appendChild(list);
+  return wrap;
+}
+
+function mark(roomId: string, action: string, number: string,
+              label: string, reload: () => void): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "rp-inv-btn";
+  b.textContent = `mark ${label}`;
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      await postRoomAction(roomId, action, { number });
+      reload();
+    } finally {
+      b.disabled = false;
+    }
+  });
+  return b;
 }
