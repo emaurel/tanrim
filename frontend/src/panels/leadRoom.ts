@@ -56,7 +56,7 @@ export interface LeadRoomSpec {
 
 const STAGE_ORDER = [
   "sourced", "qualified", "built", "qa_passed",
-  "published", "contacted", "replied", "won",
+  "published", "drafted", "contacted", "replied", "won",
 ];
 
 let pollTimer: number | null = null;

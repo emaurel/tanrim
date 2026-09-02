@@ -1,6 +1,9 @@
 # forge/ROLE
 
-Forge's build instructions: write the site from the dossier only, write each file once then edit, no photographs, when to delegate.
+Forge's build instructions: who the page is for (someone on a phone with five
+seconds of patience, not a reviewer), a size budget, write the site from the
+dossier only, write each file once then edit, whose photographs may appear,
+and when delegating a specialist is worth the blocking sub-run.
 
 ---
 

@@ -16,7 +16,7 @@ import type { WireEvent } from "./types";
 
 const STAGE_ORDER = [
   "sourced", "needs_review", "qualified", "enriched", "visualised",
-  "built", "qa_passed", "published", "contacted", "replied", "won",
+  "built", "qa_passed", "published", "drafted", "contacted", "replied", "won",
 ];
 const DEAD = new Set(["disqualified", "qa_failed", "lost"]);
 

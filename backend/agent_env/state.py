@@ -486,6 +486,7 @@ STAGES = [
     "built",          # Forge generated a site
     "qa_passed",      # Lens verified the UI
     "published",      # Courier deployed a preview (gate 1 passed)
+    "drafted",        # Scribe wrote the email; it is waiting on YOUR approval
     "contacted",      # Echo sent the outreach (gate 2 passed)
     "replied",        # the owner answered
     "won",

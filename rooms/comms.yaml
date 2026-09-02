@@ -15,7 +15,7 @@ workbenches:
   - id: outbox
     name: The Outbox
     job: Sending the approved pitch, or handing you the text to send
-    stages: [published]
+    stages: [drafted]
   - id: inbox
     name: The Inbox
     job: Watching for replies and keeping the conversation alive

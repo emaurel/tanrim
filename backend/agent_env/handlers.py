@@ -451,7 +451,7 @@ class CommsHandler(LeadRoomHandler):
     """Echo's Communications. Gate 2 — nothing is sent without approval."""
 
     agent_id, action_name, model = "echo", "request_send", "(no model)"
-    accepts_stages = ("published",)
+    accepts_stages = ("drafted",)
 
     async def state(self) -> dict[str, Any]:
         base = await super().state()

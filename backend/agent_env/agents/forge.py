@@ -7,6 +7,7 @@ Lens inspects and Courier publishes.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import time
@@ -29,7 +30,11 @@ from ..world import World
 from .. import prompts as _prompts
 _P = _prompts.loader("forge")
 
-MODEL = "claude-sonnet-4-6"
+# The page IS the product, and a build's mistakes cost a whole QA cycle each —
+# so this is the one role where paying for the better model is straightforwardly
+# cheaper than the rebuilds. Swap to "claude-sonnet-5" if a build's cost matters
+# more than its first-pass quality.
+MODEL = "claude-opus-5"
 AGENT_ID = "forge"
 ROOM_ID = "factory"
 
@@ -154,25 +159,83 @@ def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
     return "\n\n".join(sections)
 
 
+# How long a dispatch carrying new instructions will wait for the running build
+# to finish before parking its instruction instead. A build is minutes, not
+# seconds, so this is generous on purpose — the alternative is losing the
+# instruction, which is worse than waiting.
+WAIT_FOR_FREE_SECONDS = 20 * 60
+
+
+async def _wait_until_free(lead_id: str) -> bool:
+    """Block until no Forge is on this lead. True if it came free in time."""
+    deadline = time.monotonic() + WAIT_FOR_FREE_SECONDS
+    while time.monotonic() < deadline:
+        if not any(f.get("lead_id") == lead_id for f in in_flight_for_role(AGENT_ID)):
+            return True
+        await asyncio.sleep(5)
+    return False
+
+
 async def run_build(world: World, lead_id: str, instruction: str = "") -> dict[str, Any]:
     lead = state.get_lead(lead_id)
     if lead is None:
         return {"ok": False, "error": f"no such lead: {lead_id}"}
 
     site_dir = SITES_DIR / lead_id
-    # Bail out BEFORE touching the filesystem if another Forge already has this
-    # lead. run_agent's claim would reject the duplicate anyway, but by then we
-    # have already overwritten the `.previous` snapshot with the live run's
-    # half-written files and rolled them back over its build directory — a
-    # duplicate dispatch was destroying the very work the claim exists to
-    # protect. This check is racy on its own; the claim below is the guarantee.
+    # Another Forge already has this lead. Do not touch the filesystem yet:
+    # run_agent's claim would reject this dispatch anyway, but by then we have
+    # overwritten the `.previous` snapshot with the live run's half-written
+    # files and rolled them back over its build directory — a duplicate
+    # dispatch was destroying the very work the claim exists to protect.
+    #
+    # But "duplicate" is not the same as "redundant". A stage-sweep double-fire
+    # really is the same work twice and can be dropped. A dispatch carrying an
+    # INSTRUCTION — an operator followup, a client's change request — is the
+    # only copy of that instruction, and dropping it loses it for good. It
+    # happened: the operator's Instagram branding for Garage Il Primo arrived
+    # one second before the running build finished, was skipped as a duplicate,
+    # and the lead then walked on to QA and passed with the instruction never
+    # having been read by anything.
     if any(f.get("lead_id") == lead_id for f in in_flight_for_role(AGENT_ID)):
-        state.log_event("run_end", from_=AGENT_ID,
-                        summary=f"skipped duplicate build for {lead.get('name')} "
-                                "— a Forge is already on this lead",
-                        outcome="skipped", details={"lead_id": lead_id})
-        return {"ok": False, "error": "a Forge is already building this lead",
-                "skipped": True}
+        if not instruction.strip():
+            state.log_event("run_end", from_=AGENT_ID,
+                            summary=f"skipped duplicate build for {lead.get('name')} "
+                                    "— a Forge is already on this lead",
+                            outcome="skipped", details={"lead_id": lead_id})
+            return {"ok": False, "error": "a Forge is already building this lead",
+                    "skipped": True}
+
+        # Carries new instructions: wait our turn rather than discard them.
+        state.log_event(
+            "run_start", from_=AGENT_ID,
+            summary=f"queued behind the running build for {lead.get('name')} — "
+                    "this dispatch carries new instructions",
+            outcome="queued", details={"lead_id": lead_id},
+        )
+        await world.say(AGENT_ID, "queued behind the current build", seconds=20)
+        freed = await _wait_until_free(lead_id)
+        if not freed:
+            # Still busy after the ceiling. Park the instruction where the next
+            # build will read it rather than silently dropping it.
+            pending = list(lead.get("pending_instructions") or [])
+            pending.append({"ts": time.time(), "instruction": instruction})
+            state.update_lead(lead_id, pending_instructions=pending)
+            state.log_event(
+                "run_end", from_=AGENT_ID,
+                summary=f"could not start for {lead.get('name')} — instruction "
+                        "parked for the next build",
+                outcome="deferred", details={"lead_id": lead_id},
+            )
+            return {"ok": False, "error": "the running build never finished",
+                    "instruction_parked": True}
+        # The build we waited for changed the lead and the files on disk.
+        lead = state.get_lead(lead_id) or lead
+
+    # Anything parked by an earlier dispatch is part of this build's brief.
+    parked = [str(p.get("instruction", "")) for p in (lead.get("pending_instructions") or [])]
+    if parked:
+        instruction = "\n\n".join([*parked, instruction]).strip()
+        state.update_lead(lead_id, pending_instructions=[])
 
     site_dir.mkdir(parents=True, exist_ok=True)
 

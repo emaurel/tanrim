@@ -10,6 +10,7 @@ const ROOM_FOR_STAGE: Record<string, { room: string; next: string }> = {
   qa_failed: { room: "Factory",        next: "rebuild with Lens's notes" },
   qa_passed: { room: "Shipping Bay",   next: "request publish" },
   published: { room: "Copy Desk",      next: "write the pitch" },
+  drafted:   { room: "Communications", next: "ask you before sending" },
   contacted: { room: "Communications", next: "wait for a reply" },
 };
 

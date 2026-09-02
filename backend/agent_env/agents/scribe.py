@@ -112,6 +112,34 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
         f"loses the client at the worst moment.\n"
         if free else ""
     )
+    # What the page could not establish. This is the whole basis of the "please
+    # send me X" paragraph — the dossier and the build already record exactly
+    # what is missing, and none of it used to reach the email, so we published
+    # a page with an unconfirmed closing time and never asked about it.
+    gaps: list[str] = []
+    prof = lead.get("profile") or {}
+    site = lead.get("site") or {}
+    for g in (prof.get("content_gaps") or [])[:8]:
+        gaps.append(str(g))
+    for ph in (site.get("placeholders") or [])[:8]:
+        gaps.append(str(ph))
+    for c in ((prof.get("hours") or {}).get("conflicts") or [])[:3]:
+        gaps.append(f"UNCONFIRMED ON THE PAGE: {c}")
+    owner_assets = lead.get("owner_assets") or []
+    gap_block = ""
+    if gaps:
+        gap_block = (
+            "\nWHAT IS STILL MISSING — the material for the ask. These come from "
+            "the dossier's `content_gaps`, the build's `placeholders`, and any "
+            "recorded conflict. Pick the two or three a business owner could "
+            "actually supply in one reply, and that would visibly improve the "
+            "page. Ignore the ones that are our problem rather than theirs.\n"
+            + "\n".join(f"  - {g}" for g in gaps)
+            + ("\n\nThey have already sent us "
+               f"{len(owner_assets)} file(s), so do not ask again for those.\n"
+               if owner_assets else "\n")
+        )
+
     extra = (
         f"THE PREVIEW LINK to put in the email: {preview}\n"
         f"THE PRICE to quote: {config.QUOTE_AMOUNT} {config.QUOTE_CURRENCY} "
@@ -119,6 +147,7 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
         f"lead's evidence clearly justifies otherwise; if you change it, say why "
         f"in why_this_lands."
         + domain_line
+        + gap_block
     )
     rev = lead.get("revision") or {}
     if rev.get("requested_by") == "client":
@@ -195,7 +224,16 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
         "cost_usd": result.cost_usd,
         "sent": False,
     }
-    state.update_lead(lead_id, outreach=outreach)
+    # Hand it to Communications. The lead has to MOVE for the pipeline to
+    # dispatch Echo — and `published` used to be claimed by both this room and
+    # Communications, so the transport picked Echo, whose preflight then failed
+    # with "no outreach draft" because nothing had ever dispatched Scribe.
+    # Echo raises the send gate; it never sends without the operator.
+    state.advance_lead(
+        lead_id, "drafted", agent=AGENT_ID,
+        note=f"outreach drafted: {(outreach.get('subject') or '')[:120]}",
+        outreach=outreach,
+    )
 
     await world.say(AGENT_ID, "outreach drafted", seconds=6)
     state.log_event(

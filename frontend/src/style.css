@@ -1097,6 +1097,8 @@ html, body {
 .rp-lead-stage[data-stage="qa_passed"]    { --stage: #6abf8f; }
 .rp-lead-stage[data-stage="published"],
 .rp-lead-stage[data-stage="contacted"]    { --stage: #7fd1c1; }
+/* Waiting on you, like the other gate colour. */
+.rp-lead-stage[data-stage="drafted"]      { --stage: #d8a85a; }
 .rp-lead-stage[data-stage="replied"]      { --stage: #f4d35e; }
 .rp-lead-stage[data-stage="won"]          { --stage: #e9c46a; }
 .rp-lead-stage[data-stage="disqualified"],
