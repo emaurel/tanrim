@@ -12,6 +12,8 @@ export default defineConfig({
       "/invoices":  "http://127.0.0.1:8765",
       // Published preview sites are served by the backend off disk.
       "/preview":   "http://127.0.0.1:8765",
+      "/staging":   "http://127.0.0.1:8765",
+      "/agents":    "http://127.0.0.1:8765",
     },
   },
 });

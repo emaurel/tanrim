@@ -306,6 +306,49 @@ def in_flight(worker_id: str) -> dict[str, Any] | None:
     return _IN_FLIGHT.get(worker_id)
 
 
+def cancel_worker(worker_id: str, reason: str = "") -> bool:
+    """Stop one worker's run. True if something was actually running."""
+    info = _IN_FLIGHT.get(worker_id)
+    if not info:
+        return False
+    task = info.get("task")
+    if task is not None and not task.done():
+        task.cancel()
+    state.log_event(
+        "run_end", from_="operator", to=worker_id,
+        summary=f"stopped {worker_id}: {info.get('summary')}"
+                f"{(' — ' + reason) if reason else ''}"[:240],
+        outcome="cancelled", details={"lead_id": info.get("lead_id")},
+    )
+    return True
+
+
+def cancel_lead(lead_id: str, reason: str = "") -> list[str]:
+    """Stop every run currently working this lead. Returns the workers stopped.
+
+    Called when the operator moves a lead by hand. A run takes minutes, and
+    letting it finish means paying for output about a state that no longer
+    holds — and, before the supersede guard, having it overwrite the decision.
+    Cancelling is the honest response to "I have decided something else".
+    """
+    stopped: list[str] = []
+    for worker_id, info in list(_IN_FLIGHT.items()):
+        if info.get("lead_id") != lead_id:
+            continue
+        task = info.get("task")
+        if task is not None and not task.done():
+            task.cancel()
+        stopped.append(worker_id)
+    if stopped:
+        state.log_event(
+            "run_end", from_="operator", to=",".join(stopped),
+            summary=f"stopped {', '.join(stopped)} — the operator moved this "
+                    f"lead mid-run{(': ' + reason) if reason else ''}"[:240],
+            outcome="cancelled", details={"lead_id": lead_id},
+        )
+    return stopped
+
+
 def in_flight_for_role(role: str) -> list[dict[str, Any]]:
     """Everything the room staffed by `role` is working on right now — a room
     can have several workers, so a panel must ask about the role, not an id."""
@@ -436,13 +479,21 @@ async def run_agent(
     if agent is not None:
         agent.busy = True
         agent.lead_id = lead_id
+    started_ts = time.time()
     _IN_FLIGHT[agent_id] = {
         "role": role,
         "summary": summary,
         "lead_id": lead_id,
         "workbench": workbench,
-        "started_ts": time.time(),
+        "started_ts": started_ts,
+        # The task this run is on, so an operator decision can actually stop it
+        # rather than wait minutes for it to finish and then discard the result.
+        "task": asyncio.current_task(),
     }
+    # Declares which lead this run belongs to, so `state.advance_lead` can
+    # refuse a write from a run the operator has already overtaken.
+    state.RUN_CONTEXT.set({"lead_id": lead_id, "started_ts": started_ts,
+                           "agent_id": agent_id})
     if workbench:
         await world.move_to_workbench(agent_id, room_id, workbench)
     await world.set_status(agent_id, "working")
@@ -667,6 +718,14 @@ async def run_agent(
         state.log_event(
             "run_end", from_=agent_id,
             summary=f"failed: {type(e).__name__}: {e}"[:300], outcome="failed",
+        )
+        raise
+    except asyncio.CancelledError:
+        # Not a failure: somebody decided this work was no longer wanted.
+        state.log_event(
+            "run_end", from_=agent_id,
+            summary=f"cancelled: {summary}"[:240], outcome="cancelled",
+            details={"lead_id": lead_id},
         )
         raise
     finally:

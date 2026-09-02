@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import time
+from contextvars import ContextVar
 import uuid
 from email.utils import parseaddr
 from threading import Lock
@@ -518,6 +519,42 @@ def clean_email(value: Any) -> str | None:
     return found.group(0).lower() if found else None
 
 
+
+# ---------------------------------------------------------------------------
+# Operator overrides beat work already in flight.
+#
+# An agent run takes minutes. If the operator moves a lead during one, the run
+# finishes afterwards and writes its result over the decision — the stage flips
+# back and the override looks like it never happened. So every run declares
+# which lead it is working and when it started, and `advance_lead` refuses a
+# write from a run the operator has since overtaken.
+#
+# A ContextVar rather than an argument, because the check has to hold for every
+# agent without each one remembering to pass anything, and it propagates into
+# whatever tasks a run creates.
+# ---------------------------------------------------------------------------
+
+RUN_CONTEXT: "ContextVar[dict[str, Any] | None]" = ContextVar(
+    "agent_run_context", default=None)
+
+_OPERATOR_MOVES: dict[str, float] = {}
+
+
+def mark_operator_move(lead_id: str) -> float:
+    """Record that a person just moved this lead. Returns the instant."""
+    ts = time.time()
+    _OPERATOR_MOVES[lead_id] = ts
+    return ts
+
+
+def superseded(lead_id: str) -> bool:
+    """True if the operator moved this lead after the current run started."""
+    ctx = RUN_CONTEXT.get()
+    if not ctx or ctx.get("lead_id") != lead_id:
+        return False
+    moved = _OPERATOR_MOVES.get(lead_id)
+    return bool(moved and moved > float(ctx.get("started_ts") or 0))
+
 def add_lead(
     name: str,
     *,
@@ -604,6 +641,17 @@ def advance_lead(
     is always a complete record of who moved the lead and why."""
     if stage not in ALL_STAGES:
         raise ValueError(f"unknown stage: {stage}")
+    if agent != "operator" and superseded(lead_id):
+        # The operator moved this lead while this run was working. Their
+        # decision stands; the run's conclusion is about a lead that no longer
+        # exists in that state.
+        log_event(
+            "run_end", from_=agent, to="operator",
+            summary=f"ignored a stage change to '{stage}' from {agent}: the "
+                    "operator moved this lead while the run was in flight",
+            outcome="superseded", details={"lead_id": lead_id, "stage": stage},
+        )
+        return None
     if "email" in fields:
         fields["email"] = clean_email(fields["email"])
     _ensure()

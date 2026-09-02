@@ -221,6 +221,113 @@ function buildList(): HTMLElement {
   return wrap;
 }
 
+let currentLeadId: string | null = null;
+
+/** Does this entry have build output worth showing? */
+function touchesTheBuild(e: Entry): boolean {
+  const t = `${e.title} ${e.detail ?? ""}`.toLowerCase();
+  return (
+    e.to_stage === "built" || e.to_stage === "qa_passed" || e.to_stage === "qa_failed" ||
+    e.to_stage === "published" ||
+    /built|build|render|inspect|logo|screenshot|publish/.test(t)
+  );
+}
+
+function row(k: string, v: string): HTMLElement {
+  const d = document.createElement("div");
+  d.className = "lb-x-row";
+  const kk = document.createElement("span");
+  kk.textContent = k;
+  const vv = document.createElement("span");
+  vv.textContent = v;
+  d.append(kk, vv);
+  return d;
+}
+
+/** Everything the ledgers hold about one entry, untruncated. */
+function expandedDetail(e: Entry): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  out.push(row("when", new Date(e.ts * 1000).toString()));
+  out.push(row("kind", e.subkind ? `${e.kind} · ${e.subkind}` : e.kind));
+  if (e.agent) out.push(row("by", e.agent));
+  if (e.from_stage || e.to_stage)
+    out.push(row("stage", `${e.from_stage ?? "—"} → ${e.to_stage ?? "—"}`));
+  if (e.outcome) out.push(row("outcome", e.outcome));
+  if (e.gate_kind) out.push(row("gate", e.gate_kind));
+  // Title and detail are NOT repeated here — the collapsed row already shows
+  // both in full, and printing them twice made the panel look like a bug.
+  if (e.answer) {
+    const d = document.createElement("p");
+    d.className = "lb-x-text lb-answer";
+    d.textContent = `Ultron: ${e.answer}`;
+    out.push(d);
+  }
+  return out;
+}
+
+/** The files on disk, grouped by what they ARE — the distinction matters. */
+function fileGroups(d: any): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  const groups: any[] = d?.groups ?? [];
+  if (!groups.length) {
+    const p = document.createElement("p");
+    p.className = "lb-x-text";
+    p.textContent = d?.note ?? "Nothing on disk for this lead.";
+    return [p];
+  }
+  if (d.staging_url) {
+    const a = document.createElement("a");
+    a.className = "lb-file-open";
+    a.href = d.staging_url;
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    a.textContent = "open the built site →";
+    out.push(a);
+  }
+  for (const g of groups) {
+    const h = document.createElement("div");
+    h.className = "lb-file-group";
+    const title = document.createElement("div");
+    title.className = "lb-file-title";
+    title.textContent = `${g.name} · ${g.files.length}`;
+    const note = document.createElement("div");
+    note.className = "lb-file-note";
+    note.textContent = g.note ?? "";
+    h.append(title, note);
+
+    const grid = document.createElement("div");
+    grid.className = "lb-file-grid";
+    for (const f of g.files) {
+      const a = document.createElement("a");
+      a.className = "lb-file";
+      a.href = f.url;
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      a.title = `${f.path} · ${Math.round(f.bytes / 1024)} KB`;
+      if (f.kind === "image" || f.kind === "svg") {
+        const img = document.createElement("img");
+        img.src = f.url;
+        img.loading = "lazy";
+        img.alt = f.name;
+        a.appendChild(img);
+      } else {
+        const ic = document.createElement("span");
+        ic.className = "lb-file-ic";
+        ic.textContent = f.name.split(".").pop() ?? "?";
+        a.appendChild(ic);
+      }
+      const cap = document.createElement("span");
+      cap.className = "lb-file-name";
+      cap.textContent = f.name;
+      a.appendChild(cap);
+      grid.appendChild(a);
+    }
+    h.appendChild(grid);
+    out.push(h);
+  }
+  return out;
+}
+
 function entryEl(e: Entry, olderTs: number | null): HTMLElement[] {
   const out: HTMLElement[] = [];
   const li = document.createElement("li");
@@ -284,6 +391,45 @@ function entryEl(e: Entry, olderTs: number | null): HTMLElement[] {
     o.textContent = e.outcome;
     li.appendChild(o);
   }
+
+  // Expand on click. The collapsed row is a summary; everything the ledgers
+  // hold about the entry is here, plus — for anything that touched the build —
+  // the files it produced.
+  const more = document.createElement("div");
+  more.className = "lb-expand";
+  more.hidden = true;
+  li.appendChild(more);
+
+  li.classList.add("lb-entry--clickable");
+  li.tabIndex = 0;
+  let filled = false;
+  const toggle = async () => {
+    more.hidden = !more.hidden;
+    li.classList.toggle("lb-entry--open", !more.hidden);
+    if (more.hidden || filled) return;
+    filled = true;
+    more.replaceChildren(...expandedDetail(e));
+    if (touchesTheBuild(e)) {
+      const holder = document.createElement("div");
+      holder.className = "lb-files";
+      holder.textContent = "loading files…";
+      more.appendChild(holder);
+      try {
+        const d = await fetch(`/leads/${currentLeadId}/files`).then((r) => r.json());
+        holder.replaceChildren(...fileGroups(d));
+      } catch (err) {
+        holder.textContent = `could not list the files: ${String(err)}`;
+      }
+    }
+  };
+  li.addEventListener("click", (ev) => {
+    // Don't hijack a click on a link or a button inside the row.
+    if ((ev.target as HTMLElement).closest("a,button")) return;
+    void toggle();
+  });
+  li.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); void toggle(); }
+  });
 
   out.push(li);
 
@@ -356,9 +502,11 @@ function stageControl(lead: any): HTMLElement {
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d?.detail ?? `${r.status}`);
-      msg.textContent = d.approvals_dismissed?.length
-        ? `moved · dismissed ${d.approvals_dismissed.join(", ")}`
-        : "moved";
+      const bits = ["moved"];
+      if (d.agents_stopped?.length) bits.push(`stopped ${d.agents_stopped.join(", ")}`);
+      if (d.approvals_dismissed?.length)
+        bits.push(`dismissed ${d.approvals_dismissed.join(", ")}`);
+      msg.textContent = bits.join(" · ");
       why.value = "";
       dirty = true;
       await loadLeads();
@@ -496,6 +644,7 @@ async function buildTimeline(): Promise<HTMLElement> {
     return wrap;
   }
 
+  currentLeadId = selected;
   let data: any;
   try {
     data = await loadTimeline(selected);
@@ -573,7 +722,45 @@ async function buildTimeline(): Promise<HTMLElement> {
       const dur = document.createElement("span");
       dur.className = "lb-live-dur";
       dur.textContent = a.started_ts ? `${elapsed(a.started_ts)} so far` : "";
-      row.append(pulse, who, what, dur);
+
+      // Stop it. A run is minutes of output, and watching one head somewhere
+      // useless without being able to stop it is a bad place to be.
+      const stop = document.createElement("button");
+      stop.type = "button";
+      stop.className = "lb-stop";
+      stop.textContent = "×";
+      stop.title = `Stop ${a.role ?? a.worker_id}. Anything already written to `
+        + `disk stays — this stops the work, it does not undo it.`;
+      stop.setAttribute("aria-label", `Stop ${a.role ?? a.worker_id}`);
+      stop.addEventListener("click", async () => {
+        stop.disabled = true;
+        try {
+          const r = await fetch(`/agents/${encodeURIComponent(a.worker_id)}/stop`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ reason: "stopped from the lead board" }),
+          });
+          if (!r.ok) { dur.textContent = `could not stop (${r.status})`; return; }
+          // Cancellation is not instant: the run is waiting on a subprocess
+          // and takes a few seconds to unwind. Say so, rather than leaving a
+          // dead-looking button and an agent that still says "working".
+          dur.textContent = "stopping…";
+          for (let i = 0; i < 12; i++) {
+            await new Promise((res) => setTimeout(res, 1500));
+            const t = await fetch(`/leads/${lead.id}/timeline`).then((x) => x.json())
+              .catch(() => null);
+            const still = (t?.active ?? []).some((x: Active) => x.worker_id === a.worker_id);
+            if (!still) break;
+          }
+          dirty = true;
+          await loadLeads();
+          await rerender();
+        } finally {
+          stop.disabled = false;
+        }
+      });
+
+      row.append(pulse, who, what, dur, stop);
       box.appendChild(row);
     }
     wrap.appendChild(box);

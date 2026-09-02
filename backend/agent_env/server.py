@@ -136,6 +136,96 @@ _LEAD_BULK = ("profile", "visual", "qa", "site", "site_history", "audit",
               "outreach", "domains", "owner_assets", "history", "replies")
 
 
+@app.get("/leads/{lead_id}/files")
+async def lead_files(lead_id: str):
+    """Everything on disk for a lead, grouped by what it IS.
+
+    The grouping is the point: `assets/` are files the owner sent us and may
+    appear on the page, `photos/` were harvested for information and may never
+    be republished, and the screenshots are what Lens actually judged. A flat
+    file list loses exactly the distinction the whole pipeline turns on.
+    """
+    if state.get_lead(lead_id) is None:
+        raise HTTPException(404, "no such lead")
+    base = SITES_DIR / lead_id
+    if not base.is_dir():
+        return {"groups": [], "note": "nothing has been built for this lead yet"}
+
+    def entry(path: Path) -> dict[str, Any]:
+        rel = path.relative_to(base).as_posix()
+        return {
+            "name": path.name,
+            "path": rel,
+            "url": f"/staging/{lead_id}/{rel}",
+            "bytes": path.stat().st_size,
+            "modified": path.stat().st_mtime,
+            "kind": ("image" if path.suffix.lower() in
+                     (".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif")
+                     else "svg" if path.suffix.lower() == ".svg"
+                     else "text" if path.suffix.lower() in
+                     (".html", ".css", ".js", ".json", ".md", ".txt", ".csv")
+                     else "file"),
+        }
+
+    def listing(d: Path) -> list[dict[str, Any]]:
+        if not d.is_dir():
+            return []
+        # The manifest is provenance, not a picture — it belongs to the group's
+        # note, not in the grid as a file called "JSON".
+        return sorted((entry(p) for p in d.iterdir()
+                       if p.is_file() and not p.name.startswith(".")
+                       and p.name != "manifest.json"),
+                      key=lambda e: e["name"])
+
+    top = [p for p in base.iterdir()
+           if p.is_file() and not p.name.startswith(".")]
+    build = sorted((entry(p) for p in top if not p.name.startswith("shot-")),
+                   key=lambda e: e["name"])
+    shots = sorted((entry(p) for p in top if p.name.startswith("shot-")),
+                   key=lambda e: e["name"])
+
+    groups = [
+        {"id": "build", "name": "The site",
+         "note": "what Forge wrote — this is what gets deployed",
+         "files": build},
+        {"id": "shots", "name": "Renders",
+         "note": "what Lens actually looked at when it judged the page",
+         "files": shots},
+        {"id": "assets", "name": "Files the owner sent",
+         "note": "theirs, given for this purpose — the only images allowed on the page",
+         "files": listing(base / "assets")},
+        {"id": "photos", "name": "Harvested photographs",
+         "note": "READ for information, never republished — not ours",
+         "files": listing(base / "photos")},
+        {"id": "incumbent", "name": "Their existing site",
+         "note": "renders of the site they already had, if any",
+         "files": listing(base / "incumbent")},
+    ]
+    return {"lead_id": lead_id, "staging_url": f"/staging/{lead_id}/",
+            "groups": [g for g in groups if g["files"]]}
+
+
+@app.post("/agents/{worker_id}/stop")
+async def stop_agent(worker_id: str, body: dict[str, Any] | None = None):
+    """Stop one agent mid-run.
+
+    A run is minutes of output; watching one head somewhere useless and being
+    unable to stop it is a bad place to be. Anything the run had already
+    written to disk stays — this stops the work, it does not undo it.
+    """
+    info = agent_helpers.all_in_flight().get(worker_id)
+    if not info:
+        raise HTTPException(404, f"{worker_id} is not running anything")
+    lead_id = info.get("lead_id")
+    if lead_id:
+        # So a run that finishes in the same instant cannot write its result.
+        state.mark_operator_move(lead_id)
+    agent_helpers.cancel_worker(worker_id, str((body or {}).get("reason") or ""))
+    await world.publish({"type": "approvals_updated"})
+    return {"ok": True, "stopped": worker_id, "lead_id": lead_id,
+            "was_doing": info.get("summary")}
+
+
 @app.post("/leads/{lead_id}/bounce")
 async def report_bounce(lead_id: str, body: dict[str, Any] | None = None):
     """Report a delivery failure by hand.
@@ -180,6 +270,16 @@ async def set_lead_stage(lead_id: str, body: dict[str, Any]):
     if lead.get("stage") == stage:
         return {"ok": True, "unchanged": True, "stage": stage}
 
+    # Record the decision BEFORE stopping anything, so a run that finishes in
+    # the same instant is still recognised as overtaken and its write refused.
+    state.mark_operator_move(lead_id)
+
+    # Then actually stop the work. An operator decision beats a run in flight:
+    # letting it finish means paying minutes of output about a state that no
+    # longer holds.
+    stopped = agent_helpers.cancel_lead(
+        lead_id, reason or f"moved to '{stage}'")
+
     # A pending card on this lead is about the state it is leaving. Resolve
     # them, or they suppress dispatch at the new stage for no reason.
     dropped = []
@@ -202,7 +302,7 @@ async def set_lead_stage(lead_id: str, body: dict[str, Any]):
         details={"lead_id": lead_id, "from": lead.get("stage"), "to": stage})
     await world.publish({"type": "approvals_updated"})
     return {"ok": True, "stage": stage, "from": lead.get("stage"),
-            "approvals_dismissed": dropped}
+            "approvals_dismissed": dropped, "agents_stopped": stopped}
 
 
 @app.get("/leads/{lead_id}/timeline")
