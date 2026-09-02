@@ -87,6 +87,25 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
     if lead is None:
         return {"ok": False, "error": f"no such lead: {lead_id}"}
 
+    # Refuse to rewrite the pitch for a business that has already had it,
+    # unless they have since asked for something. Redrafting reset the lead to
+    # `drafted` and produced a fresh send gate for a business that had already
+    # been emailed an hour earlier — one approval away from a duplicate.
+    sent_log = lead.get("sent_log") or []
+    if sent_log:
+        last_sent = max(float(r.get("ts") or 0) for r in sent_log)
+        rev = lead.get("revision") or {}
+        if float(rev.get("ts") or 0) <= last_sent:
+            state.log_event(
+                "run_end", from_=AGENT_ID, to="operator",
+                summary=f"refused to redraft {lead.get('name')}: already "
+                        f"emailed and nothing has been asked of us since",
+                outcome="refused", details={"lead_id": lead_id})
+            return {"ok": False, "already_contacted": True,
+                    "error": ("this business has already been emailed; there is "
+                              "nothing new to answer, so rewriting the pitch "
+                              "would only re-arm the send gate")}
+
     # The canonical email. The process facts — what the offer is, what is
     # included, that it is unsolicited — are fixed; only the personalised slots
     # vary. Improvising the process description per lead is how a customer ends

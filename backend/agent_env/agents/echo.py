@@ -45,6 +45,19 @@ def preflight(lead: dict[str, Any]) -> list[str]:
         problems.append("no published preview — the email would link to nothing")
     if outreach.get("sent"):
         problems.append("this lead has already been contacted")
+    # The authoritative check. `outreach.sent` lives in a dict that a redraft
+    # replaces; this one cannot be overwritten by rewriting the email.
+    sent_log = lead.get("sent_log") or []
+    if sent_log:
+        last_sent = max(float(r.get("ts") or 0) for r in sent_log)
+        rev = lead.get("revision") or {}
+        asked_since = float(rev.get("ts") or 0) > last_sent
+        if not asked_since:
+            when = time.strftime("%d/%m %H:%M", time.localtime(last_sent))
+            problems.append(
+                f"this business was already emailed on {when} at "
+                f"{sent_log[-1].get('to')} — sending again would be a second "
+                "unsolicited email, and nothing has been asked of us since")
     if outreach.get("billing_language_flags"):
         problems.append(
             "the draft contains billing language "
@@ -212,9 +225,17 @@ async def do_send(world: World, lead_id: str) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     await world.leave_workbench(AGENT_ID)
-    outreach.update({"sent": True, "transport": "smtp"})
+    outreach.update({"sent": True, "transport": "smtp", "sent_ts": time.time()})
+    # Append-only, and deliberately NOT inside `outreach`: rewriting the draft
+    # replaces that dict wholesale, which erased the only record that a real
+    # business had already been emailed — and `preflight` guards on it. A
+    # redraft then re-armed the gate and would have sent a second copy.
+    sent_log = list(lead.get("sent_log") or [])
+    sent_log.append({"ts": time.time(), "to": to,
+                     "subject": outreach.get("subject")})
     state.advance_lead(lead_id, "contacted", agent=AGENT_ID,
-                       note=f"emailed {to}", outreach=outreach)
+                       note=f"emailed {to}", outreach=outreach,
+                       sent_log=sent_log)
     await world.say(AGENT_ID, f"sent to {to[:22]}", seconds=10)
     state.log_event("run_end", from_=AGENT_ID,
                     summary=f"emailed {lead.get('name')} <{to}>", outcome="completed",
