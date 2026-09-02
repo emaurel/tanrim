@@ -33,17 +33,32 @@ QUOTE_AMOUNT = int(os.getenv("AGENT_ENV_QUOTE_AMOUNT", "450"))
 QUOTE_CURRENCY = os.getenv("AGENT_ENV_QUOTE_CURRENCY", "EUR")
 
 
-def outreach_footer() -> str:
+# The opt-out has to be appended in code so it cannot go missing — but it also
+# has to be in the language of the email, or a French business receives a French
+# pitch with an English legal notice, which reads like a template and undermines
+# the one part that has to be believed.
+OPT_OUT = {
+    "fr": (
+        "Ce site, je l'ai fait de ma propre initiative et vous ne me devez rien. "
+        "Si vous préférez ne plus recevoir de messages de ma part, répondez "
+        "STOP et je supprimerai vos coordonnées."
+    ),
+    "en": (
+        "I built this unprompted and you owe me nothing. If you would rather "
+        "not hear from me again, reply with the word STOP and I will delete "
+        "your details and not contact you again."
+    ),
+}
+
+
+def outreach_footer(language: str = "en") -> str:
     """Sender identity + opt-out, appended to every outreach email."""
     who = AGENCY_NAME or "(agency name not configured — set AGENT_ENV_AGENCY_NAME)"
     addr = f"\n{AGENCY_ADDRESS}" if AGENCY_ADDRESS else ""
     mail = AGENCY_SENDER_EMAIL or "(sender email not configured)"
-    return (
-        f"\n\n--\n{who}{addr}\n{mail}\n\n"
-        f"I built this unprompted and you owe me nothing. If you would rather "
-        f"not hear from me again, reply with the word STOP and I will delete "
-        f"your details and not contact you again."
-    )
+    lang = (language or "en").split("-")[0].lower()
+    opt_out = OPT_OUT.get(lang, OPT_OUT["en"])
+    return f"\n\n--\n{who}{addr}\n{mail}\n\n{opt_out}"
 
 
 def outreach_config_problems() -> list[str]:

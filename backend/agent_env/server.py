@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -174,6 +175,14 @@ async def get_room_state(room_id: str) -> dict[str, Any]:
         "workbenches": benches,
         "inhabitants": inhabitants,
         "skills_detail": skills_mod.catalog(room.skills),
+        # Where this room's agents can reach outside the machine, and with what.
+        "mcp_servers": [
+            {
+                **m.model_dump(),
+                "configured": bool(not m.auth_env or os.environ.get(m.auth_env)),
+            }
+            for m in room.mcp_servers
+        ],
         "has_handler": handler is not None,
         "pending_approvals": state.list_user_approvals(status="pending", room_id=room_id),
         **extra,

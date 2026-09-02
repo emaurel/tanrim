@@ -397,7 +397,7 @@ class ListingHandler(LeadRoomHandler):
             "amount": config.QUOTE_AMOUNT,
             "currency": config.QUOTE_CURRENCY,
         }
-        base["footer"] = config.outreach_footer()
+        base["footer"] = config.outreach_footer("fr")
         base["config_problems"] = config.outreach_config_problems()
         return base
 
@@ -423,6 +423,8 @@ class PublishHandler(LeadRoomHandler):
             stages=["published", "contacted", "replied", "won"], limit=40
         )
         base["preview_base"] = config.PREVIEW_BASE
+        from . import hosting
+        base["hosting_configured"] = hosting.configured()
         # Everything here can be viewed before it is published.
         base["staging"] = {
             lead["id"]: courier.staging_url(lead["id"])

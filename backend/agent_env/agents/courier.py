@@ -14,7 +14,7 @@ import re
 import shutil
 from typing import Any
 
-from .. import config, state
+from .. import config, domains, hosting, state
 from ..config import SITES_DIR
 from ..world import World
 
@@ -40,8 +40,13 @@ def staging_url(lead_id: str) -> str:
 
 
 def slugify(text: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", (text or "site").lower()).strip("-")
-    return slug[:40] or "site"
+    """A URL-safe slug with accents folded, not dropped.
+
+    Stripping non-ASCII turns "Garage des Alliés" into "garage-des-alli-s",
+    which is the public address a business sees. Folding gives
+    "garage-des-allies".
+    """
+    return domains.hyphenated(text or "site")[:40] or "site"
 
 
 def _preview_banner(business: str) -> str:
@@ -142,13 +147,57 @@ async def do_publish(world: World, lead_id: str) -> dict[str, Any]:
         else:
             shutil.copy2(path, dest / path.name)
 
+    # Put it on a real, public URL. Until this existed the "preview link" was
+    # 127.0.0.1 — unopenable by the person it was written for, which made the
+    # whole outreach step a dead end.
+    hosted: dict[str, Any] = {}
     url = f"{config.PREVIEW_BASE.rstrip('/')}/{slug}/"
+    if hosting.configured():
+        try:
+            prepared = {
+                path: (
+                    _prepare(content.decode("utf-8", "replace"),
+                             lead.get("name", "this business")).encode("utf-8")
+                    if path.endswith(".html") else content
+                )
+                for path, content in hosting.collect(src).items()
+            }
+            hosted = await hosting.deploy(slug, prepared)
+            url = hosted["url"]
+        except Exception as e:  # noqa: BLE001
+            # Fall back to the local copy rather than failing the publish —
+            # the operator approved this, and a local URL is better than none.
+            hosted = {"error": f"{type(e).__name__}: {e}"}
+            state.log_event(
+                "run_end", from_=AGENT_ID,
+                summary=f"Cloudflare deploy failed for {lead.get('name')}: {e}"[:240],
+                outcome="failed", details={"lead_id": lead_id},
+            )
+
+    # Find domains that are actually free, now, so the outreach email can name
+    # one. This is availability only — nothing is registered here. Done at
+    # publish time rather than at the gate because it is a network round trip
+    # and the gate should be instant.
+    domain_info: dict[str, Any] = {}
+    try:
+        business = (lead.get("profile") or {}).get("identity", {}).get(
+            "trading_name") or lead.get("name") or ""
+        domain_info = await domains.suggest(
+            business,
+            town=lead.get("city") or "",
+            trade=lead.get("category") or "",
+        )
+    except Exception as e:  # noqa: BLE001
+        # A registry being slow must not block a publish.
+        domain_info = {"error": f"{type(e).__name__}: {e}"}
+
     state.advance_lead(lead_id, "published", agent=AGENT_ID,
                        note=f"preview at {url}",
-                       preview_url=url, preview_slug=slug)
+                       preview_url=url, preview_slug=slug,
+                       hosting=hosted, domains=domain_info)
 
     await world.leave_workbench(AGENT_ID)
-    await world.say(AGENT_ID, f"published /{slug[:20]}", seconds=10)
+    await world.say(AGENT_ID, f"published {slug[:20]}", seconds=10)
     state.log_event("run_end", from_=AGENT_ID,
                     summary=f"published preview for {lead.get('name')}: {url}",
                     outcome="completed",
@@ -157,14 +206,24 @@ async def do_publish(world: World, lead_id: str) -> dict[str, Any]:
 
 
 async def unpublish(world: World, lead_id: str) -> dict[str, Any]:
-    """Take a preview down. Speculative sites shouldn't linger indefinitely."""
+    """Take a preview down. Speculative sites carrying a real business's name
+    shouldn't linger on the internet indefinitely."""
     lead = state.get_lead(lead_id)
     if lead is None:
         return {"ok": False, "error": f"no such lead: {lead_id}"}
     slug = lead.get("preview_slug")
     if slug and (PUBLIC_DIR / slug).exists():
         shutil.rmtree(PUBLIC_DIR / slug)
-    state.update_lead(lead_id, preview_url=None, preview_slug=None)
+    removed = False
+    if slug and hosting.configured():
+        try:
+            removed = await hosting.delete_project(slug)
+        except Exception as e:  # noqa: BLE001
+            state.log_event("run_end", from_=AGENT_ID,
+                            summary=f"could not delete Pages project: {e}"[:200],
+                            outcome="failed", details={"lead_id": lead_id})
+    state.update_lead(lead_id, preview_url=None, preview_slug=None,
+                      hosting={"deleted": removed})
     state.log_event("run_end", from_=AGENT_ID,
                     summary=f"unpublished preview for {lead.get('name')}",
                     outcome="completed", details={"lead_id": lead_id})

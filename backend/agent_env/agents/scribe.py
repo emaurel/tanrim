@@ -87,15 +87,38 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
     if lead is None:
         return {"ok": False, "error": f"no such lead: {lead_id}"}
 
+    # The canonical email. The process facts — what the offer is, what is
+    # included, that it is unsolicited — are fixed; only the personalised slots
+    # vary. Improvising the process description per lead is how a customer ends
+    # up misled about what they are buying.
+    template = _P("OUTREACH_TEMPLATE")
     outreach_prev = lead.get("outreach") or {}
     feedback = (outreach_prev.get("operator_feedback") or "").strip()
     preview = lead.get("preview_url") or "(preview link — inserted when published)"
+    dom = lead.get("domains") or {}
+    free = (dom.get("suggested") or [])[:3]
+    price = f"{config.QUOTE_AMOUNT} {config.QUOTE_CURRENCY}"
+    filled = (
+        template
+        .replace("{{PREVIEW_URL}}", preview)
+        .replace("{{PRICE}}", price)
+        .replace("{{DOMAIN}}", free[0] if free else "(à choisir ensemble)")
+    )
+    domain_line = (
+        f"\nDOMAINS THAT ARE FREE RIGHT NOW: {', '.join(free)}. Offer to register "
+        f"the first one for them as part of the price. Say it is available, NOT "
+        f"that it is reserved — someone else can take it before they reply, and "
+        f"promising a domain we do not hold is the kind of small dishonesty that "
+        f"loses the client at the worst moment.\n"
+        if free else ""
+    )
     extra = (
         f"THE PREVIEW LINK to put in the email: {preview}\n"
         f"THE PRICE to quote: {config.QUOTE_AMOUNT} {config.QUOTE_CURRENCY} "
         f"(one-off, for the site as built plus handover). Quote this unless the "
         f"lead's evidence clearly justifies otherwise; if you change it, say why "
         f"in why_this_lands."
+        + domain_line
     )
     if feedback:
         # A rewrite exists because the operator rejected the last draft. Their
@@ -113,6 +136,12 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
         world,
         role=AGENT_ID, room_id=ROOM_ID, model=MODEL,
         prompt=_context(lead, OUTREACH_ROLE, OUTREACH_SCHEMA, extra)
+               + "\n\nTHE TEMPLATE. Sections marked {{KEEP}} carry the process "
+                 "facts and must survive intact — reword for tone if you like, "
+                 "but do not change what they promise or drop them. Sections "
+                 "marked {{ADAPT}} are yours to write for this business. The "
+                 "substitutions are already filled in:\n\n"
+               + filled
                + f"\n\n{instruction or 'Write the outreach email.'}\n\nReturn the JSON now.",
         summary=f"outreach: {lead.get('name')}",
         workbench="pitch",
@@ -133,7 +162,9 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
 
     outreach = {
         **parsed,
-        "body_final": parsed["body"].rstrip() + config.outreach_footer(),
+        # Footer in the language the email was written in.
+        "body_final": parsed["body"].rstrip()
+                      + config.outreach_footer(parsed.get("language") or "en"),
         "to": lead.get("email"),
         "billing_language_flags": hits,
         "cost_usd": result.cost_usd,

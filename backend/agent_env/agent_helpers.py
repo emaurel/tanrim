@@ -387,9 +387,12 @@ async def run_agent(
     """
     from claude_agent_sdk import ClaudeAgentOptions, query
 
+    import os
+
     from . import skills as skills_mod
     from . import state, usage
     from . import workers as workers_mod
+    from .rooms import mcp_servers_for as remote_mcp_servers
     from .meta_tools import make_meta_server
     from .tools import registry as tool_registry
 
@@ -469,12 +472,41 @@ async def run_agent(
 
         allowed: list[str] = [f"mcp__meta_{role}__*"]
         allowed += [f"mcp__{n}__*" for n in room_tools]
+
+        # Remote MCP servers declared in the room manifest. Their tools are
+        # allow-listed BY NAME rather than by wildcard: a third-party server
+        # controls what it exposes and can add tools whenever it likes, so a
+        # room gets the ones it was granted and nothing else.
+        denied: list[str] = []
+        for spec in remote_mcp_servers(room_id):
+            token = os.environ.get(spec.auth_env or "", "")
+            if spec.auth_env and not token:
+                state.log_event(
+                    "run_start", from_=role,
+                    summary=f"MCP server '{spec.id}' skipped: {spec.auth_env} is not set",
+                    outcome="skipped",
+                )
+                continue
+            cfg: dict[str, Any] = {
+                "type": "sse" if spec.transport == "sse" else "http",
+                "url": spec.url,
+            }
+            if token:
+                cfg["headers"] = {"Authorization": f"Bearer {token}"}
+            mcp_servers[spec.id] = cfg
+            if spec.tools:
+                allowed += [f"mcp__{spec.id}__{t}" for t in spec.tools]
+            else:
+                allowed.append(f"mcp__{spec.id}__*")
+            denied += [f"mcp__{spec.id}__{t}" for t in spec.deny]
+
         allowed += list(builtin_tools or [])
 
         opts: dict[str, Any] = {
             "model": model,
             "mcp_servers": mcp_servers,
             "allowed_tools": allowed,
+            "disallowed_tools": denied,
             # Only the servers we built here. Without this, MCP servers from the
             # operator's own Claude Code config leak into every agent run —
             # Forge does not need access to somebody's notes vault.

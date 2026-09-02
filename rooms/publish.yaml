@@ -9,10 +9,28 @@ agents:
     name: Courier
     role: Deployer. Publishes previews; never ships without an approval.
     color: "#e0a458"
-tools: []
+tools: ["domain_check"]
+# Cloudflare's MCP server is deliberately NOT attached. Deploying is done by
+# agent_env/hosting.py over plain HTTP — deterministic, and Courier makes no
+# model call in the publish path, so these tools would never be reached.
+# Left here as the worked example of the mechanism: uncomment to enable.
+#
+# mcp_servers:
+#   - id: cloudflare
+#     url: https://mcp.cloudflare.com/mcp
+#     transport: http
+#     auth_env: CLOUDFLARE_API_TOKEN
+#     tools: [docs, search]   # allowlist, per tool name
+#     deny: [execute]         # runs arbitrary JS against the whole account
+#     note: Cloudflare docs and API spec, read-only
 max_workers: 3
 workbenches:
   - id: crate
     name: The Crating Bay
     job: Stamping previews noindex, adding the unofficial banner, raising the gate
     stages: [qa_passed]
+  - id: registry
+    name: The Registry Desk
+    job: Finding domain names that are actually free, so the pitch can name one
+    stages: []
+    tasks: [domains]

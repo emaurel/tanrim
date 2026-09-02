@@ -109,6 +109,32 @@ export function renderRoomInfo(body: HTMLElement, data: any): void {
     wrap.appendChild(tags);
   }
 
+  // Remote MCP servers: worth showing plainly, because this is the one place a
+  // room's agents can reach outside this machine.
+  const servers: any[] = data.mcp_servers ?? [];
+  if (servers.length) {
+    const label = document.createElement("div");
+    label.className = "rp-brief-label";
+    label.textContent = "Connected services";
+    wrap.appendChild(label);
+    const list = document.createElement("div");
+    list.className = "rp-lead-thin";
+    for (const m of servers) {
+      const row = document.createElement("div");
+      row.className = "rp-lead-row";
+      row.innerHTML = `<span class="rp-lead-stage"></span>
+        <span class="rp-lead-name"></span><span class="rp-lead-note"></span>`;
+      row.querySelector(".rp-lead-stage")!.textContent = m.configured ? "ready" : "no key";
+      row.querySelector(".rp-lead-name")!.textContent = m.id;
+      const granted = (m.tools ?? []).length ? (m.tools ?? []).join(", ") : "all tools";
+      const refused = (m.deny ?? []).length ? ` · denied: ${(m.deny ?? []).join(", ")}` : "";
+      row.querySelector(".rp-lead-note")!.textContent = granted + refused;
+      row.title = `${m.url}\n${m.note ?? ""}`;
+      list.appendChild(row);
+    }
+    wrap.appendChild(list);
+  }
+
   const tools: string[] = data.resolved_tools ?? room.tools ?? [];
   if (tools.length) {
     wrap.appendChild(h("h4", "Tools"));

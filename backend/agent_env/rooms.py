@@ -31,6 +31,41 @@ class AgentSpec(BaseModel):
     station: str | None = None
 
 
+class McpServerSpec(BaseModel):
+    """A remote MCP server a room's agents may use.
+
+    Declared in `rooms/<id>.yaml` so attaching a third-party toolset is a
+    manifest change, not a code change:
+
+        mcp_servers:
+          - id: cloudflare
+            url: https://mcp.cloudflare.com/mcp
+            auth_env: CLOUDFLARE_API_TOKEN
+            tools: [docs, search]
+
+    `tools` is an ALLOWLIST and it matters. A remote server decides what it
+    exposes, not us, and it can add tools at any time — so a room gets the
+    named ones and nothing else. Omitting `tools` grants everything the server
+    offers, now and in future, which is almost never what you want.
+    """
+
+    id: str
+    url: str
+    # "http" or "sse". Streamable HTTP is the current default.
+    transport: str = "http"
+    # Name of the env var holding a bearer token. The value never appears in a
+    # manifest — manifests are committed, secrets are not.
+    auth_env: str | None = None
+    tools: list[str] = Field(default_factory=list)
+    # Tools to refuse outright. The allowlist already blocks invocation, but a
+    # remote server still ADVERTISES everything it has, so the model sees a
+    # tool it cannot use and wastes a turn discovering that. Naming the
+    # dangerous ones here tells it not to bother.
+    deny: list[str] = Field(default_factory=list)
+    # Shown in the room panel so it is obvious where an agent's reach extends.
+    note: str = ""
+
+
 class WorkbenchSpec(BaseModel):
     """A station inside a room where one kind of job is done.
 
@@ -67,6 +102,7 @@ class RoomSpec(BaseModel):
     # Skills granted to this room's agent — see agent_env/skills.py. Names must
     # match a directory under <repo>/.claude/skills/.
     skills: list[str] = Field(default_factory=list)
+    mcp_servers: list[McpServerSpec] = Field(default_factory=list)
     workbenches: list[WorkbenchSpec] = Field(default_factory=list)
     # How many agents may work in this room at once (extras are spawned on
     # demand and retired when their lead's run through the pipeline ends).
@@ -158,3 +194,10 @@ def role_for_stage(stage: str) -> str | None:
             if stage in bench.stages:
                 return room.agents[0].id
     return None
+
+
+def mcp_servers_for(room_id: str) -> list[McpServerSpec]:
+    for room in load_rooms():
+        if room.id == room_id:
+            return list(room.mcp_servers)
+    return []
