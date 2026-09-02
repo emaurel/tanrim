@@ -300,6 +300,10 @@ def lead_claims() -> set[tuple[str, str]]:
 # source of truth for both.
 _IN_FLIGHT: dict[str, dict[str, Any]] = {}
 
+# worker_id -> the asyncio.Task running it. Separate from `_IN_FLIGHT` because
+# that one is a payload and this one is a handle.
+_TASKS: dict[str, "asyncio.Task[Any]"] = {}
+
 
 def in_flight(worker_id: str) -> dict[str, Any] | None:
     """What this specific worker is doing, or None if it's idle."""
@@ -311,7 +315,7 @@ def cancel_worker(worker_id: str, reason: str = "") -> bool:
     info = _IN_FLIGHT.get(worker_id)
     if not info:
         return False
-    task = info.get("task")
+    task = _TASKS.get(worker_id)
     if task is not None and not task.done():
         task.cancel()
     state.log_event(
@@ -335,7 +339,7 @@ def cancel_lead(lead_id: str, reason: str = "") -> list[str]:
     for worker_id, info in list(_IN_FLIGHT.items()):
         if info.get("lead_id") != lead_id:
             continue
-        task = info.get("task")
+        task = _TASKS.get(worker_id)
         if task is not None and not task.done():
             task.cancel()
         stopped.append(worker_id)
@@ -486,10 +490,14 @@ async def run_agent(
         "lead_id": lead_id,
         "workbench": workbench,
         "started_ts": started_ts,
-        # The task this run is on, so an operator decision can actually stop it
-        # rather than wait minutes for it to finish and then discard the result.
-        "task": asyncio.current_task(),
     }
+    # The task this run is on, so an operator decision can actually stop it
+    # rather than wait minutes for it to finish and then discard the result.
+    #
+    # Kept OUT of `_IN_FLIGHT`: that dict is serialised into room state, and an
+    # asyncio.Task is not JSON — putting it there made every room showing a
+    # working agent return 500, which the panel rendered as loading forever.
+    _TASKS[agent_id] = asyncio.current_task()
     # Declares which lead this run belongs to, so `state.advance_lead` can
     # refuse a write from a run the operator has already overtaken.
     state.RUN_CONTEXT.set({"lead_id": lead_id, "started_ts": started_ts,
@@ -732,6 +740,7 @@ async def run_agent(
         if claim is not None:
             _LEAD_CLAIMS.discard(claim)
         _IN_FLIGHT.pop(agent_id, None)
+        _TASKS.pop(agent_id, None)
         lock.release()
         if agent is not None:
             agent.busy = False

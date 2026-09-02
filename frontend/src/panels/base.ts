@@ -171,7 +171,30 @@ async function paint(
     // A soft refresh that fails should leave the panel as it is rather than
     // replacing live content with an error.
     if (opts.soft) return;
-    throw e;
+    // A hard failure used to re-throw, and the caller swallowed it — so the
+    // panel sat on "loading…" for ever and a 500 was indistinguishable from a
+    // slow request. Say what happened, and offer to try again.
+    if (currentRoomId !== roomId) return;
+    body.innerHTML = "";
+    const box = document.createElement("div");
+    box.className = "rp-panel-error";
+    const h = document.createElement("strong");
+    h.textContent = `${roomId} could not be loaded`;
+    const why = document.createElement("p");
+    why.textContent = String((e as Error)?.message ?? e);
+    const hint = document.createElement("p");
+    hint.className = "rp-hint";
+    hint.textContent =
+      "This is the room's own state endpoint failing, not the agents. The "
+      + "server log has the traceback.";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "rp-row-btn";
+    retry.textContent = "try again";
+    retry.addEventListener("click", () => { void paint(roomId, render, { soft: false }); });
+    box.append(h, why, hint, retry);
+    body.appendChild(box);
+    return;
   }
   // Bail if the user closed the panel or switched rooms while we were fetching.
   if (currentRoomId !== roomId) return;

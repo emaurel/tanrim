@@ -1877,3 +1877,18 @@ html, body {
 .lb-dsec-h:hover { color: #ddd; }
 .lb-dsec-body[hidden] { display: none; }
 .lb-dsec-body { padding-top: 5px; }
+.rp-panel-error {
+  border: 1px solid #5c3327;
+  background: #1c1310;
+  padding: 12px;
+  color: #e0c0b6;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.rp-panel-error strong { display: block; color: #e08a72; margin-bottom: 6px; }
+.rp-panel-error p { margin: 0 0 8px; }
+.rp-row-btn {
+  background: #2a1a16; border: 1px solid #5c3327; color: #e08a72;
+  font: inherit; font-size: 11px; padding: 3px 10px; cursor: pointer;
+}
+.rp-row-btn:hover { background: #3a221c; }
