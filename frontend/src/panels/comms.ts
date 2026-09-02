@@ -179,6 +179,29 @@ function replyActions(lead: Lead, ctx: PanelContext): HTMLElement[] {
   ];
 }
 
+/** Reports which of the four mail settings is wrong, in words you can act on. */
+function mailSetupButton(ctx: PanelContext): HTMLElement {
+  return secondaryButton("test the mail setup", async () => {
+    const res = await postRoomAction("comms", "test_mail_setup");
+    const r = res.report ?? {};
+    const line = (label: string, part: any) =>
+      part?.ok
+        ? `${label}: working${part.host ? ` (${part.host})` : ""}`
+        : `${label}: ${part?.error ?? "not configured"}` +
+          (part?.advice ? `\n    → ${part.advice}` : "");
+    window.alert(
+      [
+        r.ok ? "Mail is ready." : "Mail is not ready yet.",
+        "",
+        line("Sending (SMTP)", r.sending),
+        line("Receiving (IMAP)", r.receiving),
+        line("Sender identity", r.identity),
+      ].join("\n"),
+    );
+    await ctx.reload();
+  });
+}
+
 function checkMailButton(ctx: PanelContext): HTMLElement {
   return secondaryButton("check the mailbox now", async () => {
     const res = await postRoomAction("comms", "check_mail");
@@ -194,6 +217,9 @@ export const open = makeLeadRoom({
   emptyQueue: "nothing to send. Publish a preview and have Scribe write the pitch.",
   banner,
   detail,
+  // Available on every lead in this room, not just contacted ones — you need it
+  // most before anything has been sent.
+  headerActions: (ctx: PanelContext) => [mailSetupButton(ctx)],
   secondary: { key: "contacted", title: "Contacted", detail },
   extraActions: (lead, ctx) => {
     // Once it has gone out, the useful actions are about the reply.

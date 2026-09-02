@@ -248,6 +248,13 @@ async def post_room_action(room_id: str, body: ActionBody) -> dict[str, Any]:
     return await handler.action(body.name, body.payload)
 
 
+@app.get("/health/mail")
+async def health_mail():
+    """Whether outreach can actually happen, and what to change if not."""
+    from . import mailbox
+    return mailbox.check()
+
+
 @app.get("/health")
 async def health():
     return {
@@ -370,6 +377,48 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
             # the orchestrator's stage sweep picks it up and sends it to the
             # Factory. Dispatching here as well put two Forge workers on the
             # same lead, two seconds apart, writing the same directory.
+
+    elif rec["kind"] == "qa_loop":
+        # Forge and Lens have failed to agree on the same page three times.
+        # Approving means "Lens is wrong, ship it" — the commonest cause is a
+        # false fabrication flag, and the operator has the evidence to say so.
+        # Rejecting means "Lens is right", and the reason is what Forge lacked.
+        lead_id = rec["payload"].get("lead_id")
+        lead = state.get_lead(lead_id) or {} if lead_id else {}
+        qa = dict(lead.get("qa") or {})
+        reason = (body.reason or "").strip()
+        if lead_id and body.decision == "approved":
+            qa["verdict"] = "pass"
+            qa["rounds"] = 0
+            qa["operator_override"] = (
+                reason or "operator passed QA over Lens's objection")
+            state.advance_lead(
+                lead_id, "qa_passed", agent="operator",
+                note=f"QA overridden by operator: {reason[:200]}" if reason
+                     else "QA overridden by operator after repeated failures",
+                qa=qa,
+            )
+        elif lead_id:
+            # Back to Forge with the operator's note, and the counter cleared
+            # so the guidance gets a fair run rather than tripping the ceiling
+            # again on its first attempt.
+            problems = list(qa.get("problems") or [])
+            if reason:
+                problems.insert(0, {
+                    "severity": "critical",
+                    "where": "operator",
+                    "problem": f"Repeated QA failures, operator guidance: {reason}",
+                    "fix": reason,
+                })
+            qa["problems"] = problems
+            qa["verdict"] = "fail"
+            qa["rounds"] = 0
+            state.advance_lead(
+                lead_id, "qa_failed", agent="operator",
+                note=f"QA loop: operator guidance: {reason[:200]}" if reason
+                     else "QA loop: operator sent it back",
+                qa=qa,
+            )
 
     elif rec["kind"] == "send_outreach":
         # Gate 2. The only place in the pipeline that reaches a real person.

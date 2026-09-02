@@ -48,13 +48,23 @@ def configured() -> bool:
     return bool(_setting("IMAP_HOST") and _setting("IMAP_USER") and _setting("IMAP_PASSWORD"))
 
 
+# Only the account is shared with SMTP. The endpoint is not: submission and
+# IMAP are different ports on different hosts, and falling back on those sent
+# IMAP4_SSL at Gmail's plaintext submission port 587, which fails with
+# "WRONG_VERSION_NUMBER" — a TLS error that reads like a broken account.
+_SHARED_WITH_SMTP = ("IMAP_USER", "IMAP_PASSWORD")
+
+
 def _setting(name: str) -> str:
-    """IMAP settings, falling back to the SMTP ones — most providers use the
-    same account for both, and asking for the password twice invites typos."""
+    """An IMAP setting. Credentials fall back to the SMTP ones — most providers
+    use one account for both, and asking for the password twice invites typos.
+    Host and port never fall back; they are not the same service."""
     direct = os.getenv(name, "").strip()
     if direct:
         return direct
-    return os.getenv(name.replace("IMAP_", "SMTP_"), "").strip()
+    if name in _SHARED_WITH_SMTP:
+        return os.getenv(name.replace("IMAP_", "SMTP_"), "").strip()
+    return ""
 
 
 def _decode(raw: str | None) -> str:
@@ -226,3 +236,182 @@ def poll(limit: int = 20) -> list[dict[str, Any]]:
         except Exception:  # noqa: BLE001
             pass
     return handled
+
+
+# ---------- Diagnosing the setup ----------
+#
+# Four settings, two servers, and providers that answer a wrong password and a
+# disabled protocol with equally opaque strings. This maps what actually comes
+# back to the thing you have to go and change.
+
+# Substrings seen in the wild → what they really mean.
+_DIAGNOSES: tuple[tuple[str, str], ...] = (
+    ("application-specific password",
+     "Gmail wants an app password, not your account password. Turn on 2FA, then "
+     "Google Account → Security → App passwords, and paste the 16-character "
+     "string."),
+    ("wrong_version_number",
+     "TLS was spoken at a port that does not expect it. Set IMAP_PORT=993 "
+     "(implicit TLS); 587 is SMTP submission, not IMAP."),
+    ("imap access is disabled",
+     "IMAP is switched off for this account. Note that Gmail no longer has an "
+     "enable/disable toggle — IMAP is always on there, and its settings page "
+     "shows only the behaviour options, no 'État' line like POP has. So on "
+     "Gmail this error means something else: almost always the account "
+     "password being used where an app password is needed."),
+    ("authenticationfailed",
+     "The server rejected the credentials. Check the username is the full "
+     "address and that the password is the app password, with no stray spaces."),
+    ("username and password not accepted",
+     "The credentials were refused. On Gmail this is almost always the account "
+     "password being used where an app password is needed."),
+    ("invalid credentials",
+     "Wrong username or password for this server."),
+    ("please log in via your web browser",
+     "The provider wants an interactive login first, or the account is flagged. "
+     "Sign in once in a browser, then retry."),
+    ("name or service not known",
+     "The host name is wrong or unreachable — check IMAP_HOST / SMTP_HOST."),
+    ("connection refused",
+     "Nothing is listening on that host and port. Check the port: 993 for IMAP "
+     "over SSL, 587 for SMTP with STARTTLS."),
+    ("timed out",
+     "The connection hung. Usually a wrong port, or a firewall in the way."),
+)
+
+
+def _diagnose(error: str) -> str:
+    low = (error or "").lower()
+    for needle, advice in _DIAGNOSES:
+        if needle in low:
+            return advice
+    return "Unrecognised error — the server's own words are above."
+
+
+def _check_imap() -> dict[str, Any]:
+    if not configured():
+        missing = [n for n in ("IMAP_HOST", "IMAP_USER", "IMAP_PASSWORD")
+                   if not _setting(n)]
+        return {"ok": False, "error": f"not configured: {', '.join(missing)}",
+                "advice": "IMAP_USER and IMAP_PASSWORD fall back to the SMTP "
+                          "ones, so usually only IMAP_HOST needs setting."}
+    host, port = _setting("IMAP_HOST"), int(_setting("IMAP_PORT") or 993)
+    try:
+        server = imaplib.IMAP4_SSL(host, port)
+    except Exception as e:  # noqa: BLE001
+        err = f"{type(e).__name__}: {e}"
+        return {"ok": False, "stage": "connect", "error": err, "advice": _diagnose(err)}
+    try:
+        server.login(_setting("IMAP_USER"), _setting("IMAP_PASSWORD"))
+    except Exception as e:  # noqa: BLE001
+        err = f"{type(e).__name__}: {e}"
+        return {"ok": False, "stage": "login", "error": err, "advice": _diagnose(err)}
+    try:
+        typ, data = server.select("INBOX")
+        if typ != "OK":
+            return {"ok": False, "stage": "select",
+                    "error": f"could not open INBOX: {data}",
+                    "advice": _diagnose(str(data))}
+        total = int((data[0] or b"0").decode() or 0)
+        typ, unseen = server.search(None, "UNSEEN")
+        n_unseen = len((unseen[0] or b"").split()) if typ == "OK" else 0
+        return {"ok": True, "host": f"{host}:{port}", "user": _setting("IMAP_USER"),
+                "messages_in_inbox": total, "unread": n_unseen}
+    finally:
+        try:
+            server.logout()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _check_smtp() -> dict[str, Any]:
+    import smtplib
+    import ssl
+
+    host = os.getenv("SMTP_HOST", "").strip()
+    user = os.getenv("SMTP_USER", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "").strip()
+    if not (host and user and password):
+        missing = [n for n, v in (("SMTP_HOST", host), ("SMTP_USER", user),
+                                  ("SMTP_PASSWORD", password)) if not v]
+        return {"ok": False, "error": f"not configured: {', '.join(missing)}"}
+    port = int(os.getenv("SMTP_PORT", "587"))
+    try:
+        with smtplib.SMTP(host, port, timeout=20) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(user, password)
+        return {"ok": True, "host": f"{host}:{port}", "user": user}
+    except Exception as e:  # noqa: BLE001
+        err = f"{type(e).__name__}: {e}"
+        return {"ok": False, "error": err, "advice": _diagnose(err)}
+
+
+def check() -> dict[str, Any]:
+    """Try both servers and say precisely what to fix."""
+    from . import config
+
+    imap, smtp = _check_imap(), _check_smtp()
+    identity = config.outreach_config_problems()
+    return {
+        "ok": bool(imap.get("ok") and smtp.get("ok") and not identity),
+        "receiving": imap,
+        "sending": smtp,
+        "identity": {
+            "ok": not identity,
+            "problems": identity,
+            "agency_name": config.AGENCY_NAME or None,
+            "sender_email": config.AGENCY_SENDER_EMAIL or None,
+            "advice": "Echo refuses to raise a send card until both are set — "
+                      "cold mail without an identifiable sender is neither legal "
+                      "nor deliverable."
+                      if identity else "",
+        },
+        "poll_minutes": config.MAIL_POLL_MINUTES,
+    }
+
+
+def send_test(to: str = "") -> dict[str, Any]:
+    """Send one message to yourself, so the whole loop can be exercised.
+
+    Deliberately sent TO the configured address: it lands in the same inbox the
+    poller reads, so replying to it with a photo attached is the closest thing
+    to a real reply without involving a real business.
+    """
+    import smtplib
+    import ssl
+    from email.message import EmailMessage
+
+    from . import config
+
+    smtp = _check_smtp()
+    if not smtp.get("ok"):
+        return {"ok": False, "error": "SMTP is not working yet", **smtp}
+    recipient = (to or config.AGENCY_SENDER_EMAIL or os.getenv("SMTP_USER", "")).strip()
+    if not recipient:
+        return {"ok": False, "error": "no address to send to"}
+
+    msg = EmailMessage()
+    msg["From"] = config.AGENCY_SENDER_EMAIL or os.getenv("SMTP_USER", "")
+    msg["To"] = recipient
+    msg["Subject"] = "agent_environment · mail loop test"
+    msg.set_content(
+        "This is the pipeline testing its own plumbing.\n\n"
+        "To exercise the receiving half properly, reply to this message from a "
+        "DIFFERENT address — one that is on a lead in the board — and attach a "
+        "photograph. The poller only matches senders it already holds an "
+        "address for, so a reply from this account will be ignored by design.\n\n"
+        "What should happen: the reply is fetched within "
+        f"{config.MAIL_POLL_MINUTES} minutes, the photo is downscaled and "
+        "stripped of metadata into that lead's asset store, and Echo reads what "
+        "the message said.\n"
+    )
+    try:
+        with smtplib.SMTP(os.environ["SMTP_HOST"],
+                          int(os.getenv("SMTP_PORT", "587")), timeout=30) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"])
+            server.send_message(msg)
+    except Exception as e:  # noqa: BLE001
+        err = f"{type(e).__name__}: {e}"
+        return {"ok": False, "error": err, "advice": _diagnose(err)}
+    return {"ok": True, "sent_to": recipient}

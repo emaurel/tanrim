@@ -50,6 +50,8 @@ export interface LeadRoomSpec {
   secondary?: { key: string; title: string; detail?: (lead: Lead) => HTMLElement | null };
   /** Rendered above the queue — warnings, config problems, totals. */
   banner?: (data: any, ctx: PanelContext) => HTMLElement | null;
+  /** Buttons about the room itself rather than any one lead. */
+  headerActions?: (ctx: PanelContext) => HTMLElement[];
 }
 
 const STAGE_ORDER = [
@@ -77,6 +79,14 @@ export function makeLeadRoom(spec: LeadRoomSpec) {
 
     const bannerEl = spec.banner?.(data, ctx);
     if (bannerEl) body.appendChild(bannerEl);
+
+    const header = spec.headerActions?.(ctx) ?? [];
+    if (header.length) {
+      const row = document.createElement("div");
+      row.className = "rp-lead-actions";
+      for (const el of header) row.appendChild(el);
+      body.appendChild(row);
+    }
 
     // Scope "what is happening" to the selected bench, so the Gallery doesn't
     // report a photo read as if it were a QA pass.

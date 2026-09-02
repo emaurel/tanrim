@@ -478,6 +478,14 @@ class CommsHandler(LeadRoomHandler):
         return await echo.request_send(self.world, lead_id)
 
     async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if name == "test_mail_setup":
+            from . import mailbox
+            return {"ok": True, "report": mailbox.check()}
+        if name == "send_test_mail":
+            import asyncio as _asyncio
+
+            from . import mailbox
+            return await _asyncio.to_thread(mailbox.send_test, payload.get("to") or "")
         if name == "check_mail":
             import asyncio as _asyncio
 

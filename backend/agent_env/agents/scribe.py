@@ -183,9 +183,13 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
 
     outreach = {
         **parsed,
-        # Footer in the language the email was written in.
-        "body_final": parsed["body"].rstrip()
-                      + config.outreach_footer(parsed.get("language") or "en"),
+        # The body WITHOUT the footer. The identity + opt-out footer is composed
+        # at send time by echo.outgoing_body(), not baked in here: a draft can
+        # sit for days, and a footer frozen at draft time captures whatever
+        # config happened to be loaded then. One draft went out reading
+        # "(agency name not configured)" because the server had imported config
+        # before the operator filled .env.
+        "body_final": parsed["body"].rstrip(),
         "to": lead.get("email"),
         "billing_language_flags": hits,
         "cost_usd": result.cost_usd,

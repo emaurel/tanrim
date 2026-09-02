@@ -53,6 +53,19 @@ def preflight(lead: dict[str, Any]) -> list[str]:
     return problems
 
 
+def outgoing_body(lead: dict[str, Any]) -> str:
+    """Exactly what the recipient will read: the draft plus the code-generated
+    identity and opt-out footer, in the language the email was written in.
+
+    Composed fresh on every call so it cannot be stale, edited out, or lost —
+    which is the whole reason the footer is code and not prompt.
+    """
+    outreach = lead.get("outreach") or {}
+    body = (outreach.get("body_final") or "").rstrip()
+    footer = config.outreach_footer(outreach.get("language") or "en")
+    return body if footer.strip() and footer.strip() in body else body + footer
+
+
 async def request_send(world: World, lead_id: str) -> dict[str, Any]:
     lead = state.get_lead(lead_id)
     if lead is None:
@@ -81,7 +94,7 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
             "business": lead.get("name"),
             "to": lead.get("email"),
             "subject": outreach.get("subject"),
-            "body": outreach.get("body_final"),
+            "body": outgoing_body(lead),
             "quote": outreach.get("quote"),
             "preview_url": lead.get("preview_url"),
             "transport": "smtp" if smtp_configured() else "manual",
@@ -140,11 +153,11 @@ async def do_send(world: World, lead_id: str) -> dict[str, Any]:
                        "in the Communications panel — send it yourself, then mark "
                        "the lead contacted.",
             "to": to, "subject": outreach.get("subject"),
-            "body": outreach.get("body_final"),
+            "body": outgoing_body(lead),
         }
 
     try:
-        _send_smtp(to, outreach["subject"], outreach["body_final"])
+        _send_smtp(to, outreach["subject"], outgoing_body(lead))
     except Exception as e:  # noqa: BLE001
         await world.say(AGENT_ID, f"send failed: {type(e).__name__}", seconds=10)
         state.log_event("run_end", from_=AGENT_ID,
