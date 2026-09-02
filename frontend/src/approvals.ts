@@ -206,6 +206,17 @@ function renderGate(a: Approval, host: HTMLElement): boolean {
     return true;
   }
   if (a.kind === "send_outreach") {
+    const dc: any = p.domain_check;
+    if (dc?.rechecked && dc.status === "available") {
+      host.appendChild(note(
+        `${dc.domain} was still available when this card was raised. It can be ` +
+        `taken by someone else at any time — the email says "available", not ` +
+        `"reserved", which is the honest wording.`));
+    } else if (dc && dc.rechecked === false) {
+      host.appendChild(note(
+        `Could not re-check ${dc.domain} just now (${dc.error}). The email ` +
+        `claims it is available; that claim is unverified right now.`));
+    }
     const pr: any = p.pricing;
     if (pr && pr.domain_cost_verified === false) {
       host.appendChild(note(

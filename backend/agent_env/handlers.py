@@ -110,7 +110,11 @@ class TreasuryHandler(RoomHandler):
             "is_empty": len(all_records) == 0,
             # Token spend is what the agency costs to run; invoices are what it
             # earns. Coin's room is the only place both belong together.
-            "invoices": invoices.list_invoices(),
+            # This room is the agency's books. Invoices from unrelated work
+            # are not part of them, so filter by series rather than trusting
+            # the ledger to contain only ours.
+            "invoices": [r for r in invoices.list_invoices()
+                         if r.get("series") == config.INVOICE_PREFIX],
             "invoice_summary": invoices.summary(),
             "invoice_problems": config.invoice_config_problems(),
         }

@@ -17,7 +17,8 @@ import ssl
 from email.message import EmailMessage
 from typing import Any
 
-from .. import config, state
+from .. import config
+from .. import domains as domains_mod, state
 from ..config import SITES_DIR
 from ..world import World
 
@@ -72,9 +73,47 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
         return {"ok": False, "error": f"no such lead: {lead_id}"}
 
     problems = preflight(lead)
+
+    # The draft tells a business a specific domain is available and quotes a
+    # price built on what it costs. Both were checked when the site was
+    # published, which may have been hours or days ago — and someone can
+    # register a name in between. Promising a domain we cannot deliver is the
+    # small dishonesty that loses a client at the worst moment, so it is
+    # re-checked here, at the last point before a stranger reads it.
+    domain_check: dict[str, Any] = {}
+    dom = lead.get("domains") or {}
+    named = (dom.get("suggested") or [None])[0]
+    if named:
+        try:
+            fresh = await domains_mod.check([named])
+            status = (fresh.get("results") or [{}])[0].get("status")
+            priced = await domains_mod.price(named, config.DOMAIN_YEARS)
+            domain_check = {"domain": named, "status": status,
+                            "rechecked": True, "priced": priced}
+            if status == "taken":
+                problems.append(
+                    f"{named} has been registered since we drafted this — the "
+                    "email says it is available. Requote with another name.")
+            quoted = float((lead.get("outreach") or {}).get("quote", {})
+                           .get("amount") or 0)
+            floor = config.MARGIN_AMOUNT + float(priced.get("total") or 0)
+            if quoted and quoted < floor:
+                problems.append(
+                    f"the quoted {quoted:.0f} {config.QUOTE_CURRENCY} no longer "
+                    f"covers {config.MARGIN_AMOUNT} plus the domain "
+                    f"({priced.get('total'):.2f}) — it needs "
+                    f"{floor:.0f} or more")
+            state.update_lead(lead_id, domains={**dom, "priced": priced,
+                                                "last_checked_ts": time.time()})
+        except Exception as e:  # noqa: BLE001
+            # A slow registry must not silently pass as "still available".
+            domain_check = {"domain": named, "rechecked": False,
+                            "error": f"{type(e).__name__}: {e}"}
+
     if problems:
         await world.say(AGENT_ID, "blocked — see panel", seconds=8)
-        return {"ok": False, "error": "preflight failed", "problems": problems}
+        return {"ok": False, "error": "preflight failed", "problems": problems,
+                "domain_check": domain_check}
 
     existing = [
         a for a in state.list_user_approvals(status="pending", room_id=ROOM_ID)
@@ -99,6 +138,7 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
             # Whether the domain figure inside the price was checked for this
             # exact name or guessed from a table. The operator is about to send
             # a number to a stranger; a guessed input to it should be visible.
+            "domain_check": domain_check,
             "pricing": config.quote_for(
                 ((lead.get("domains") or {}).get("suggested") or [None])[0],
                 (lead.get("domains") or {}).get("priced")),
