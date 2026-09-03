@@ -485,6 +485,7 @@ def _build_visual_prompt(lead: dict[str, Any], out_dir: str) -> str:
             + (f", osm_ref=\"{osm_ref}\"" if osm_ref else "")
             + (f", website=\"{lead['website']}\"" if lead.get("website") else "")
             + f", name=\"{lead.get('name')}\", address=\"{lead.get('address') or ''}\""
+            + f", lead_id=\"{lead['id']}\""
             + ")"
         )
     else:

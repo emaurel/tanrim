@@ -37,6 +37,8 @@ from typing import Any
 
 import httpx
 
+from . import usage
+
 BASE = "https://places.googleapis.com/v1"
 
 # Ask for exactly what we use. The field mask is mandatory and it is also what
@@ -63,7 +65,8 @@ def _headers(field_mask: str) -> dict[str, str]:
 
 
 async def lookup(name: str, address: str = "", lat: float | None = None,
-                 lon: float | None = None) -> dict[str, Any]:
+                 lon: float | None = None,
+                 lead_id: str | None = None) -> dict[str, Any]:
     """Find the business and return what its profile says.
 
     Always returns a dict. `ok: False` with a `reason` means we learned
@@ -96,6 +99,8 @@ async def lookup(name: str, address: str = "", lat: float | None = None,
         async with httpx.AsyncClient(timeout=30.0) as c:
             r = await c.post(f"{BASE}/places:searchText", json=body,
                              headers=_headers(SEARCH_FIELDS))
+            usage.record_api("google.places.search", lead_id=lead_id,
+                             note=body["textQuery"][:80])
             if r.status_code != 200:
                 out["reason"] = f"search failed: HTTP {r.status_code} {r.text[:200]}"
                 return out
@@ -114,6 +119,8 @@ async def lookup(name: str, address: str = "", lat: float | None = None,
 
             d = await c.get(f"{BASE}/places/{place_id}",
                             headers=_headers(DETAIL_FIELDS))
+            usage.record_api("google.places.details", lead_id=lead_id,
+                             note=place_id)
             if d.status_code != 200:
                 out["reason"] = f"details failed: HTTP {d.status_code} {d.text[:200]}"
                 return out
@@ -149,7 +156,8 @@ async def lookup(name: str, address: str = "", lat: float | None = None,
     return out
 
 
-async def photo(photo_name: str, out_path: str, max_px: int = 1200) -> dict[str, Any]:
+async def photo(photo_name: str, out_path: str, max_px: int = 1200,
+                lead_id: str | None = None) -> dict[str, Any]:
     """Download one profile photo. Read-only, like everything in photos/."""
     if not configured():
         return {"ok": False, "reason": "GOOGLE_MAPS_API_KEY is not set"}
@@ -158,6 +166,7 @@ async def photo(photo_name: str, out_path: str, max_px: int = 1200) -> dict[str,
         async with httpx.AsyncClient(timeout=40.0, follow_redirects=True) as c:
             r = await c.get(url, params={"maxWidthPx": max_px,
                                          "key": os.getenv("GOOGLE_MAPS_API_KEY")})
+            usage.record_api("google.places.photo", lead_id=lead_id)
             if r.status_code != 200:
                 return {"ok": False, "reason": f"HTTP {r.status_code}"}
             from . import harvest

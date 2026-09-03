@@ -33,6 +33,7 @@ interface LeadRow {
   updated_ts?: number;
   history_len?: number;
   working?: string[];
+  spent?: number;
   last?: { ts: number; agent?: string; note?: string; stage?: string } | null;
 }
 
@@ -214,9 +215,10 @@ function buildList(): HTMLElement {
 
     const line3 = document.createElement("div");
     line3.className = "lb-row-last";
-    line3.textContent = l.last
-      ? `${ago(l.last.ts)} · ${l.last.agent ?? "?"} · ${l.last.note ?? ""}`.slice(0, 120)
-      : `created ${ago(l.ts)}`;
+    line3.textContent = (l.last
+      ? `${ago(l.last.ts)} · ${l.last.agent ?? "?"} · ${l.last.note ?? ""}`
+      : `created ${ago(l.ts)}`).slice(0, 110)
+      + (l.spent ? `  ·  $${Number(l.spent).toFixed(2)}` : "");
 
     li.append(line1, line2, line3);
     const pick = () => {
@@ -763,6 +765,48 @@ function facts(obj: any, depth = 0): HTMLElement {
   return box;
 }
 
+/** Model runs and external API calls, with the split that matters. */
+function spendTable(sp: any): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "lb-dfacts";
+  const money = (v: number) => `$${(Number(v) || 0).toFixed(4)}`;
+
+  const head = document.createElement("div");
+  head.className = "lb-spend-head";
+  head.textContent = `${money(sp.total)} total  ·  ${money(sp.model_cost)} agents`
+    + `  ·  ${money(sp.api_cost)} APIs  ·  ${sp.runs ?? 0} runs`;
+  box.appendChild(head);
+
+  for (const a of (sp.agents ?? [])) {
+    const r = document.createElement("div");
+    r.className = "lb-x-row";
+    const k = document.createElement("span");
+    k.textContent = String(a.agent);
+    const v = document.createElement("span");
+    v.textContent = `${money(a.cost_usd)} · ${a.runs} run(s) · `
+      + `${(a.output_tokens ?? 0).toLocaleString()} out`;
+    r.append(k, v);
+    box.appendChild(r);
+  }
+  for (const a of (sp.apis ?? [])) {
+    const r = document.createElement("div");
+    r.className = "lb-x-row";
+    const k = document.createElement("span");
+    k.textContent = String(a.sku);
+    const v = document.createElement("span");
+    v.textContent = `${money(a.cost_usd)} · ${a.calls} call(s)`;
+    r.append(k, v);
+    box.appendChild(r);
+  }
+  if (sp.note) {
+    const n = document.createElement("div");
+    n.className = "lb-file-note";
+    n.textContent = String(sp.note);
+    box.appendChild(n);
+  }
+  return box;
+}
+
 function dossierSections(d: any): HTMLElement[] {
   const out: HTMLElement[] = [];
 
@@ -791,6 +835,9 @@ function dossierSections(d: any): HTMLElement[] {
   add("Replies", "what they said back", d.replies);
   add("Bounces", "delivery failures", d.bounces);
   add("Contact hunt", "addresses Probe found, and where", d.contact_hunt);
+  if (d.spend) out.push(sub("Spend", "what this lead has cost to work",
+                            spendTable(d.spend), 
+                            Math.round((d.spend.total ?? 0) * 100) / 100));
   add("Invoice", "", d.invoice);
   if (!out.length) {
     const p = document.createElement("p");

@@ -43,6 +43,9 @@ async function render({ roomId, data, body, reload }: PanelContext) {
     body.appendChild(warn);
   }
 
+  body.appendChild(h("h4", "Per lead"));
+  body.appendChild(perLead(data));
+
   body.appendChild(h("h4", "Invoices"));
   body.appendChild(invoiceSection(roomId, data, reload));
 
@@ -296,4 +299,94 @@ function mark(roomId: string, action: string, number: string,
     }
   });
   return b;
+}
+
+
+/* ---------------------------------------------------------------------------
+ * What each lead costs to work.
+ *
+ * The by-agent and by-model tables answer "where does the money go"; this
+ * answers "is a lead worth the effort", which is the question that decides
+ * whether the price is right. Model runs and external API calls together,
+ * because both are real and only one of them used to be counted.
+ * ------------------------------------------------------------------------- */
+
+interface LeadSpend {
+  lead_id: string;
+  total: number;
+  model_cost: number;
+  api_cost: number;
+  runs: number;
+  agents: { agent: string; runs: number; cost_usd: number }[];
+  apis: { sku: string; calls: number; cost_usd: number }[];
+}
+
+function perLead(data: any): HTMLElement {
+  const wrap = document.createElement("div");
+  const rows: LeadSpend[] = data.by_lead ?? [];
+  const names: Record<string, string> = {};
+  for (const l of (data.leads ?? data.board ?? [])) {
+    if (l?.id) names[l.id] = l.name ?? l.id;
+  }
+
+  const un = data.unattributed;
+  if (un?.rows) {
+    const p = document.createElement("p");
+    p.className = "rp-hint";
+    p.textContent =
+      `$${Number(un.cost_usd).toFixed(2)} across ${un.rows} earlier calls is not `
+      + "attributed to any lead — nothing recorded the association before this "
+      + "was added, so per-lead totals start from now.";
+    wrap.appendChild(p);
+  }
+
+  if (!rows.length) {
+    const p = document.createElement("p");
+    p.className = "rp-empty-row";
+    p.textContent = "No per-lead spend recorded yet.";
+    wrap.appendChild(p);
+    return wrap;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "rp-list rp-lead-spend";
+  for (const r of rows) {
+    const li = document.createElement("li");
+    const top = document.createElement("div");
+    top.className = "rp-inv-row";
+    const main = document.createElement("div");
+    main.className = "rp-inv-main";
+    const nm = document.createElement("strong");
+    nm.textContent = names[r.lead_id] ?? r.lead_id.slice(0, 8);
+    const sub = document.createElement("span");
+    sub.className = "rp-inv-client";
+    sub.textContent = `${r.runs} run(s) · $${r.model_cost.toFixed(2)} agents`
+      + ` · $${r.api_cost.toFixed(4)} APIs`;
+    main.append(nm, sub);
+    const amt = document.createElement("span");
+    amt.className = "rp-inv-amount";
+    amt.textContent = `$${r.total.toFixed(2)}`;
+    top.append(main, amt);
+    li.appendChild(top);
+
+    // Which agent ate it. Forge usually, and by a long way.
+    if (r.agents?.length) {
+      const bars = document.createElement("div");
+      bars.className = "rp-spend-bars";
+      for (const a of r.agents.slice(0, 5)) {
+        const bar = document.createElement("div");
+        bar.className = "rp-spend-bar";
+        const fill = document.createElement("span");
+        fill.style.width = `${Math.max(2, (a.cost_usd / Math.max(r.total, 0.0001)) * 100)}%`;
+        const lab = document.createElement("em");
+        lab.textContent = `${a.agent} $${a.cost_usd.toFixed(2)}`;
+        bar.append(fill, lab);
+        bars.appendChild(bar);
+      }
+      li.appendChild(bars);
+    }
+    list.appendChild(li);
+  }
+  wrap.appendChild(list);
+  return wrap;
 }

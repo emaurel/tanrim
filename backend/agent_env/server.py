@@ -22,6 +22,7 @@ from . import config
 from . import prompts as prompts_mod
 from . import skills as skills_mod
 from . import state
+from . import usage as usage_mod
 from .agents import courier as courier_mod
 from .agents import echo as echo_mod
 from .agents import forge as forge_mod
@@ -115,6 +116,7 @@ async def get_leads(stage: str | None = None, slim: int = 0):
                 # asking per lead.
                 "working": [i.get("role") for i in busy.values()
                             if i.get("lead_id") == l["id"]],
+                "spent": usage_mod.for_lead(l["id"])["total"],
                 "last": {"ts": last.get("ts"), "agent": last.get("agent"),
                          "note": (last.get("note") or "")[:200],
                          "from_stage": last.get("from_stage"),
@@ -274,6 +276,7 @@ async def lead_dossier(lead_id: str):
         "bounces": lead.get("bounces"),
         "contact_hunt": lead.get("contact_hunt"),
         "invoice": invoices_mod.for_lead(lead_id),
+        "spend": usage_mod.for_lead(lead_id),
         "files": files.get("groups") or [],
         "staging_url": files.get("staging_url"),
     }

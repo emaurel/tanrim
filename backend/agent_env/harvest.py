@@ -44,6 +44,8 @@ from typing import Any
 import httpx
 from PIL import Image
 
+from . import usage
+
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
@@ -319,7 +321,8 @@ def bearing(from_lat: float, from_lon: float,
 
 async def street_view(lat: float, lon: float, out_dir: Path,
                       headings: tuple[int, ...] | None = None,
-                      fov: int = 80) -> dict[str, Any]:
+                      fov: int = 80,
+                      lead_id: str | None = None) -> dict[str, Any]:
     """The frontage, from the street, pointed AT the building.
 
     The camera is not at the address — it is on the road outside, and where it
@@ -348,6 +351,7 @@ async def street_view(lat: float, lon: float, out_dir: Path,
         async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": UA}) as c:
             meta = await c.get(f"{base}/metadata",
                                params={"location": f"{lat},{lon}", "key": key})
+            usage.record_api("google.streetview.metadata", lead_id=lead_id)
             info = meta.json() if meta.status_code == 200 else {}
             report["coverage"] = info.get("status")
             report["captured"] = info.get("date")
@@ -379,6 +383,8 @@ async def street_view(lat: float, lon: float, out_dir: Path,
                     "heading": heading, "fov": fov, "pitch": 5,
                     "return_error_code": "true", "key": key,
                 })
+                usage.record_api("google.streetview.image", lead_id=lead_id,
+                                 note=f"heading {heading}")
                 if r.status_code == 200 and len(r.content) > MIN_BYTES:
                     blobs.append((f"streetview-{heading:03d}", r.content))
                 else:
@@ -466,7 +472,8 @@ async def _download(urls: list[str], out_dir: Path, prefix: str,
 
 
 async def google_photos(name: str, address: str, out_dir: Path,
-                        limit: int = 6) -> dict[str, Any]:
+                        limit: int = 6,
+                        lead_id: str | None = None) -> dict[str, Any]:
     """The photographs on a business's Google listing.
 
     These are the pictures that appear beside a Google search — the profile's
@@ -484,7 +491,7 @@ async def google_photos(name: str, address: str, out_dir: Path,
     if not places.configured():
         report["problems"].append("GOOGLE_MAPS_API_KEY is not set")
         return report
-    profile = await places.lookup(name, address)
+    profile = await places.lookup(name, address, lead_id=lead_id)
     if not profile.get("ok"):
         report["problems"].append(
             f"no Google listing matched: {profile.get('reason')}")
@@ -498,7 +505,8 @@ async def google_photos(name: str, address: str, out_dir: Path,
 
     hashes: list[int] = []
     for i, photo_name in enumerate(names, 1):
-        rec = await places.photo(photo_name, str(out_dir / f"google-{i:02d}.jpg"))
+        rec = await places.photo(photo_name, str(out_dir / f"google-{i:02d}.jpg"),
+                                 lead_id=lead_id)
         if not rec.get("ok"):
             report["problems"].append(f"photo {i}: {rec.get('reason')}")
             continue
@@ -544,8 +552,8 @@ async def find_accounts(website: str) -> dict[str, str]:
 async def look_around(out_dir: str | Path, facebook: str = "",
                       instagram: str = "", osm_ref: str = "",
                       website: str = "", name: str = "", address: str = "",
-                      lat: float | None = None,
-                      lon: float | None = None) -> dict[str, Any]:
+                      lat: float | None = None, lon: float | None = None,
+                      lead_id: str | None = None) -> dict[str, Any]:
     """Everything available for one business, in one call.
 
     Sources run concurrently and independently: a redesigned Instagram page
@@ -568,7 +576,8 @@ async def look_around(out_dir: str | Path, facebook: str = "",
     if name:
         # The pictures beside a Google search: the listing's own and its
         # reviewers'. Often the best framed of the lot.
-        jobs.append(("google_photos", google_photos(name, address, out)))
+        jobs.append(("google_photos",
+                     google_photos(name, address, out, lead_id=lead_id)))
 
     point: dict[str, Any] = {}
     if lat is None or lon is None:
@@ -576,7 +585,8 @@ async def look_around(out_dir: str | Path, facebook: str = "",
             point = await osm_coords(osm_ref)
             lat, lon = point.get("lat"), point.get("lon")
     if lat is not None and lon is not None:
-        jobs.append(("street_view", street_view(float(lat), float(lon), out)))
+        jobs.append(("street_view",
+                     street_view(float(lat), float(lon), out, lead_id=lead_id)))
 
     results = await asyncio.gather(*(j for _, j in jobs), return_exceptions=True)
     report: dict[str, Any] = {"out_dir": str(out), "sources": {},

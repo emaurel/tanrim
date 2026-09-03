@@ -107,6 +107,7 @@ def record(
     cache_write: int = 0,
     cache_read: int = 0,
     ts: float | None = None,
+    lead_id: str | None = None,
 ) -> dict[str, Any]:
     """Record one call's spend.
 
@@ -122,6 +123,11 @@ def record(
         "ts": ts if ts is not None else time.time(),
         "agent_id": agent_id,
         "model": model,
+        # Which lead this was spent on. Absent on older rows, which is why
+        # per-lead totals start from when this was added rather than being
+        # reconstructed — nothing recorded the association before.
+        "lead_id": lead_id,
+        "kind": "model",
         "input_tokens": int(input_tokens),
         "cache_write_tokens": int(cache_write),
         "cache_read_tokens": int(cache_read),
@@ -199,3 +205,111 @@ def seed_demo() -> int:
     for agent_id, model, it, ot, ts in samples:
         record(agent_id, model, it, ot, ts=ts)
     return len(samples)
+
+# ---------------------------------------------------------------------------
+# What the outside world charges.
+#
+# Model calls are not the only spend. Google bills per request for the
+# Business Profile and per image for Street View, and until now none of it was
+# counted anywhere — so a lead's true cost was understated by whatever the
+# research spent looking things up.
+#
+# These are list-price ESTIMATES, per call, and they move. Override any of them
+# with AGENT_ENV_API_PRICING rather than editing code, and treat a total built
+# on them as indicative: the authority is the provider's own console.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_API_PRICING = {
+    # Places API (New) is tiered by the fields requested; a text search plus a
+    # details call with contact and atmosphere fields lands around here.
+    "google.places.search": 0.032,
+    "google.places.details": 0.020,
+    "google.places.photo": 0.007,
+    "google.streetview.image": 0.007,
+    # Free, and recorded anyway so the call volume is visible.
+    "google.streetview.metadata": 0.0,
+    "ovh.cart": 0.0,
+    "osm.node": 0.0,
+    "rdap.query": 0.0,
+    "register.search": 0.0,
+}
+try:
+    API_PRICING = {**_DEFAULT_API_PRICING,
+                   **json.loads(os.getenv("AGENT_ENV_API_PRICING", "{}"))}
+except Exception:  # noqa: BLE001
+    API_PRICING = dict(_DEFAULT_API_PRICING)
+
+
+def record_api(sku: str, *, lead_id: str | None = None, calls: int = 1,
+               agent_id: str = "", note: str = "") -> dict[str, Any]:
+    """Record external API usage against a lead."""
+    unit = API_PRICING.get(sku)
+    rec = {
+        "id": str(uuid.uuid4()),
+        "ts": time.time(),
+        "kind": "api",
+        "sku": sku,
+        "agent_id": agent_id or sku.split(".")[0],
+        "model": sku,
+        "lead_id": lead_id,
+        "calls": int(calls),
+        "input_tokens": 0, "output_tokens": 0,
+        "cache_write_tokens": 0, "cache_read_tokens": 0,
+        "billed_input_tokens": 0,
+        "cost_usd": round((unit if unit is not None else 0.0) * int(calls), 6),
+        "priced_from": "estimate" if unit is not None else "unknown sku",
+        "note": note,
+    }
+    _ensure()
+    with _lock:
+        items = json.loads(USAGE_FILE.read_text())
+        items.append(rec)
+        USAGE_FILE.write_text(json.dumps(items, indent=2))
+    return rec
+
+
+def for_lead(lead_id: str) -> dict[str, Any]:
+    """Everything spent on one lead, split by where it went."""
+    rows = [r for r in list_records() if r.get("lead_id") == lead_id]
+    models: dict[str, dict[str, Any]] = {}
+    apis: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        if r.get("kind") == "api":
+            b = apis.setdefault(r.get("sku", "?"),
+                                {"sku": r.get("sku"), "calls": 0, "cost_usd": 0.0})
+            b["calls"] += int(r.get("calls") or 1)
+            b["cost_usd"] += float(r.get("cost_usd") or 0)
+        else:
+            b = models.setdefault(r.get("agent_id", "?"),
+                                  {"agent": r.get("agent_id"), "runs": 0,
+                                   "output_tokens": 0, "cost_usd": 0.0})
+            b["runs"] += 1
+            b["output_tokens"] += int(r.get("output_tokens") or 0)
+            b["cost_usd"] += float(r.get("cost_usd") or 0)
+    model_total = round(sum(b["cost_usd"] for b in models.values()), 4)
+    api_total = round(sum(b["cost_usd"] for b in apis.values()), 4)
+    return {
+        "lead_id": lead_id,
+        "agents": sorted(models.values(), key=lambda b: -b["cost_usd"]),
+        "apis": sorted(apis.values(), key=lambda b: -b["cost_usd"]),
+        "model_cost": model_total,
+        "api_cost": api_total,
+        "total": round(model_total + api_total, 4),
+        "runs": sum(b["runs"] for b in models.values()),
+        "note": ("API figures are list-price estimates; model figures come from "
+                 "the tokens the SDK reported."),
+    }
+
+
+def by_lead() -> list[dict[str, Any]]:
+    """Per-lead totals, dearest first. Rows with no lead are left out."""
+    seen = {r.get("lead_id") for r in list_records() if r.get("lead_id")}
+    return sorted((for_lead(lid) for lid in seen),
+                  key=lambda b: -b["total"])
+
+
+def unattributed() -> dict[str, Any]:
+    """Spend that predates per-lead tracking, so the totals still reconcile."""
+    rows = [r for r in list_records() if not r.get("lead_id")]
+    return {"rows": len(rows),
+            "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in rows), 2)}

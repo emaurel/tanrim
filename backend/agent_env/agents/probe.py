@@ -88,7 +88,7 @@ async def ensure_google_profile(lead_id: str, lead: dict[str, Any]) -> dict[str,
             point = await harvest.osm_coords(lead["source"]["ref"])
         profile = await places.lookup(
             lead.get("name") or "", lead.get("address") or "",
-            point.get("lat"), point.get("lon"))
+            point.get("lat"), point.get("lon"), lead_id=lead_id)
     except Exception:  # noqa: BLE001
         return lead
     state.update_lead(lead_id, google_profile=profile)

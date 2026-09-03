@@ -111,6 +111,15 @@ class TreasuryHandler(RoomHandler):
             # to price at zero, so the dearest agent in the pipeline reported
             # every run as free; this makes that state visible instead.
             "unpriced_models": usage.unpriced_models(all_records),
+            # What each lead has cost, models and external APIs together.
+            # Only from when per-lead attribution was added — nothing recorded
+            # the association before, so the rest sits in `unattributed`.
+            "by_lead": usage.by_lead(),
+            # Just enough to put a name on each row.
+            "leads": [{"id": l["id"], "name": l.get("name")}
+                      for l in state.list_leads(limit=500)],
+            "unattributed": usage.unattributed(),
+            "api_pricing": usage.API_PRICING,
             "is_empty": len(all_records) == 0,
             # Token spend is what the agency costs to run; invoices are what it
             # earns. Coin's room is the only place both belong together.
