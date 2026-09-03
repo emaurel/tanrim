@@ -1589,7 +1589,11 @@ html, body {
   flex-direction: column;
   gap: 5px;
 }
-.lb-live--idle { color: #5f5f6c; border-color: #1f1f29; background: #12121a; font-style: italic; }
+.lb-live--idle {
+  color: #5f5f6c; border-color: #1f1f29; background: #12121a;
+  flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.lb-live--idle > span:first-child { font-style: italic; }
 .lb-live-row { display: flex; align-items: baseline; gap: 8px; }
 .lb-live-row strong { color: #a3b18a; font-size: 10px; letter-spacing: .08em; }
 .lb-live-what { color: #cfd8c8; flex: 1; }

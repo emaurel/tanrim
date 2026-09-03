@@ -138,6 +138,94 @@ _LEAD_BULK = ("profile", "visual", "qa", "site", "site_history", "audit",
               "outreach", "domains", "owner_assets", "history", "replies")
 
 
+def _next_step(lead: dict[str, Any]) -> dict[str, Any]:
+    """Who would work this lead next, and whether anything is in the way.
+
+    Derived from the workbench declarations, like every other routing decision,
+    so it says the same thing the stage sweep would do.
+    """
+    from . import rooms as rooms_mod
+    stage = lead.get("stage") or ""
+    lead_id = lead.get("id") or ""
+    role = rooms_mod.role_for_stage(stage)
+    room_id = rooms_mod.room_for_role(role) if role else None
+    room = next((r for r in rooms_mod.load_rooms() if r.id == room_id), None)
+
+    out: dict[str, Any] = {
+        "stage": stage, "role": role, "room_id": room_id,
+        "room": room.name if room else None,
+        "label": None, "blocked_by": None, "runnable": False,
+    }
+    if role is None:
+        out["blocked_by"] = (
+            f"'{stage}' is a stage nobody works — the lead is finished or "
+            "parked here deliberately.")
+        return out
+
+    bench = next((b for b in (room.workbenches if room else [])
+                  if stage in (b.stages or [])), None)
+    out["label"] = (f"{role} · {bench.name}" if bench else str(role))
+    out["job"] = bench.job if bench else None
+
+    # A lead we have emailed is waiting on THEM, not on an agent. Dispatching
+    # Echo here only re-runs the send preflight, which correctly refuses — so
+    # offering a button for it would be offering a no-op.
+    if lead.get("sent_log") and stage in ("contacted", "replied"):
+        from . import config as config_mod
+        out["blocked_by"] = (
+            "waiting on their reply — the mailbox is read every "
+            f"{config_mod.MAIL_POLL_MINUTES} minutes and a reply files itself. "
+            "Use 'check the mail now' in Communications to look immediately.")
+        return out
+
+    working = [i for i in agent_helpers.all_in_flight().values()
+               if i.get("lead_id") == lead_id]
+    if working:
+        out["blocked_by"] = f"{working[0].get('role')} is already on this lead"
+        return out
+
+    pending = [a for a in state.list_user_approvals(status="pending", limit=200)
+               if (a.get("payload") or {}).get("lead_id") == lead_id]
+    if pending:
+        out["blocked_by"] = (
+            f"a {pending[0]['kind']} card is waiting on you — decide that first")
+        return out
+
+    out["runnable"] = True
+    return out
+
+
+@app.post("/leads/{lead_id}/run-next")
+async def run_next_step(lead_id: str):
+    """Start the next step by hand.
+
+    The pipeline dispatches on stage CHANGES and recovers a stalled lead once
+    per stage, so a lead that has been through that once will sit there
+    indefinitely with nothing wrong and nobody on it. This is the button for
+    that, and it goes through the same runner the sweep uses rather than a
+    second path that could behave differently.
+    """
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        raise HTTPException(404, "no such lead")
+    step = _next_step(lead)
+    if not step["runnable"]:
+        raise HTTPException(409, step["blocked_by"] or "nothing to run")
+    runner = AGENT_RUNNERS.get(step["role"])
+    if runner is None:
+        raise HTTPException(409, f"no runner for {step['role']}")
+
+    state.log_event(
+        "dispatch_end", from_="operator", to=step["role"],
+        summary=f"{lead.get('name')} started by hand at '{step['stage']}' "
+                f"→ {step['role']}",
+        outcome="dispatched", details={"lead_id": lead_id, "stage": step["stage"]})
+    asyncio.create_task(runner(world, {"lead_id": lead_id, "prompt": ""}))
+    await world.publish({"type": "approvals_updated"})
+    return {"ok": True, "started": step["role"], "room": step["room"],
+            "label": step["label"]}
+
+
 @app.get("/leads/{lead_id}/dossier")
 async def lead_dossier(lead_id: str):
     """Everything we know about a business, in one place.
@@ -488,6 +576,7 @@ async def lead_timeline(lead_id: str):
         "active": active,
         "invoice": invoices_mod.for_lead(lead_id),
         "invoice_blocked_by": config.invoice_config_problems(),
+        "next_step": _next_step(lead),
         # The activity log is a ring buffer. Say so, rather than letting a page
         # imply nothing happened during a window that simply rolled off.
         "events_complete": len(events) < 1000,

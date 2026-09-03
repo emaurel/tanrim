@@ -987,9 +987,54 @@ async function buildTimeline(): Promise<HTMLElement> {
     }
     wrap.appendChild(box);
   } else {
+    // Nobody on it. The pipeline dispatches on stage changes and recovers a
+    // stalled lead once per stage, so a lead can sit here with nothing wrong
+    // and nothing about to happen. Offer the next step rather than leaving the
+    // operator to work out which room it belongs in.
     const box = document.createElement("div");
     box.className = "lb-live lb-live--idle";
-    box.textContent = "Nobody is working on this lead right now.";
+    const ns: any = data.next_step ?? {};
+    const line = document.createElement("span");
+    line.textContent = "Nobody is working on this lead right now.";
+    box.appendChild(line);
+
+    if (ns.runnable) {
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "lb-move-go";
+      go.textContent = `start ${ns.label ?? ns.role}`;
+      if (ns.job) go.title = ns.job;
+      const msg = document.createElement("span");
+      msg.className = "lb-move-msg";
+      msg.textContent = ns.job ? `next: ${ns.job}` : "";
+      go.addEventListener("click", async () => {
+        go.disabled = true;
+        msg.textContent = "starting…";
+        try {
+          const r = await fetch(`/leads/${lead.id}/run-next`, { method: "POST" });
+          const d = await r.json();
+          if (!r.ok) { msg.textContent = d?.detail ?? `failed (${r.status})`; return; }
+          // The run takes a moment to register as in-flight.
+          for (let i = 0; i < 8; i++) {
+            await new Promise((res) => setTimeout(res, 1500));
+            const t = await fetch(`/leads/${lead.id}/timeline`)
+              .then((x) => x.json()).catch(() => null);
+            if ((t?.active ?? []).length) break;
+          }
+          dirty = true;
+          await loadLeads();
+          await rerender();
+        } finally {
+          go.disabled = false;
+        }
+      });
+      box.append(go, msg);
+    } else if (ns.blocked_by) {
+      const why = document.createElement("span");
+      why.className = "lb-move-msg";
+      why.textContent = ns.blocked_by;
+      box.appendChild(why);
+    }
     wrap.appendChild(box);
   }
 
