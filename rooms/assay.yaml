@@ -10,7 +10,7 @@ agents:
     role: Qualifier. Audits the existing site, scores the opportunity, finds the contact.
     color: "#bcd35f"
 tools: ["site_audit", "social_look"]
-max_workers: 3
+max_workers: 5
 workbenches:
   - id: qualify
     name: Weighing Bench

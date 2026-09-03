@@ -10,7 +10,7 @@ agents:
     role: Outreach. Sends the pitch, tracks replies, keeps the conversation alive.
     color: "#2a9d8f"
 tools: []
-max_workers: 3
+max_workers: 5
 workbenches:
   - id: outbox
     name: The Outbox

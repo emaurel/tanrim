@@ -23,7 +23,7 @@ tools: ["domain_check"]
 #     tools: [docs, search]   # allowlist, per tool name
 #     deny: [execute]         # runs arbitrary JS against the whole account
 #     note: Cloudflare docs and API spec, read-only
-max_workers: 3
+max_workers: 5
 workbenches:
   - id: crate
     name: The Crating Bay
