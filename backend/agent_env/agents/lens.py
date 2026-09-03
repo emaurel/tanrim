@@ -410,7 +410,11 @@ def _build_visual_prompt(lead: dict[str, Any], out_dir: str) -> str:
         own.append(f"osm_ref: {osm_ref}   (Street View of the frontage)")
     if own:
         sections.append(
-            "THEIR OWN ACCOUNTS — call `look_around` with these, FIRST. It "
+            "THEIR OWN ACCOUNTS — call `look_around` with these, FIRST. Passing "
+            "`name` and `address` also pulls the photographs from their Google "
+            "listing, which are the ones beside a Google search: often a "
+            "head-on shot of the shopfront, better framed than Street View "
+            "because someone stood in front of it on purpose. It "
             "drives a real browser, so it reads the account rather than "
             "scraping a page about them, and every picture it brings back is "
             "actually theirs:\n"
@@ -420,6 +424,7 @@ def _build_visual_prompt(lead: dict[str, Any], out_dir: str) -> str:
             + (f", instagram=\"{instagram}\"" if instagram else "")
             + (f", osm_ref=\"{osm_ref}\"" if osm_ref else "")
             + (f", website=\"{lead['website']}\"" if lead.get("website") else "")
+            + f", name=\"{lead.get('name')}\", address=\"{lead.get('address') or ''}\""
             + ")"
         )
     else:
@@ -534,6 +539,56 @@ async def run_visual_research(
         note=f"{n_seen} photos read; {len(found_items)} items off boards"[:300],
         visual=visual,
     )
+
+    # The last point before a build. Everything Forge writes comes from the
+    # dossier, the appraisal and this photo report, and a build is the most
+    # expensive run in the pipeline — so the operator gets to see what it will
+    # be built FROM while it is still cheap to send back. A pending approval
+    # suppresses dispatch on the lead, so raising this is what holds it.
+    lead = state.get_lead(lead_id) or lead
+    prof = lead.get("profile") or {}
+    app = lead.get("appraisal") or {}
+    gp = lead.get("google_profile") or {}
+    offering = (prof.get("offering") or {}).get("items") or []
+    state.add_user_approval(
+        kind="ready_to_build",
+        room_id=ROOM_ID,
+        requesting_agent=AGENT_ID,
+        summary=f"{lead.get('name')}: research done — build the site?",
+        payload={
+            "lead_id": lead_id,
+            "business": lead.get("name"),
+            "address": lead.get("address"),
+            "email": lead.get("email"),
+            "quote": app.get("quote_total"),
+            "margin": app.get("margin_applied"),
+            "price_reason": app.get("why"),
+            "turnover": (app.get("turnover") if app.get("turnover_known")
+                         else "not published"),
+            "offering_items": len(offering),
+            "sample_items": [
+                f"{i.get('name')} {i.get('price') or ''}".strip()
+                for i in offering[:6]],
+            "hours": (prof.get("hours") or {}).get("from_their_own_sign")
+                     or gp.get("hours"),
+            "hours_conflicts": (prof.get("hours") or {}).get("conflicts"),
+            "sources": len(prof.get("sources") or []),
+            "content_gaps": (prof.get("content_gaps") or [])[:6],
+            "photos_read": n_seen,
+            "palette": visual.get("palette_observed"),
+            "text_in_photos": (visual.get("text_in_photos") or [])[:6],
+            "existing_site": (lead.get("existing_site") or {}).get("url")
+                             or gp.get("website"),
+            "site_shape": (lead.get("site_shape") or {}).get("kind"),
+            "what_this_means":
+                "This is everything Forge will build from. Approve to build. "
+                "Reject to send it back for more research — say what is wrong "
+                "or missing and that becomes the instruction. A build is the "
+                "most expensive run here, and a page built on a wrong fact has "
+                "to be found by QA and rebuilt.",
+        },
+    )
+    await world.publish({"type": "approvals_updated"})
 
     await world.say(
         AGENT_ID,

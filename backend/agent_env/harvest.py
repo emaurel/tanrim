@@ -34,6 +34,7 @@ import asyncio
 import hashlib
 import html as _html
 import io
+import math
 import json
 import os
 import re
@@ -306,17 +307,31 @@ def street_view_configured() -> bool:
     return bool(os.getenv("GOOGLE_MAPS_API_KEY"))
 
 
+def bearing(from_lat: float, from_lon: float,
+            to_lat: float, to_lon: float) -> float:
+    """Compass bearing from one point to another, in degrees."""
+    p1, p2 = math.radians(from_lat), math.radians(to_lat)
+    dl = math.radians(to_lon - from_lon)
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
 async def street_view(lat: float, lon: float, out_dir: Path,
-                      headings: tuple[int, ...] = (0, 90, 180, 270),
-                      fov: int = 70) -> dict[str, Any]:
-    """The frontage, from the street.
+                      headings: tuple[int, ...] | None = None,
+                      fov: int = 80) -> dict[str, Any]:
+    """The frontage, from the street, pointed AT the building.
 
-    The one source here that is a documented API rather than a page that will
-    be redesigned. Metadata is free and says whether imagery exists at all, so
-    a lead with no coverage costs nothing; only the images are billed.
+    The camera is not at the address — it is on the road outside, and where it
+    sits relative to the shop varies with every street. Shooting the four
+    compass points therefore catches the front by luck: one carpenter's shop
+    appeared at the edge of the 180 frame and nowhere else, because the true
+    bearing was 153.
 
-    Several headings because the API points the camera where you tell it, and
-    the shopfront is not reliably at any particular bearing from the pin.
+    The metadata call returns where the panorama actually is, which makes the
+    heading arithmetic rather than a guess: aim from the camera at the
+    address, then take one shot either side in case the entrance sits along
+    the façade. That call is free, so the aiming costs nothing.
     """
     out_dir = Path(out_dir)
     report: dict[str, Any] = {"source": "street_view", "point": [lat, lon],
@@ -342,8 +357,23 @@ async def street_view(lat: float, lon: float, out_dir: Path,
                     f" {info.get('error_message', '')}".strip())
                 return report
 
+            cam = info.get("location") or {}
+            aim = None
+            if cam.get("lat") is not None and cam.get("lng") is not None:
+                aim = bearing(cam["lat"], cam["lng"], lat, lon)
+                report["camera"] = [cam["lat"], cam["lng"]]
+                report["aimed_at"] = round(aim, 1)
+                shots = [round((aim + off) % 360) for off in (-35, 0, 35)]
+            else:
+                # No panorama position: fall back to sweeping.
+                shots = list(headings or (0, 90, 180, 270))
+                report["aimed_at"] = None
+            if headings:
+                shots = list(headings)
+            report["headings"] = shots
+
             blobs: list[tuple[str, bytes]] = []
-            for heading in headings:
+            for heading in shots:
                 r = await c.get(base, params={
                     "size": "640x640", "location": f"{lat},{lon}",
                     "heading": heading, "fov": fov, "pitch": 5,
@@ -368,10 +398,17 @@ async def street_view(lat: float, lon: float, out_dir: Path,
             (out_dir / rec["file"]).unlink(missing_ok=True)
             continue
         hashes.append(bits)
+        rec["heading"] = int(stem.rsplit("-", 1)[1])
         rec["rights"] = ("Google Street View imagery. READ ONLY — Google's terms "
                          "do not permit serving it outside their own APIs, and "
                          "it may never appear on a built page.")
         report["files"].append(rec)
+    if report.get("aimed_at") is not None:
+        report["note"] = (
+            f"aimed at {report['aimed_at']}° from the camera position, plus 35° "
+            "either side. The middle shot is the one pointed at the address; if "
+            "the front is at the edge of a frame, the entrance is along the "
+            "façade rather than at the pin.")
     return report
 
 
@@ -427,6 +464,56 @@ async def _download(urls: list[str], out_dir: Path, prefix: str,
     return files
 
 
+
+async def google_photos(name: str, address: str, out_dir: Path,
+                        limit: int = 6) -> dict[str, Any]:
+    """The photographs on a business's Google listing.
+
+    These are the pictures that appear beside a Google search — the profile's
+    own and its reviewers'. For a shop they are very often the frontage,
+    the room and the work, and they are frequently better framed than
+    Street View because somebody stood in front of the place on purpose.
+
+    Read-only like everything else here: user-submitted photographs on a
+    platform, never republished.
+    """
+    from . import places
+    out_dir = Path(out_dir)
+    report: dict[str, Any] = {"source": "google_photos", "files": [],
+                              "problems": []}
+    if not places.configured():
+        report["problems"].append("GOOGLE_MAPS_API_KEY is not set")
+        return report
+    profile = await places.lookup(name, address)
+    if not profile.get("ok"):
+        report["problems"].append(
+            f"no Google listing matched: {profile.get('reason')}")
+        return report
+    report["place"] = profile.get("name")
+    report["place_id"] = profile.get("place_id")
+    names = (profile.get("photo_names") or [])[:limit]
+    if not names:
+        report["problems"].append("the listing carries no photographs")
+        return report
+
+    hashes: list[int] = []
+    for i, photo_name in enumerate(names, 1):
+        rec = await places.photo(photo_name, str(out_dir / f"google-{i:02d}.jpg"))
+        if not rec.get("ok"):
+            report["problems"].append(f"photo {i}: {rec.get('reason')}")
+            continue
+        path = out_dir / rec["file"]
+        im = decode(path.read_bytes())
+        if im is not None:
+            bits = ahash(im)
+            if seen_before(bits, hashes):
+                path.unlink(missing_ok=True)
+                continue
+            hashes.append(bits)
+        report["files"].append(rec)
+    return report
+
+
 # ------------------------------------------------------------------ one call
 
 async def find_accounts(website: str) -> dict[str, str]:
@@ -456,7 +543,7 @@ async def find_accounts(website: str) -> dict[str, str]:
 
 async def look_around(out_dir: str | Path, facebook: str = "",
                       instagram: str = "", osm_ref: str = "",
-                      website: str = "",
+                      website: str = "", name: str = "", address: str = "",
                       lat: float | None = None,
                       lon: float | None = None) -> dict[str, Any]:
     """Everything available for one business, in one call.
@@ -478,6 +565,10 @@ async def look_around(out_dir: str | Path, facebook: str = "",
         jobs.append(("facebook", facebook_page(facebook, out)))
     if instagram:
         jobs.append(("instagram", instagram_profile(instagram, out)))
+    if name:
+        # The pictures beside a Google search: the listing's own and its
+        # reviewers'. Often the best framed of the lot.
+        jobs.append(("google_photos", google_photos(name, address, out)))
 
     point: dict[str, Any] = {}
     if lat is None or lon is None:

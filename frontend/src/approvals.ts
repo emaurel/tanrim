@@ -276,6 +276,41 @@ function renderGate(a: Approval, host: HTMLElement): boolean {
 return true;
   }
 
+  // Everything the build will be made from, before the most expensive run.
+  if (a.kind === "ready_to_build") {
+    host.appendChild(kv("Business", String(p.business ?? "?")));
+    if (p.address) host.appendChild(kv("Address", String(p.address)));
+    if (p.quote) host.appendChild(kv("Quote", `${p.quote} € — ${p.margin} € the work`));
+    if (p.price_reason) host.appendChild(note(String(p.price_reason)));
+    host.appendChild(kv("Turnover", String(p.turnover ?? "?")));
+    host.appendChild(kv("Research", `${p.sources ?? 0} sources · `
+      + `${p.offering_items ?? 0} things they sell · ${p.photos_read ?? 0} photos read`));
+    if (p.existing_site)
+      host.appendChild(kv("They already have", `${p.existing_site}`
+        + (p.site_shape ? ` (${p.site_shape})` : "")));
+    if (p.sample_items?.length)
+      host.appendChild(labelled("what they sell", note((p.sample_items as string[]).join(" · "))));
+    if (p.hours) host.appendChild(labelled("hours",
+      note(Array.isArray(p.hours) ? (p.hours as string[]).join(" · ") : String(p.hours))));
+    if (p.hours_conflicts?.length)
+      host.appendChild(labelled("hours are contested",
+        note((p.hours_conflicts as string[]).join(" · "))));
+    if (p.text_in_photos?.length)
+      host.appendChild(labelled("read off their photographs",
+        note((p.text_in_photos as any[]).map((t) =>
+          typeof t === "string" ? t : JSON.stringify(t)).join(" · "))));
+    if (p.palette) host.appendChild(labelled("colours seen",
+      note(typeof p.palette === "string" ? p.palette : JSON.stringify(p.palette))));
+    if (p.content_gaps?.length)
+      host.appendChild(labelled("still missing",
+        note((p.content_gaps as string[]).join(" · "))));
+    if (p.what_this_means) host.appendChild(note(String(p.what_this_means)));
+    host.appendChild(note(
+      "approve = build it · reject = back to research, with anything you type "
+      + "below as the instruction"));
+    return true;
+  }
+
   // The email never arrived. Not a decision about the business — a missing
   // address, and the work is all still there waiting for one.
   if (a.kind === "bad_address") {

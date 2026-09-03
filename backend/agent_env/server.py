@@ -24,6 +24,7 @@ from . import skills as skills_mod
 from . import state
 from .agents import courier as courier_mod
 from .agents import echo as echo_mod
+from .agents import forge as forge_mod
 from .agents import probe as probe_mod
 from .config import SITES_DIR
 from .handlers import build_handlers
@@ -995,6 +996,25 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
                 lead_id, "lost", agent="operator",
                 note=f"no reachable address. {reason}"[:300] if reason
                      else "no reachable address")
+
+    elif rec["kind"] == "ready_to_build":
+        # The gate before the most expensive run in the pipeline.
+        lead_id = rec["payload"].get("lead_id")
+        reason = (body.reason or "").strip()
+        if lead_id and body.decision == "approved":
+            # Explicit, because the lead does not change stage here and the
+            # sweep fires on stage changes.
+            asyncio.create_task(forge_mod.run_build(
+                world, lead_id,
+                f"The operator approved the research and added: {reason}"
+                if reason else ""))
+        elif lead_id:
+            # Back for another look. The dossier pass redoes the research, the
+            # appraisal and the photographs in turn.
+            state.advance_lead(
+                lead_id, "qualified", agent="operator",
+                note=(f"sent back before building: {reason[:200]}" if reason
+                      else "sent back before building — research again"))
 
     elif rec["kind"] == "thin_content":
         # The lead is parked at `qualified`, which is also the stage that
