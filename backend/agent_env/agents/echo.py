@@ -107,15 +107,24 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
                 problems.append(
                     f"{named} has been registered since we drafted this — the "
                     "email says it is available. Requote with another name.")
-            quoted = float((lead.get("outreach") or {}).get("quote", {})
-                           .get("amount") or 0)
-            floor = config.MARGIN_AMOUNT + float(priced.get("total") or 0)
+            # What this quote must still cover is THIS lead's margin plus what
+            # the domain costs today — not the standard rate. The appraisal is
+            # allowed to price a small business down to MARGIN_FLOOR, and
+            # comparing against MARGIN_AMOUNT blocked every one of them: three
+            # drafts quoted at 330-380 sat at `drafted` with no card and no
+            # error, because a lower appraisal looked like an underpriced quote.
+            out = lead.get("outreach") or {}
+            quoted = float((out.get("quote") or {}).get("amount") or 0)
+            basis = out.get("quote_basis") or {}
+            own_margin = float(basis.get("margin") or config.MARGIN_FLOOR)
+            floor = own_margin + float(priced.get("total") or 0)
             if quoted and quoted < floor:
                 problems.append(
                     f"the quoted {quoted:.0f} {config.QUOTE_CURRENCY} no longer "
-                    f"covers {config.MARGIN_AMOUNT} plus the domain "
+                    f"covers its {own_margin:.0f} margin plus the domain "
                     f"({priced.get('total'):.2f}) — it needs "
-                    f"{floor:.0f} or more")
+                    f"{floor:.0f} or more. The domain has probably got dearer "
+                    f"since this was drafted; requote.")
             state.update_lead(lead_id, domains={**dom, "priced": priced,
                                                 "last_checked_ts": time.time()})
         except Exception as e:  # noqa: BLE001
@@ -125,6 +134,15 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
 
     if problems:
         await world.say(AGENT_ID, "blocked — see panel", seconds=8)
+        # This runs in a detached task, so a bare return tells nobody: the lead
+        # simply stopped at `drafted` with no card, no error and no log line,
+        # and it was re-dispatched every few minutes to fail the same way.
+        state.log_event(
+            "run_end", from_=AGENT_ID,
+            summary=f"send blocked for {lead.get('name')}: {problems[0]}"[:240],
+            outcome="failed",
+            details={"lead_id": lead_id, "problems": problems},
+        )
         return {"ok": False, "error": "preflight failed", "problems": problems,
                 "domain_check": domain_check}
 

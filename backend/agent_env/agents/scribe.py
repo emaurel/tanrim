@@ -9,6 +9,8 @@ gets the most care and the strictest rules.
 """
 from __future__ import annotations
 
+import time
+
 import json
 from typing import Any
 
@@ -298,6 +300,20 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
         "billing_language_flags": hits,
         "cost_usd": result.cost_usd,
         "sent": False,
+        # What the figure is actually made of. The `quote` above is the model's
+        # own description of the offer; this is the arithmetic behind it, kept
+        # so a later check has ground truth rather than having to re-derive the
+        # margin from the total. Echo's send preflight compared the quote
+        # against the STANDARD margin and blocked every appraised-lower lead —
+        # which is precisely what the appraisal clamp exists to allow.
+        "quote_basis": {
+            "margin": quote["margin"],
+            "domain_cost": quote["domain_cost"],
+            "domain_years": quote["domain_years"],
+            "total": quote["total"],
+            "margin_source": quote["margin_source"],
+            "priced_at_ts": time.time(),
+        },
     }
     # Hand it to Communications. The lead has to MOVE for the pipeline to
     # dispatch Echo — and `published` used to be claimed by both this room and
