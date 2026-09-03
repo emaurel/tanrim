@@ -193,6 +193,10 @@ state/               leads, generated sites, ledgers (gitignored)
 `CLAUDE.md` is the working notes — the architecture, and a record of what broke
 and why it's built the way it is. Read that before changing anything.
 
+`docs/research.md` opens up the research half — sourced to visualised, what is
+decided in code rather than by a model, what each step costs, and an honest
+list of where it is weakest.
+
 `docs/pipeline.html` is the same pipeline in more detail — every transition with
 the agent and bench that performs it, the full room-to-stage routing table, and
 what the code does that the plan doesn't say. Open it in a browser; it was

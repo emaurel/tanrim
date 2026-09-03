@@ -429,8 +429,34 @@ async def _download(urls: list[str], out_dir: Path, prefix: str,
 
 # ------------------------------------------------------------------ one call
 
+async def find_accounts(website: str) -> dict[str, str]:
+    """The social accounts a business links from its own site.
+
+    Research records an account only when it happens to find one, and it found
+    Facebook for four leads out of nine. A business's own page nearly always
+    links its accounts, and reading them from there costs one fetch and no
+    judgement — so a missing account is worth looking for before concluding
+    they have none.
+    """
+    found: dict[str, str] = {}
+    if not website:
+        return found
+    shape = await page_shape(website)
+    for url in shape.get("social_links") or []:
+        low = url.lower()
+        # Skip share/intent links, which point at the platform not the business.
+        if any(w in low for w in ("sharer", "/share", "intent/", "plugins/")):
+            continue
+        if "facebook.com" in low and "facebook" not in found:
+            found["facebook"] = url
+        elif "instagram.com" in low and "instagram" not in found:
+            found["instagram"] = url
+    return found
+
+
 async def look_around(out_dir: str | Path, facebook: str = "",
                       instagram: str = "", osm_ref: str = "",
+                      website: str = "",
                       lat: float | None = None,
                       lon: float | None = None) -> dict[str, Any]:
     """Everything available for one business, in one call.
@@ -439,6 +465,14 @@ async def look_around(out_dir: str | Path, facebook: str = "",
     must not cost us the Street View frontage.
     """
     out = Path(out_dir)
+    discovered: dict[str, str] = {}
+    if website and not (facebook and instagram):
+        try:
+            discovered = await find_accounts(website)
+            facebook = facebook or discovered.get("facebook", "")
+            instagram = instagram or discovered.get("instagram", "")
+        except Exception:  # noqa: BLE001
+            pass
     jobs: list[tuple[str, Any]] = []
     if facebook:
         jobs.append(("facebook", facebook_page(facebook, out)))
@@ -455,7 +489,8 @@ async def look_around(out_dir: str | Path, facebook: str = "",
 
     results = await asyncio.gather(*(j for _, j in jobs), return_exceptions=True)
     report: dict[str, Any] = {"out_dir": str(out), "sources": {},
-                              "coordinates": point or None}
+                              "coordinates": point or None,
+                              "accounts_discovered_on_their_site": discovered or None}
     total = 0
     for (name, _), res in zip(jobs, results):
         if isinstance(res, BaseException):

@@ -419,12 +419,18 @@ def _build_visual_prompt(lead: dict[str, Any], out_dir: str) -> str:
             + (f", facebook=\"{facebook}\"" if facebook else "")
             + (f", instagram=\"{instagram}\"" if instagram else "")
             + (f", osm_ref=\"{osm_ref}\"" if osm_ref else "")
+            + (f", website=\"{lead['website']}\"" if lead.get("website") else "")
             + ")"
         )
     else:
         sections.append(
-            "No Facebook or Instagram account was found for this business, so "
-            "`look_around` has nothing of theirs to open"
+            "No Facebook or Instagram account is recorded for this business. "
+            "Call `look_around` anyway with their website if there is one — it "
+            "reads the accounts they link from their own page, which is where "
+            "research most often misses them"
+            + (f": look_around(out_dir=\"{out_dir}\", website=\"{lead['website']}\""
+               + (f", osm_ref=\"{osm_ref}\"" if osm_ref else "") + ")"
+               if lead.get("website") else "")
             + (f" — but it can still fetch Street View of the frontage: "
                f"look_around(out_dir=\"{out_dir}\", osm_ref=\"{osm_ref}\")"
                if osm_ref else ".")
