@@ -4,6 +4,7 @@ version = "0.0.1"
 description = "Pixel-art agent environment running an agent-operated web agency, built on the Claude Agent SDK."
 requires-python = ">=3.11"
 dependencies = [
+    "orjson>=3.10",
     "claude-agent-sdk>=0.1.77",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

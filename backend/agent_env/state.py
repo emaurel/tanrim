@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import json
+import orjson
 import re
 import time
 from contextvars import ContextVar
 import uuid
 from email.utils import parseaddr
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -24,6 +27,80 @@ EVENTS_FILE = STATE_DIR / "events.json"
 TASK_RERUNS_FILE = STATE_DIR / "task_reruns.json"
 ESCALATIONS_FILE = STATE_DIR / "agent_escalations.json"
 _lock = Lock()
+
+# Decided approval cards kept for reference. Pending ones are never trimmed.
+MAX_DECIDED_APPROVALS = 60
+
+
+# ---------------------------------------------------------------------------
+# The JSON ledgers are read and written on the event loop that also runs the
+# agents, so their cost is UI latency. Measured on 2026-09-03, with three
+# Forge runs in flight, the Throne panel took 4-15 s per poll; one
+# `log_event()` was 12.7 ms of blocking I/O (read 387 KB, rewrite 387 KB) and
+# every agent tool call makes one.
+#
+# Two changes, both measured on the real 584 KB leads.json:
+#
+#   read   22.19 ms  ->  10.50 ms   cached bytes + orjson, no disk hit
+#   write  52.70 ms  ->   3.72 ms   orjson instead of json.dumps(indent=2)
+#
+# The cache holds raw BYTES, not parsed objects, and every read parses afresh.
+# That is deliberate: callers routinely do `d = read(); d.append(x); write(d)`,
+# and handing out a shared parsed object would let a caller that mutates
+# without writing corrupt what the next reader sees. Parsing from cached bytes
+# is also cheaper than `copy.deepcopy` of a parsed object (10.5 ms vs 32.8 ms),
+# so isolation costs nothing here.
+#
+# `stat()` guards the cache: a file changed underneath us (by hand, or by
+# another process) is re-read.
+# ---------------------------------------------------------------------------
+
+_BYTES_CACHE: dict[str, tuple[int, int, bytes]] = {}
+
+
+def _read(f: Path, default: Any = None) -> Any:
+    """Parse a ledger, from cached bytes when the file has not changed."""
+    key = str(f)
+    try:
+        st = f.stat()
+    except OSError:
+        return [] if default is None else default
+    hit = _BYTES_CACHE.get(key)
+    if hit is not None and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        raw = hit[2]
+    else:
+        try:
+            raw = f.read_bytes()
+        except OSError:
+            return [] if default is None else default
+        _BYTES_CACHE[key] = (st.st_mtime_ns, st.st_size, raw)
+    try:
+        return orjson.loads(raw)
+    except orjson.JSONDecodeError:
+        return [] if default is None else default
+
+
+def _write(f: Path, data: Any) -> None:
+    """Persist a ledger and refresh the cache in the same breath.
+
+    Written via a temporary file in the same directory and renamed, so a
+    reader never sees a half-written ledger and a crash mid-write cannot
+    truncate one. `os.replace` is atomic within a filesystem.
+    """
+    raw = orjson.dumps(data, option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS)
+    tmp = f.with_name(f.name + f".tmp{os.getpid()}")
+    try:
+        tmp.write_bytes(raw)
+        os.replace(tmp, f)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+    try:
+        st = f.stat()
+        _BYTES_CACHE[str(f)] = (st.st_mtime_ns, st.st_size, raw)
+    except OSError:
+        _BYTES_CACHE.pop(str(f), None)
+
 
 
 def _ensure() -> None:
@@ -46,7 +123,7 @@ def _ensure() -> None:
 
 def list_notes(room_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     _ensure()
-    notes: list[dict[str, Any]] = json.loads(NOTES_FILE.read_text())
+    notes: list[dict[str, Any]] = _read(NOTES_FILE)
     if room_id is not None:
         notes = [n for n in notes if n.get("room_id") == room_id]
     notes.sort(key=lambda n: n["ts"], reverse=True)
@@ -56,7 +133,7 @@ def list_notes(room_id: str | None = None, limit: int = 100) -> list[dict[str, A
 def add_note(text: str, room_id: str | None = None, kind: str = "note") -> dict[str, Any]:
     _ensure()
     with _lock:
-        notes: list[dict[str, Any]] = json.loads(NOTES_FILE.read_text())
+        notes: list[dict[str, Any]] = _read(NOTES_FILE)
         note = {
             "id": str(uuid.uuid4()),
             "ts": time.time(),
@@ -65,25 +142,25 @@ def add_note(text: str, room_id: str | None = None, kind: str = "note") -> dict[
             "text": text,
         }
         notes.append(note)
-        NOTES_FILE.write_text(json.dumps(notes, indent=2))
+        _write(NOTES_FILE, notes)
     return note
 
 
 def delete_note(note_id: str) -> bool:
     _ensure()
     with _lock:
-        notes: list[dict[str, Any]] = json.loads(NOTES_FILE.read_text())
+        notes: list[dict[str, Any]] = _read(NOTES_FILE)
         n0 = len(notes)
         notes = [n for n in notes if n["id"] != note_id]
         if len(notes) == n0:
             return False
-        NOTES_FILE.write_text(json.dumps(notes, indent=2))
+        _write(NOTES_FILE, notes)
     return True
 
 
 def list_briefs(limit: int = 50) -> list[dict[str, Any]]:
     _ensure()
-    briefs: list[dict[str, Any]] = json.loads(BRIEFS_FILE.read_text())
+    briefs: list[dict[str, Any]] = _read(BRIEFS_FILE)
     briefs.sort(key=lambda b: b["ts"], reverse=True)
     return briefs[:limit]
 
@@ -96,9 +173,9 @@ def add_brief(brief: dict[str, Any]) -> dict[str, Any]:
         **brief,
     }
     with _lock:
-        briefs: list[dict[str, Any]] = json.loads(BRIEFS_FILE.read_text())
+        briefs: list[dict[str, Any]] = _read(BRIEFS_FILE)
         briefs.append(record)
-        BRIEFS_FILE.write_text(json.dumps(briefs, indent=2))
+        _write(BRIEFS_FILE, briefs)
     return record
 
 
@@ -158,12 +235,12 @@ def delete_listing(listing_id: str) -> bool:
 def delete_brief(brief_id: str) -> bool:
     _ensure()
     with _lock:
-        briefs: list[dict[str, Any]] = json.loads(BRIEFS_FILE.read_text())
+        briefs: list[dict[str, Any]] = _read(BRIEFS_FILE)
         n0 = len(briefs)
         briefs = [b for b in briefs if b["id"] != brief_id]
         if len(briefs) == n0:
             return False
-        BRIEFS_FILE.write_text(json.dumps(briefs, indent=2))
+        _write(BRIEFS_FILE, briefs)
     return True
 
 
@@ -193,15 +270,15 @@ def add_tool_request(
         "tinker_result": None,
     }
     with _lock:
-        items: list[dict[str, Any]] = json.loads(TOOL_REQUESTS_FILE.read_text())
+        items: list[dict[str, Any]] = _read(TOOL_REQUESTS_FILE)
         items.append(rec)
-        TOOL_REQUESTS_FILE.write_text(json.dumps(items, indent=2))
+        _write(TOOL_REQUESTS_FILE, items)
     return rec
 
 
 def list_tool_requests(status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     _ensure()
-    items: list[dict[str, Any]] = json.loads(TOOL_REQUESTS_FILE.read_text())
+    items: list[dict[str, Any]] = _read(TOOL_REQUESTS_FILE)
     if status is not None:
         items = [r for r in items if r["status"] == status]
     items.sort(key=lambda r: r["ts"], reverse=True)
@@ -210,7 +287,7 @@ def list_tool_requests(status: str | None = None, limit: int = 100) -> list[dict
 
 def get_tool_request(request_id: str) -> dict[str, Any] | None:
     _ensure()
-    items: list[dict[str, Any]] = json.loads(TOOL_REQUESTS_FILE.read_text())
+    items: list[dict[str, Any]] = _read(TOOL_REQUESTS_FILE)
     for r in items:
         if r["id"] == request_id:
             return r
@@ -220,11 +297,11 @@ def get_tool_request(request_id: str) -> dict[str, Any] | None:
 def update_tool_request(request_id: str, **fields: Any) -> dict[str, Any] | None:
     _ensure()
     with _lock:
-        items: list[dict[str, Any]] = json.loads(TOOL_REQUESTS_FILE.read_text())
+        items: list[dict[str, Any]] = _read(TOOL_REQUESTS_FILE)
         for r in items:
             if r["id"] == request_id:
                 r.update(fields)
-                TOOL_REQUESTS_FILE.write_text(json.dumps(items, indent=2))
+                _write(TOOL_REQUESTS_FILE, items)
                 return r
     return None
 
@@ -233,29 +310,29 @@ def update_tool_request(request_id: str, **fields: Any) -> dict[str, Any] | None
 
 def get_room_tool_overrides() -> dict[str, list[str]]:
     _ensure()
-    return json.loads(ROOM_TOOL_OVERRIDES_FILE.read_text())
+    return _read(ROOM_TOOL_OVERRIDES_FILE)
 
 
 def add_room_tool(room_id: str, tool_name: str) -> None:
     _ensure()
     with _lock:
-        overrides: dict[str, list[str]] = json.loads(ROOM_TOOL_OVERRIDES_FILE.read_text())
+        overrides: dict[str, list[str]] = _read(ROOM_TOOL_OVERRIDES_FILE)
         bucket = overrides.setdefault(room_id, [])
         if tool_name not in bucket:
             bucket.append(tool_name)
-        ROOM_TOOL_OVERRIDES_FILE.write_text(json.dumps(overrides, indent=2))
+        _write(ROOM_TOOL_OVERRIDES_FILE, overrides)
 
 
 def remove_tool_from_all_rooms(tool_name: str) -> None:
     """Strip a tool name from every room override (used after delete_tool)."""
     _ensure()
     with _lock:
-        overrides: dict[str, list[str]] = json.loads(ROOM_TOOL_OVERRIDES_FILE.read_text())
+        overrides: dict[str, list[str]] = _read(ROOM_TOOL_OVERRIDES_FILE)
         for room_id in list(overrides):
             overrides[room_id] = [t for t in overrides[room_id] if t != tool_name]
             if not overrides[room_id]:
                 del overrides[room_id]
-        ROOM_TOOL_OVERRIDES_FILE.write_text(json.dumps(overrides, indent=2))
+        _write(ROOM_TOOL_OVERRIDES_FILE, overrides)
 
 
 # ---------- User approvals (agents → operator) ----------
@@ -289,9 +366,18 @@ def add_user_approval(
         "decision": None,             # {"ts": ..., "reason": "..."}
     }
     with _lock:
-        items: list[dict[str, Any]] = json.loads(USER_APPROVALS_FILE.read_text())
+        items: list[dict[str, Any]] = _read(USER_APPROVALS_FILE)
         items.append(rec)
-        USER_APPROVALS_FILE.write_text(json.dumps(items, indent=2))
+        # Every card embeds its whole payload — a publish gate carries the
+        # build's details — so the file was 2.8 KB per card and rewritten in
+        # full on each new one. Decided cards are history; keep a generous tail
+        # of them and never touch anything still awaiting the operator.
+        undecided = [r for r in items if r.get("status") == "pending"]
+        decided = [r for r in items if r.get("status") != "pending"]
+        if len(decided) > MAX_DECIDED_APPROVALS:
+            decided = decided[-MAX_DECIDED_APPROVALS:]
+            items = sorted(undecided + decided, key=lambda r: r.get("ts", 0))
+        _write(USER_APPROVALS_FILE, items)
     return rec
 
 
@@ -301,7 +387,7 @@ def list_user_approvals(
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     _ensure_approvals()
-    items: list[dict[str, Any]] = json.loads(USER_APPROVALS_FILE.read_text())
+    items: list[dict[str, Any]] = _read(USER_APPROVALS_FILE)
     if status is not None:
         items = [r for r in items if r["status"] == status]
     if room_id is not None:
@@ -317,12 +403,12 @@ def resolve_user_approval(
 ) -> dict[str, Any] | None:
     _ensure_approvals()
     with _lock:
-        items: list[dict[str, Any]] = json.loads(USER_APPROVALS_FILE.read_text())
+        items: list[dict[str, Any]] = _read(USER_APPROVALS_FILE)
         for r in items:
             if r["id"] == approval_id:
                 r["status"] = decision  # "approved" | "rejected" | "applied"
                 r["decision"] = {"ts": time.time(), "reason": reason or ""}
-                USER_APPROVALS_FILE.write_text(json.dumps(items, indent=2))
+                _write(USER_APPROVALS_FILE, items)
                 return r
     return None
 
@@ -358,18 +444,18 @@ def log_event(
         "details": details or {},
     }
     with _lock:
-        items: list[dict[str, Any]] = json.loads(EVENTS_FILE.read_text())
+        items: list[dict[str, Any]] = _read(EVENTS_FILE)
         items.append(rec)
         # Cap log size at 1000 entries.
         if len(items) > 1000:
             items = items[-1000:]
-        EVENTS_FILE.write_text(json.dumps(items, indent=2))
+        _write(EVENTS_FILE, items)
     return rec
 
 
 def list_events(limit: int = 200) -> list[dict[str, Any]]:
     _ensure()
-    items: list[dict[str, Any]] = json.loads(EVENTS_FILE.read_text())
+    items: list[dict[str, Any]] = _read(EVENTS_FILE)
     items.sort(key=lambda r: r["ts"], reverse=True)
     return items[:limit]
 
@@ -395,15 +481,15 @@ def clear_agent_memory(agent_id: str, outputs_file) -> dict[str, int]:
         cleared["outputs"] = len(items) - len(kept)
         outputs_file.write_text(json.dumps(kept, indent=2))
 
-        items = json.loads(ESCALATIONS_FILE.read_text())
+        items = _read(ESCALATIONS_FILE)
         kept = [r for r in items if r.get("agent") != agent_id]
         cleared["escalations"] = len(items) - len(kept)
-        ESCALATIONS_FILE.write_text(json.dumps(kept, indent=2))
+        _write(ESCALATIONS_FILE, kept)
 
-        items = json.loads(TOOL_REQUESTS_FILE.read_text())
+        items = _read(TOOL_REQUESTS_FILE)
         kept = [r for r in items if r.get("requesting_agent") != agent_id]
         cleared["tool_requests"] = len(items) - len(kept)
-        TOOL_REQUESTS_FILE.write_text(json.dumps(kept, indent=2))
+        _write(TOOL_REQUESTS_FILE, kept)
     return cleared
 
 
@@ -428,9 +514,9 @@ def add_escalation(
         "rerun_dispatched": False,
     }
     with _lock:
-        items: list[dict[str, Any]] = json.loads(ESCALATIONS_FILE.read_text())
+        items: list[dict[str, Any]] = _read(ESCALATIONS_FILE)
         items.append(rec)
-        ESCALATIONS_FILE.write_text(json.dumps(items, indent=2))
+        _write(ESCALATIONS_FILE, items)
     return rec
 
 
@@ -440,7 +526,7 @@ def list_escalations(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     _ensure()
-    items: list[dict[str, Any]] = json.loads(ESCALATIONS_FILE.read_text())
+    items: list[dict[str, Any]] = _read(ESCALATIONS_FILE)
     if agent is not None:
         items = [r for r in items if r["agent"] == agent]
     if status is not None:
@@ -451,7 +537,7 @@ def list_escalations(
 
 def get_escalation(esc_id: str) -> dict[str, Any] | None:
     _ensure()
-    items: list[dict[str, Any]] = json.loads(ESCALATIONS_FILE.read_text())
+    items: list[dict[str, Any]] = _read(ESCALATIONS_FILE)
     for r in items:
         if r["id"] == esc_id:
             return r
@@ -461,11 +547,11 @@ def get_escalation(esc_id: str) -> dict[str, Any] | None:
 def update_escalation(esc_id: str, **fields: Any) -> dict[str, Any] | None:
     _ensure()
     with _lock:
-        items: list[dict[str, Any]] = json.loads(ESCALATIONS_FILE.read_text())
+        items: list[dict[str, Any]] = _read(ESCALATIONS_FILE)
         for r in items:
             if r["id"] == esc_id:
                 r.update(fields)
-                ESCALATIONS_FILE.write_text(json.dumps(items, indent=2))
+                _write(ESCALATIONS_FILE, items)
                 return r
     return None
 
@@ -612,9 +698,9 @@ def add_lead(
     }
     rec["email"] = clean_email(rec.get("email"))
     with _lock:
-        items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
+        items: list[dict[str, Any]] = _read(LEADS_FILE)
         items.append(rec)
-        LEADS_FILE.write_text(json.dumps(items, indent=2))
+        _write(LEADS_FILE, items)
     return rec
 
 
@@ -624,7 +710,7 @@ def list_leads(
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     _ensure()
-    items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
+    items: list[dict[str, Any]] = _read(LEADS_FILE)
     if stage is not None:
         items = [r for r in items if r.get("stage") == stage]
     if stages is not None:
@@ -635,7 +721,7 @@ def list_leads(
 
 def get_lead(lead_id: str) -> dict[str, Any] | None:
     _ensure()
-    items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
+    items: list[dict[str, Any]] = _read(LEADS_FILE)
     for r in items:
         if r["id"] == lead_id:
             return r
@@ -648,12 +734,12 @@ def update_lead(lead_id: str, **fields: Any) -> dict[str, Any] | None:
         fields["email"] = clean_email(fields["email"])
     _ensure()
     with _lock:
-        items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
+        items: list[dict[str, Any]] = _read(LEADS_FILE)
         for r in items:
             if r["id"] == lead_id:
                 r.update(fields)
                 r["updated_ts"] = time.time()
-                LEADS_FILE.write_text(json.dumps(items, indent=2))
+                _write(LEADS_FILE, items)
                 return r
     return None
 
@@ -701,7 +787,7 @@ def advance_lead(
         fields["email"] = clean_email(fields["email"])
     _ensure()
     with _lock:
-        items: list[dict[str, Any]] = json.loads(LEADS_FILE.read_text())
+        items: list[dict[str, Any]] = _read(LEADS_FILE)
         for r in items:
             if r["id"] == lead_id:
                 r.update(fields)
@@ -715,7 +801,7 @@ def advance_lead(
                 })
                 r["stage"] = stage
                 r["updated_ts"] = time.time()
-                LEADS_FILE.write_text(json.dumps(items, indent=2))
+                _write(LEADS_FILE, items)
                 return r
     return None
 
@@ -762,7 +848,7 @@ def _task_key(agent: str, task: dict[str, Any] | None) -> str:
 
 def task_rerun_count(agent: str, task: dict[str, Any] | None) -> int:
     _ensure()
-    counts: dict[str, Any] = json.loads(TASK_RERUNS_FILE.read_text())
+    counts: dict[str, Any] = _read(TASK_RERUNS_FILE)
     return int((counts.get(_task_key(agent, task)) or {}).get("n", 0))
 
 
@@ -771,12 +857,12 @@ def bump_task_rerun(agent: str, task: dict[str, Any] | None) -> int:
     _ensure()
     key = _task_key(agent, task)
     with _lock:
-        counts: dict[str, Any] = json.loads(TASK_RERUNS_FILE.read_text())
+        counts: dict[str, Any] = _read(TASK_RERUNS_FILE)
         entry = counts.setdefault(key, {"n": 0, "agent": agent})
         entry["n"] = int(entry.get("n", 0)) + 1
         entry["last_ts"] = time.time()
         entry["task"] = json.dumps(task or {}, ensure_ascii=False)[:300]
-        TASK_RERUNS_FILE.write_text(json.dumps(counts, indent=2))
+        _write(TASK_RERUNS_FILE, counts)
         return entry["n"]
 
 
@@ -802,15 +888,127 @@ META_FILE = STATE_DIR / "meta.json" if "STATE_DIR" in dir() else LEADS_FILE.pare
 def set_meta(key: str, value: Any) -> None:
     with _lock:
         try:
-            data = json.loads(META_FILE.read_text())
+            data = _read(META_FILE)
         except (OSError, json.JSONDecodeError):
             data = {}
         data[key] = value
-        META_FILE.write_text(json.dumps(data, indent=2))
+        _write(META_FILE, data)
 
 
 def get_meta(key: str, default: Any = None) -> Any:
     try:
-        return json.loads(META_FILE.read_text()).get(key, default)
+        return _read(META_FILE).get(key, default)
     except (OSError, json.JSONDecodeError):
         return default
+
+# ---------------------------------------------------------------------------
+# List views want a row per lead, not each lead's dossier. Measured on
+# 2026-09-03: the Gallery's panel state was 950 KB because it ships five lead
+# lists, and the Throne's 530 KB; the fields a row actually renders came to
+# 5.0 KB across all 23 leads — 1% of what was sent. On a single event loop
+# shared with the agent runs, the other 99% is UI latency.
+#
+# A denylist was tried first (`_LEAD_BULK` in server.py) and is the wrong
+# shape: every new field an agent writes ships by default until someone
+# remembers to add it, which is how `google_profile`, `incumbent_review`,
+# `appraisal` and `company_registry` — 46 KB — ended up in list payloads.
+#
+# So: keep the named row fields, and keep anything else only if it is SMALL.
+# A new scalar an agent starts writing appears in rows on its own; a new
+# dossier section cannot, whatever it is called.
+# ---------------------------------------------------------------------------
+
+# The fields a row renders, kept whatever their size.
+ROW_FIELDS = (
+    "id", "ts", "updated_ts", "stage", "name", "city", "address", "email",
+    "email_bounced", "phone", "website", "preview_url", "source",
+    "scout_note", "lost_reason", "disqualified_reason",
+)
+
+# Known dossier sections. Named only to skip measuring them — the size rule
+# below is what actually protects a row, so a section missing from this list
+# costs a little CPU, never a 90 KB payload.
+BULK_FIELDS = frozenset((
+    "profile", "visual", "qa", "site", "site_history", "audit", "outreach",
+    "domains", "owner_assets", "replies", "google_profile", "incumbent_review",
+    "appraisal", "company_registry", "revision", "assets", "photos",
+))
+
+# Anything else is carried only while it stays this small. 400 bytes holds a
+# verdict, a URL set or a short note; it cannot hold a dossier or a QA report.
+ROW_MAX_FIELD_BYTES = 400
+
+
+def lead_summary(lead: dict[str, Any]) -> dict[str, Any]:
+    """One lead as a list row: the named fields, plus small extras.
+
+    `history` is replaced by its length and its tail, because a row shows
+    "what happened last" and the full history is 60 KB across the board.
+    """
+    out: dict[str, Any] = {}
+    for k, v in lead.items():
+        if k == "history":
+            continue
+        if k in ROW_FIELDS:
+            out[k] = v
+            continue
+        # Fast paths first: serialising every field of every lead to measure it
+        # cost 22 ms per board, which is the same order as the saving. Scalars
+        # are decided by type, and the known dossier sections are decided by
+        # name; only an unrecognised container is actually measured.
+        if v is None or isinstance(v, (bool, int, float)):
+            out[k] = v
+            continue
+        if isinstance(v, str):
+            if len(v) <= ROW_MAX_FIELD_BYTES:
+                out[k] = v
+            continue
+        if k in BULK_FIELDS:
+            continue
+        try:
+            if len(orjson.dumps(v)) <= ROW_MAX_FIELD_BYTES:
+                out[k] = v
+        except (TypeError, orjson.JSONEncodeError):
+            pass
+    hist = lead.get("history") or []
+    out["history_len"] = len(hist)
+    last = hist[-1] if hist else None
+    out["last"] = {
+        "ts": last.get("ts"), "agent": last.get("agent"),
+        "note": (last.get("note") or "")[:200],
+        "from_stage": last.get("from_stage"), "stage": last.get("stage"),
+    } if last else None
+    return out
+
+
+_ROWS_CACHE: dict[str, tuple[int, list[dict[str, Any]]]] = {}
+
+
+def list_lead_rows(
+    stage: str | None = None,
+    stages: list[str] | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """`list_leads`, projected to rows. What every list view should call.
+
+    Memoised on the ledger's mtime: several panels ask for overlapping slices
+    every few seconds, and the leads file changes far less often than they
+    poll. Serialised out as bytes and parsed back per call so a caller cannot
+    mutate the next caller's rows — the same isolation rule as `_read`.
+    """
+    _ensure()
+    try:
+        stamp = LEADS_FILE.stat().st_mtime_ns
+    except OSError:
+        stamp = 0
+    key = f"{stage}|{stages}|{limit}"
+    hit = _ROWS_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return orjson.loads(hit[1])
+    rows = [lead_summary(l) for l in list_leads(stage=stage, stages=stages,
+                                                limit=limit)]
+    raw = orjson.dumps(rows)
+    if len(_ROWS_CACHE) > 64:          # bounded: a handful of slices per room
+        _ROWS_CACHE.clear()
+    _ROWS_CACHE[key] = (stamp, raw)
+    return orjson.loads(raw)

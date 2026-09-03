@@ -246,9 +246,9 @@ class LeadRoomHandler(RoomHandler):
             "action_name": self.action_name,
             "accepts_stages": list(self.accepts_stages),
             # The work waiting for THIS room, so the panel is a to-do list.
-            "queue": state.list_leads(stages=list(self.accepts_stages), limit=40),
+            "queue": state.list_lead_rows(stages=list(self.accepts_stages), limit=40),
             "recent": [
-                lead for lead in state.list_leads(limit=40)
+                lead for lead in state.list_lead_rows(limit=40)
                 if any(h.get("agent") == self.agent_id for h in (lead.get("history") or []))
             ][:12],
             "last_error": self._last_error,
@@ -309,7 +309,7 @@ class ResearchHandler(LeadRoomHandler):
         base = await super().state()
         # Nova doesn't consume a queue — it creates one.
         base["queue"] = []
-        base["sourced"] = state.list_leads(stage="sourced", limit=40)
+        base["sourced"] = state.list_lead_rows(stage="sourced", limit=40)
         base["counts"] = state.lead_counts_by_stage()
         return base
 
@@ -336,8 +336,8 @@ class AssayHandler(LeadRoomHandler):
 
     async def state(self) -> dict[str, Any]:
         base = await super().state()
-        base["qualify_queue"] = state.list_leads(stage="sourced", limit=40)
-        base["research_queue"] = state.list_leads(stage="qualified", limit=40)
+        base["qualify_queue"] = state.list_lead_rows(stage="sourced", limit=40)
+        base["research_queue"] = state.list_lead_rows(stage="qualified", limit=40)
         return base
 
     async def run(self, payload: dict[str, Any]) -> Any:
@@ -398,13 +398,13 @@ class GalleryHandler(LeadRoomHandler):
     async def state(self) -> dict[str, Any]:
         base = await super().state()
         # Split the queue so the panel can label the three jobs distinctly.
-        base["incumbent_queue"] = state.list_leads(stage="needs_review", limit=40)
-        base["photo_queue"] = state.list_leads(stage="appraised", limit=40)
-        base["build_queue"] = state.list_leads(stage="built", limit=40)
+        base["incumbent_queue"] = state.list_lead_rows(stage="needs_review", limit=40)
+        base["photo_queue"] = state.list_lead_rows(stage="appraised", limit=40)
+        base["build_queue"] = state.list_lead_rows(stage="built", limit=40)
         # Leads Lens has already ruled on — including the ones it sent away,
         # which are the most informative for calibrating how strict it is.
         base["recent_reviews"] = [
-            lead for lead in state.list_leads(limit=60)
+            lead for lead in state.list_lead_rows(limit=60)
             if lead.get("incumbent_review") or lead.get("qa")
         ][:15]
         return base
@@ -463,7 +463,7 @@ class PublishHandler(LeadRoomHandler):
 
     async def state(self) -> dict[str, Any]:
         base = await super().state()
-        base["published"] = state.list_leads(
+        base["published"] = state.list_lead_rows(
             stages=["published", "contacted", "replied", "won"], limit=40
         )
         base["preview_base"] = config.PREVIEW_BASE
@@ -501,9 +501,12 @@ class CommsHandler(LeadRoomHandler):
         base = await super().state()
         ready = []
         for lead in state.list_leads(stage="published", limit=40):
-            ready.append({**lead, "preflight_problems": echo.preflight(lead)})
+            # preflight reads the drafted body and the quote, so it needs the
+            # whole lead; only the row it produces is sent.
+            ready.append({**state.lead_summary(lead),
+                          "preflight_problems": echo.preflight(lead)})
         base["queue"] = ready
-        base["contacted"] = state.list_leads(
+        base["contacted"] = state.list_lead_rows(
             stages=["contacted", "replied", "won", "lost"], limit=40
         )
         base["smtp_configured"] = echo.smtp_configured()
@@ -592,7 +595,7 @@ class ThroneHandler(RoomHandler):
             "model": ultron.MODEL,
             "available_agents": sorted(AGENT_RUNNERS.keys()),
             "counts": state.lead_counts_by_stage(),
-            "board": state.list_leads(limit=60),
+            "board": state.list_lead_rows(limit=60),
             "stages": state.STAGES,
             "dead_stages": state.DEAD_STAGES,
             "pending": state.list_tool_requests(status="pending", limit=20),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Any
 
 from . import state, workers
 from .agents import tinker, ultron
@@ -14,6 +15,35 @@ MAX_RERUNS = 2  # safety cap so a request_tool loop can't run forever
 # outlast a server restart and the tail of a killed run; short enough that a
 # genuinely stuck lead is picked up while the operator is still watching.
 RECOVERY_QUIET_SECONDS = 4 * 60
+
+
+# The tick and the gatekeeper share one coroutine on the same event loop that
+# serves the UI, so any step of it that does not yield is UI latency. Measured
+# on 2026-09-03: with two Forge runs in flight, `/health` — 116 bytes and no
+# work — took up to 5.2 s, and asyncio's debug mode named this loop, blocking
+# for 4.0-5.0 s at a time. Timing each step is how you find out which one
+# without guessing; anything over the threshold is logged with its name.
+SLOW_STEP_SECONDS = 0.25
+
+
+async def _timed(name: str, coro: Any) -> Any:
+    """Await a step, and say so if it held the loop too long."""
+    started = time.monotonic()
+    try:
+        return await coro
+    finally:
+        took = time.monotonic() - started
+        if took >= SLOW_STEP_SECONDS:
+            print(f"[tick] {name} took {took:.2f}s")
+            _STEP_COST[name] = max(_STEP_COST.get(name, 0.0), took)
+
+
+_STEP_COST: dict[str, float] = {}
+
+
+def step_costs() -> dict[str, float]:
+    """Worst observed duration per tick step, for the Treasury/diagnostics."""
+    return dict(sorted(_STEP_COST.items(), key=lambda kv: -kv[1]))
 
 
 class Orchestrator:
@@ -314,14 +344,14 @@ class Orchestrator:
                     asyncio.create_task(runner(self.world, task))
 
                 # Leads that changed stage → dispatch the room that works it.
-                await self._advance_leads()
-                await self._expire_silence()
-                await self._read_mail()
+                await _timed("advance_leads", self._advance_leads())
+                await _timed("expire_silence", self._expire_silence())
+                await _timed("read_mail", self._read_mail())
 
                 # Retire ephemeral workers whose lead has finished its run
                 # through the pipeline. Rooms keep their base agent, so a room
                 # never looks abandoned; only the extra hires go.
-                retired = await workers.sweep(self.world)
+                retired = await _timed("workers.sweep", workers.sweep(self.world))
                 if retired:
                     state.log_event(
                         "run_end", from_="system",
@@ -332,7 +362,7 @@ class Orchestrator:
                 # Pending agent escalations → Ultron responds.
                 pending_esc = state.list_escalations(status="pending", limit=10)
                 for esc in pending_esc:
-                    await ultron.respond_to_escalation(self.world, esc["id"])
+                    await _timed("ultron.respond_to_escalation", ultron.respond_to_escalation(self.world, esc["id"]))
                     await self.world.publish({"type": "approvals_updated"})
 
                 # Resolved escalations → re-fire the agent so the rerun sees
@@ -418,7 +448,7 @@ class Orchestrator:
                 # Process oldest first so chains form in the right order.
                 for report in reversed(new_reports):
                     self._processed_reports.add(report["id"])
-                    await ultron.react_to_report(self.world, report)
+                    await _timed("ultron.react_to_report", ultron.react_to_report(self.world, report))
             except Exception as e:  # never let this loop die silently
                 print(f"[gatekeeper] {type(e).__name__}: {e}")
             await asyncio.sleep(3.0)

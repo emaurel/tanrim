@@ -146,13 +146,44 @@ def _layout_workbenches(room: RoomSpec) -> None:
         )
 
 
+# The manifests are the routing table, so `load_rooms` is called from ten
+# places — every room-state request, every worker acquisition, every agent run,
+# and every stage-routing decision. It parsed all twelve YAML files each time:
+# 40-57 ms of PyYAML's pure-Python scanner, on the event loop that serves the
+# UI. Profiling one Forge prompt build showed 1.8 s of the 1.9 s total inside
+# yaml.safe_load, reached through `_room_skills()`.
+#
+# Cached on the manifests' own mtimes, so editing a YAML still takes effect on
+# the next call and the "adding a room is a YAML change" contract holds —
+# including while the server is running.
+_ROOMS_CACHE: dict[str, tuple[tuple[tuple[str, int, int], ...], list[RoomSpec]]] = {}
+
+
+def _manifest_stamp(directory: Path) -> tuple[tuple[str, int, int], ...]:
+    """Name, mtime and size of every manifest — cheap, and catches edits."""
+    out = []
+    for path in sorted(directory.glob("*.yaml")):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        out.append((path.name, st.st_mtime_ns, st.st_size))
+    return tuple(out)
+
+
 def load_rooms(directory: Path = ROOMS_DIR) -> list[RoomSpec]:
+    key = str(directory)
+    stamp = _manifest_stamp(directory)
+    hit = _ROOMS_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
     rooms: list[RoomSpec] = []
     for path in sorted(directory.glob("*.yaml")):
         data: dict[str, Any] = yaml.safe_load(path.read_text())
         room = RoomSpec.model_validate(data)
         _layout_workbenches(room)
         rooms.append(room)
+    _ROOMS_CACHE[key] = (stamp, rooms)
     return rooms
 
 

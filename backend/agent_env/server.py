@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import agent_helpers
+from . import buildlock
 from . import invoices as invoices_mod
 from . import secrets as secrets_store
 from . import assets as assets_mod
@@ -61,14 +63,44 @@ async def lifespan(_: FastAPI):
     interrupted = orchestrator.report_interrupted_runs()
     if interrupted:
         print(f"[boot] {interrupted} run(s) were interrupted by the last restart")
+
+    # Build-directory claims left by the process that just died are held by
+    # pids that no longer exist; clearing them is what stops a crash from
+    # wedging a lead. A claim still held by a LIVE process is deliberately
+    # left alone and reported instead: that is an orphaned writer from a hard
+    # kill, it is still spending money, and the operator needs to know rather
+    # than have a second worker join it in the same directory.
+    stale = buildlock.sweep(config.SITES_DIR)
+    if stale:
+        print(f"[boot] cleared {len(stale)} stale build lock(s): "
+              + ", ".join(str(r.get("dir"))[:8] for r in stale))
+    orphans = buildlock.live_orphans(config.SITES_DIR)
+    for o in orphans:
+        msg = (f"pid {o.get('pid')} ({o.get('agent_id')}) is STILL writing "
+               f"{str(o.get('dir'))[:8]} — orphaned by a hard restart. It is "
+               f"billing and nothing here can stop it; kill it by hand.")
+        print(f"[boot] WARNING: {msg}")
+        state.log_event("run_end", from_="system", summary=msg[:240],
+                        outcome="failed", details=o)
     orchestrator.start()
     try:
         yield
     finally:
+        # Cancel the runs BEFORE stopping the orchestrator. A run left alive
+        # here becomes an orphaned writer the moment this process exits — the
+        # exact thing that put two Forge workers in one directory.
+        try:
+            await agent_helpers.cancel_all()
+        except Exception as e:  # noqa: BLE001
+            print(f"[shutdown] could not cancel runs: {e}")
         await orchestrator.stop()
 
 
-app = FastAPI(lifespan=lifespan)
+# FastAPI's default response class runs `jsonable_encoder` over the whole
+# payload in Python before serialising it — measured at 26 ms on the Throne's
+# board against 0.8 ms for orjson on the same object, a 33x difference, and it
+# happens on the single event loop thread that the agent runs also share.
+app = FastAPI(lifespan=lifespan, default_response_class=ORJSONResponse)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -98,29 +130,29 @@ def staging_url(lead_id: str) -> str:
 
 
 @app.get("/leads")
-async def get_leads(stage: str | None = None, slim: int = 0):
+async def get_leads(stage: str | None = None, slim: int = 1, full: int = 0):
+    """The lead list. Rows by default; `?full=1` for whole records.
+
+    The default used to be whole records, so any caller that forgot `slim=1`
+    pulled 473 KB of dossiers to render a list of names.
+    """
     leads = state.list_leads(stage=stage, limit=500)
-    if slim:
+    if slim and not full:
         # The board needs a row per lead, not each lead's whole dossier.
         # `last` is the tail of the history so a row can say what happened
         # most recently without a second request per lead.
         busy = agent_helpers.all_in_flight()
+        # One pass over the ledger rather than one per lead.
+        spend = usage_mod.totals_by_lead()
         slimmed = []
         for l in leads:
-            hist = l.get("history") or []
-            last = hist[-1] if hist else None
             slimmed.append({
-                **{k: v for k, v in l.items() if k not in _LEAD_BULK},
-                "history_len": len(hist),
+                **state.lead_summary(l),
                 # So a row can show a lead is being worked without the board
                 # asking per lead.
                 "working": [i.get("role") for i in busy.values()
                             if i.get("lead_id") == l["id"]],
-                "spent": usage_mod.for_lead(l["id"])["total"],
-                "last": {"ts": last.get("ts"), "agent": last.get("agent"),
-                         "note": (last.get("note") or "")[:200],
-                         "from_stage": last.get("from_stage"),
-                         "stage": last.get("stage")} if last else None,
+                "spent": spend.get(l["id"], 0.0),
             })
         leads = slimmed
     return {
@@ -141,10 +173,6 @@ async def get_lead(lead_id: str):
 
 # Heavy fields. A lead carries its whole dossier, photo report and QA verdict;
 # a list of fifty of them is megabytes of JSON to render one row each.
-_LEAD_BULK = ("profile", "visual", "qa", "site", "site_history", "audit",
-              "outreach", "domains", "owner_assets", "history", "replies")
-
-
 def _next_step(lead: dict[str, Any]) -> dict[str, Any]:
     """Who would work this lead next, and whether anything is in the way.
 
@@ -579,7 +607,7 @@ async def lead_timeline(lead_id: str):
     ]
 
     return {
-        "lead": {k: v for k, v in lead.items() if k not in _LEAD_BULK},
+        "lead": state.lead_summary(lead),
         "entries": entries,
         "active": active,
         "invoice": invoices_mod.for_lead(lead_id),

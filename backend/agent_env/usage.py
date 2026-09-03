@@ -301,6 +301,22 @@ def for_lead(lead_id: str) -> dict[str, Any]:
     }
 
 
+def totals_by_lead() -> dict[str, float]:
+    """Total spent per lead, in ONE pass over the ledger.
+
+    `for_lead` filters the whole ledger per call, so a list view asking for 23
+    leads scanned 764 records 23 times — which was the slowest part of `/leads`
+    once everything else was fixed. This is for rows that need only a number.
+    """
+    out: dict[str, float] = {}
+    for r in list_records():
+        lid = r.get("lead_id")
+        if not lid:
+            continue
+        out[lid] = out.get(lid, 0.0) + float(r.get("cost_usd") or 0)
+    return out
+
+
 def by_lead() -> list[dict[str, Any]]:
     """Per-lead totals, dearest first. Rows with no lead are left out."""
     seen = {r.get("lead_id") for r in list_records() if r.get("lead_id")}

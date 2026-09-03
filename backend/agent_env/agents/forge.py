@@ -274,12 +274,12 @@ async def run_build(world: World, lead_id: str, instruction: str = "") -> dict[s
             # Bash is here because the design skill works by shelling out to its
             # own Python search script. Scoped to the lead's build directory.
             builtin_tools=["Write", "Read", "Edit", "Glob", "Bash", "Skill"],
-            cwd=site_dir,
+            cwd=site_dir, exclusive_cwd=True,
             permission_mode="acceptEdits",
             # 60 was too many (the tail was full-file rewrites); 32 was too few and
             # runs hit the cap mid-build. The real lever is the write-once rule
             # above, not the ceiling — this is a backstop, not a budget.
-            max_turns=45,
+            max_turns=90,
             # A runaway build must not be able to spend without bound.
             # Sized for Opus. At 2.50 — the Sonnet-era ceiling — a revision
             # with 28 Edit passes hit the budget mid-build and the run died as

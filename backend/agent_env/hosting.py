@@ -102,9 +102,17 @@ def referenced_photos(site_dir: Path) -> set[str]:
     other businesses and a stock photo of a model.
     """
     wanted: set[str] = set()
-    for name in ("index.html", "styles.css"):
-        f = site_dir / name
-        if not f.is_file():
+    # Every markup and stylesheet file, not just the two canonical names: a
+    # build that puts a reference in a second stylesheet would otherwise
+    # render perfectly at /staging/ (served off disk) and show a broken image
+    # on the live URL the owner opens — a failure that passes the gate and
+    # only appears afterwards.
+    for f in sorted(site_dir.rglob("*")):
+        if f.is_symlink() or not f.is_file():
+            continue
+        if f.suffix.lower() not in (".html", ".htm", ".css", ".js", ".svg"):
+            continue
+        if any(part in SKIP_NAMES for part in f.relative_to(site_dir).parts[:-1]):
             continue
         text = f.read_text(errors="replace")
         wanted |= {m.group(1) for m in

@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from . import buildlock
 from . import state
 from .config import ROOT
 
@@ -363,6 +364,112 @@ def in_flight_for_role(role: str) -> list[dict[str, Any]]:
     ]
 
 
+async def cancel_all(reason: str = "server shutting down") -> list[str]:
+    """Stop every run in flight, and wait briefly for them to actually die.
+
+    Called from the server's shutdown. Without it a graceful stop leaves the
+    SDK subprocesses running: they keep writing to build directories and keep
+    billing, with nothing left to record what they produced. Awaiting the
+    cancellation is the part that matters — returning before the tasks unwind
+    means the process can exit while a `claude` child is still mid-Write.
+    """
+    stopped: list[str] = []
+    tasks = []
+    for worker_id in list(_IN_FLIGHT):
+        task = _TASKS.get(worker_id)
+        if task is not None and not task.done():
+            task.cancel()
+            tasks.append(task)
+        stopped.append(worker_id)
+    if stopped:
+        state.log_event(
+            "run_end", from_="system",
+            summary=f"{reason}: cancelled {len(stopped)} run(s) "
+                    f"({', '.join(stopped)})"[:240],
+            outcome="cancelled",
+        )
+    if tasks:
+        import asyncio as _a
+        await _a.wait(tasks, timeout=20)
+    # Cancelling the task unwinds the Python side; it does NOT reliably kill
+    # the `claude` subprocess the SDK spawned. Verified on 2026-09-03: after a
+    # clean SIGTERM shutdown, two SDK processes were still running, re-parented
+    # to init, still writing to two build directories — with the server that
+    # would have recorded their output already gone. So terminate them
+    # explicitly, and only ours: matched on being our direct children.
+    killed = terminate_sdk_children()
+    if killed:
+        state.log_event(
+            "run_end", from_="system",
+            summary=f"terminated {len(killed)} agent subprocess(es) on shutdown "
+                    f"(pids {', '.join(str(k) for k in killed)})"[:240],
+            outcome="cancelled",
+        )
+    return stopped
+
+
+def sdk_children() -> list[int]:
+    """Our own `claude` subprocesses, by pid.
+
+    Read from /proc rather than tracked in Python: the SDK owns the spawn and
+    does not hand back a handle, and a pid list read at shutdown is accurate
+    for exactly the moment it matters.
+    """
+    import os
+    me = os.getpid()
+    out: list[int] = []
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return out
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+            # ppid is the 4th field, but comm (field 2) may contain spaces, so
+            # parse from after the closing paren.
+            ppid = int(stat[stat.rindex(")") + 2:].split()[1])
+            if ppid != me:
+                continue
+            cmdline = (entry / "cmdline").read_bytes().decode(errors="replace")
+        except (OSError, ValueError, IndexError):
+            continue
+        if "claude_agent_sdk" in cmdline or "/claude" in cmdline.split("\x00")[0]:
+            out.append(int(entry.name))
+    return out
+
+
+def terminate_sdk_children(grace: float = 3.0) -> list[int]:
+    """SIGTERM our agent subprocesses, then SIGKILL whatever ignored it."""
+    import os
+    import signal
+    import time as _t
+    pids = sdk_children()
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = _t.monotonic() + grace
+    while _t.monotonic() < deadline:
+        alive = []
+        for pid in pids:
+            try:
+                os.kill(pid, 0)
+                alive.append(pid)
+            except OSError:
+                pass
+        if not alive:
+            return pids
+        _t.sleep(0.2)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return pids
+
+
 def all_in_flight() -> dict[str, dict[str, Any]]:
     return dict(_IN_FLIGHT)
 
@@ -399,6 +506,7 @@ async def run_agent(
     original_task: dict[str, Any] | None = None,
     builtin_tools: list[str] | None = None,
     cwd: Any = None,
+    exclusive_cwd: bool = False,
     permission_mode: str | None = None,
     max_turns: int | None = None,
     max_budget_usd: float | None = None,
@@ -463,12 +571,36 @@ async def run_agent(
             raise AgentBusy(f"{role} is already working this lead")
         _LEAD_CLAIMS.add(claim)
 
+    # And on disk, for the writers. `_LEAD_CLAIMS` lives in this process, so it
+    # cannot see a `claude` subprocess orphaned by a killed server — which is
+    # the case that actually cost money, since the replacement process boots
+    # with an empty claim set and re-dispatches the same lead within seconds.
+    # Only writers take this; a read-only QA pass or a delegated specialist
+    # shares the parent's directory legitimately.
+    held = None
+    if exclusive_cwd and cwd is not None:
+        held = buildlock.acquire(cwd, agent_id=role, lead_id=lead_id)
+        if held is not None:
+            if claim is not None:
+                _LEAD_CLAIMS.discard(claim)
+            state.log_event(
+                "run_end", from_=role,
+                summary=(f"skipped: pid {held.get('pid')} ({held.get('agent_id')}) "
+                         f"is still writing this build directory")[:240],
+                outcome="skipped", details={"lead_id": lead_id, "holder": held},
+            )
+            raise AgentBusy(
+                f"another process (pid {held.get('pid')}) is still writing "
+                f"this build directory")
+
     # Pick the worker BEFORE taking any lock — acquire() may hire a new one.
     try:
         agent_id = await workers_mod.acquire(world, role, lead_id)
     except Exception:
         if claim is not None:
             _LEAD_CLAIMS.discard(claim)
+        if exclusive_cwd and cwd is not None:
+            buildlock.release(cwd, agent_id=role)
         raise
 
     lock = agent_lock(agent_id)
@@ -476,6 +608,8 @@ async def run_agent(
         # Nothing is wrong here — the worker is simply already busy.
         if claim is not None:
             _LEAD_CLAIMS.discard(claim)
+        if exclusive_cwd and cwd is not None:
+            buildlock.release(cwd, agent_id=role)
         state.log_event(
             "run_end", from_=agent_id,
             summary=f"skipped: {agent_id} was already running", outcome="skipped",
@@ -772,6 +906,8 @@ async def run_agent(
     finally:
         if claim is not None:
             _LEAD_CLAIMS.discard(claim)
+        if exclusive_cwd and cwd is not None:
+            buildlock.release(cwd, agent_id=role)
         _IN_FLIGHT.pop(agent_id, None)
         _TASKS.pop(agent_id, None)
         lock.release()
