@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 from .. import state
+from .. import harvest, places
 from ..agent_helpers import (
     format_escalations,
     format_feedback,
@@ -44,6 +45,12 @@ def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
         if block:
             sections.append(block)
     sections.append(format_lead(lead))
+    # Fetched in code before the run, so the model reads facts rather than
+    # searching for them — and so the two hard findings below are enforced
+    # whatever it concludes.
+    gp = lead.get("google_profile") or {}
+    if gp:
+        sections.append(places.as_prompt(gp))
     sections.append(SCHEMA.strip())
     sections.append(
         (instruction or "Qualify this lead.") + "\n\nInvestigate now, then return the JSON."
@@ -55,6 +62,62 @@ async def run_probe(world: World, lead_id: str, instruction: str = "") -> dict[s
     lead = state.get_lead(lead_id)
     if lead is None:
         return {"ok": False, "error": f"no such lead: {lead_id}"}
+
+    # --- what the business itself publishes, before anyone reasons about it --
+    #
+    # The profile is the only source the business OWNS. Fetching it here rather
+    # than leaving it to a web search means the two findings that matter are
+    # decisions in code, not judgements: a listed website sends the lead to
+    # `needs_review`, and a closed business is disqualified outright. Both were
+    # got wrong the expensive way — one restaurant was pitched as having no web
+    # presence while running a site, and another was researched four times
+    # after it had already closed.
+    profile: dict[str, Any] = {}
+    if places.configured():
+        try:
+            point = {}
+            if (lead.get("source") or {}).get("ref"):
+                point = await harvest.osm_coords(lead["source"]["ref"])
+            profile = await places.lookup(
+                lead.get("name") or "", lead.get("address") or "",
+                point.get("lat"), point.get("lon"))
+            state.update_lead(lead_id, google_profile=profile)
+            lead = state.get_lead(lead_id) or lead
+        except Exception as e:  # noqa: BLE001
+            # A lookup that fails must not stop the qualification, and must
+            # never be read as "no website".
+            profile = {"ok": False, "reason": f"{type(e).__name__}: {e}"}
+
+    if profile.get("ok"):
+        # Not trading: nothing downstream can rescue this, so it ends here.
+        if profile.get("business_status") and not profile.get("trading"):
+            state.advance_lead(
+                lead_id, "disqualified", agent=AGENT_ID,
+                note=f"Google Business Profile says {profile['business_status']}",
+                google_profile=profile)
+            await world.say(AGENT_ID, "closed — disqualified", seconds=8)
+            state.log_event(
+                "run_end", from_=AGENT_ID,
+                summary=f"disqualified {lead.get('name')}: profile status "
+                        f"{profile['business_status']}",
+                outcome="completed", details={"lead_id": lead_id})
+            return {"ok": True, "verdict": "disqualified", "lead_id": lead_id,
+                    "reason": f"profile says {profile['business_status']}",
+                    "from_profile": True}
+
+        # They have a site. `existing_site.url` is what forces `needs_review`
+        # further down, so nothing can call it bad without Lens rendering it.
+        if profile.get("website") and not lead.get("website"):
+            state.update_lead(
+                lead_id, website=profile["website"],
+                existing_site={
+                    "url": profile["website"],
+                    "found_by": "their own Google Business Profile",
+                    "note": ("the business publishes this itself, so it is not "
+                             "a guess — Lens must render and judge it before "
+                             "anything calls it inadequate"),
+                })
+            lead = state.get_lead(lead_id) or lead
 
     result = await run_agent(
         world,
@@ -79,7 +142,14 @@ async def run_probe(world: World, lead_id: str, instruction: str = "") -> dict[s
     reason = (parsed.get("reason") or "").strip()
     contact = parsed.get("contact") or {}
     business = parsed.get("business") or {}
-    existing = parsed.get("existing_site") or {}
+    # Either source counts. The override used to read only the model's own
+    # output, so a site found on the Business Profile — evidence the business
+    # publishes about itself — would have been ignored if the model failed to
+    # repeat it back. The profile wins where they disagree.
+    existing = dict(parsed.get("existing_site") or {})
+    from_profile = lead.get("existing_site") or {}
+    if from_profile.get("url"):
+        existing = {**existing, **from_profile}
 
     # Hard rule the model doesn't get to override: no contact route, no lead.
     # Everything downstream exists to put a message in front of a person.
@@ -90,11 +160,14 @@ async def run_probe(world: World, lead_id: str, instruction: str = "") -> dict[s
     # Second hard rule, learned the expensive way: a site we have not SEEN
     # cannot be called bad. If any site exists, it goes to the Gallery for a
     # real browser render — regardless of what the HTTP fetch implied.
-    elif verdict == "qualified" and existing.get("url"):
+    elif verdict in ("qualified", "disqualified") and existing.get("url"):
+        # Also from `disqualified`: "they have a site" is not a reason to drop
+        # a lead until someone has looked at the site.
         verdict = "needs_review"
         reason = (
-            f"a site exists at {existing['url']} — the Gallery must render it "
-            f"before we decide. ({reason})"
+            f"a site exists at {existing['url']}"
+            + (f" (per {from_profile['found_by']})" if from_profile.get("found_by") else "")
+            + f" — the Gallery must render it before we decide. ({reason})"
         )
 
     patch: dict[str, Any] = {
