@@ -1897,3 +1897,52 @@ html, body {
   font: inherit; font-size: 11px; padding: 3px 10px; cursor: pointer;
 }
 .rp-row-btn:hover { background: #3a221c; }
+
+/* ---- build card: the photos and the palette ---- */
+.rp-photo-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 4px;
+}
+.rp-photo { margin: 0; }
+.rp-photo a { display: block; }
+/* A checkered ground so a transparent logo is visible at all. */
+.rp-photo img {
+  width: 100%;
+  height: 104px;
+  object-fit: cover;
+  border: 1px solid #23232f;
+  background:
+    linear-gradient(45deg, #1a1a22 25%, transparent 25%, transparent 75%, #1a1a22 75%),
+    linear-gradient(45deg, #1a1a22 25%, transparent 25%, transparent 75%, #1a1a22 75%) 6px 6px,
+    #121218;
+  background-size: 12px 12px;
+}
+.rp-photo a:hover img { border-color: #4a3f6a; }
+.rp-photo figcaption {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: #7a7a88;
+  padding-top: 2px;
+}
+.rp-pal { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.rp-pal-chip { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.rp-pal-box {
+  /* Deliberately its own class: `.rp-swatch` already exists as a 24x24 chip
+     from another panel, and its fixed width and height silently won. */
+  flex: 0 0 auto;
+  width: 42px; height: 42px;
+  border: 1px solid #2a2a36;
+  display: block;
+}
+.rp-pal-chip--leads .rp-pal-box {
+  width: 52px; height: 52px;
+  border-color: #6a5f8a;
+  box-shadow: 0 0 0 1px #6a5f8a;
+}
+.rp-pal-hex { font-size: 9px; color: #8a8a98; font-variant-numeric: tabular-nums; }
+.rp-pal-lead {
+  font-size: 8px; text-transform: uppercase; letter-spacing: .1em; color: #b9a3d8;
+}

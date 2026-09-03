@@ -285,6 +285,10 @@ return true;
     host.appendChild(kv("Turnover", String(p.turnover ?? "?")));
     host.appendChild(kv("Research", `${p.sources ?? 0} sources · `
       + `${p.offering_items ?? 0} things they sell · ${p.photos_read ?? 0} photos read`));
+    if (p.key_photos?.length)
+      host.appendChild(labelled("what the place looks like",
+                                photoGrid(p.key_photos as any[])));
+    if (p.palette) host.appendChild(labelled("colours seen", swatches(p.palette)));
     if (p.existing_site)
       host.appendChild(kv("They already have", `${p.existing_site}`
         + (p.site_shape ? ` (${p.site_shape})` : "")));
@@ -297,10 +301,7 @@ return true;
         note((p.hours_conflicts as string[]).join(" · "))));
     if (p.text_in_photos?.length)
       host.appendChild(labelled("read off their photographs",
-        note((p.text_in_photos as any[]).map((t) =>
-          typeof t === "string" ? t : JSON.stringify(t)).join(" · "))));
-    if (p.palette) host.appendChild(labelled("colours seen",
-      note(typeof p.palette === "string" ? p.palette : JSON.stringify(p.palette))));
+                                note(readTranscriptions(p.text_in_photos as any[]))));
     if (p.content_gaps?.length)
       host.appendChild(labelled("still missing",
         note((p.content_gaps as string[]).join(" · "))));
@@ -487,4 +488,120 @@ function sitePreview(url: string, label = "the build"): HTMLElement {
   hint.textContent = "scroll inside the frame · rendered at 390px, as a phone would";
   wrap.appendChild(hint);
   return wrap;
+}
+
+
+/**
+ * Up to four photographs, two by two.
+ *
+ * A build card that lists "10 photos read" tells you a number; the point of
+ * the gate is to see what the page will be made from. Front, inside and their
+ * mark, chosen from Lens's own descriptions.
+ */
+function photoGrid(photos: any[]): HTMLElement {
+  const grid = document.createElement("div");
+  grid.className = "rp-photo-grid";
+  for (const ph of photos.slice(0, 4)) {
+    const fig = document.createElement("figure");
+    fig.className = "rp-photo";
+    const a = document.createElement("a");
+    a.href = String(ph.url);
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    const img = document.createElement("img");
+    img.src = String(ph.url);
+    // Not lazy: there are four of them and they are the point of the card —
+    // lazy images inside a panel that has not been scrolled never paint.
+    img.loading = "eager";
+    img.alt = String(ph.shows ?? ph.file ?? "");
+    a.appendChild(img);
+    const cap = document.createElement("figcaption");
+    cap.textContent = String(ph.why ?? "");
+    cap.title = String(ph.shows ?? "");
+    fig.append(a, cap);
+    grid.appendChild(fig);
+  }
+  return grid;
+}
+
+/**
+ * The palette as colour, not as text.
+ *
+ * "#E4411A" is unreadable at a glance and the whole question is whether the
+ * page will look like the place. The dominant one is marked, because that is
+ * the colour the build will lead with.
+ */
+function swatches(palette: any): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "rp-pal";
+
+  // Accept the list of {hex, what, dominant} Lens produces, and fall back to
+  // scraping hex codes out of whatever else it sent.
+  let entries: { hex: string; what?: string; dominant?: boolean }[] = [];
+  if (Array.isArray(palette)) {
+    entries = palette
+      .map((e: any) => typeof e === "string"
+        ? { hex: e }
+        : { hex: e?.hex, what: e?.what, dominant: e?.dominant })
+      .filter((e) => /^#[0-9a-f]{3,8}$/i.test(String(e.hex ?? "")));
+  }
+  if (!entries.length) {
+    const found = String(JSON.stringify(palette)).match(/#[0-9a-f]{6}/gi) ?? [];
+    entries = [...new Set(found)].map((hex) => ({ hex }));
+  }
+  if (!entries.length) {
+    const t = document.createElement("span");
+    t.className = "rp-hint";
+    t.textContent = typeof palette === "string" ? palette : "no colours recorded";
+    wrap.appendChild(t);
+    return wrap;
+  }
+
+  for (const e of entries.slice(0, 8)) {
+    const chip = document.createElement("div");
+    chip.className = "rp-pal-chip" + (e.dominant ? " rp-pal-chip--leads" : "");
+    const box = document.createElement("span");
+    box.className = "rp-pal-box";
+    box.style.background = e.hex;
+    const label = document.createElement("span");
+    label.className = "rp-pal-hex";
+    label.textContent = e.hex.toUpperCase();
+    chip.append(box, label);
+    if (e.what) chip.title = e.what;
+    if (e.dominant) {
+      const d = document.createElement("span");
+      d.className = "rp-pal-lead";
+      d.textContent = "leads";
+      chip.appendChild(d);
+    }
+    wrap.appendChild(chip);
+  }
+  return wrap;
+}
+
+
+/**
+ * What Lens read off the photographs, as sentences.
+ *
+ * The report is structured — a file, a kind, a transcription, priced items —
+ * and dumping it through JSON.stringify put a wall of braces on the card that
+ * nobody would read. The useful part is the words on the sign and the prices
+ * on the board.
+ */
+function readTranscriptions(items: any[]): string {
+  const lines: string[] = [];
+  for (const t of items.slice(0, 8)) {
+    if (typeof t === "string") { lines.push(t); continue; }
+    const bits: string[] = [];
+    if (t?.kind) bits.push(String(t.kind));
+    const said = t?.transcription ?? t?.text ?? t?.note;
+    if (said) bits.push(`“${String(said).replace(/\s+/g, " ").trim()}”`);
+    for (const it of (t?.items ?? []).slice(0, 4)) {
+      const nm = it?.name ?? it?.item;
+      if (!nm) continue;
+      bits.push(it?.price ? `${nm} — ${it.price}` : String(nm));
+    }
+    if (bits.length) lines.push(bits.join(": "));
+  }
+  return lines.join("\n") || "nothing legible";
 }

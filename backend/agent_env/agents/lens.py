@@ -383,6 +383,58 @@ VISUAL_ROLE = _P("VISUAL_ROLE")
 VISUAL_SCHEMA = _P("VISUAL_SCHEMA")
 
 
+# What a person needs to see before approving a build, in the order they need
+# it: the front of the place, inside it, and the mark. Lens has already
+# described every photo, so the choice is made from its own words rather than
+# from filenames.
+_PHOTO_WANTED = (
+    ("the front", ("shopfront", "facade", "façade", "storefront", "frontage",
+                   "front of", "devanture", "street view", "exterior")),
+    ("inside", ("interior", "inside", "workshop", "atelier", "salle",
+                "dining", "salon", "counter", "workbench", "chair")),
+    ("their mark", ("sign", "signage", "lettering", "logo", "enseigne",
+                    "wordmark", "fascia")),
+)
+
+
+def _key_photos(lead_id: str, visual: dict[str, Any],
+                limit: int = 4) -> list[dict[str, Any]]:
+    """Up to `limit` photos worth showing, one per category before repeats."""
+    described = [p for p in (visual.get("photos") or []) if p.get("file")]
+    on_disk = {f.name for f in (SITES_DIR / lead_id / "photos").glob("*")} \
+        if (SITES_DIR / lead_id / "photos").is_dir() else set()
+    described = [p for p in described if p["file"] in on_disk]
+
+    picked: list[dict[str, Any]] = []
+    used: set[str] = set()
+
+    def take(rec: dict[str, Any], why: str) -> None:
+        picked.append({
+            "url": f"/staging/{lead_id}/photos/{rec['file']}",
+            "file": rec["file"], "why": why,
+            "shows": (rec.get("shows") or "")[:300],
+        })
+        used.add(rec["file"])
+
+    for label, words in _PHOTO_WANTED:
+        if len(picked) >= limit:
+            break
+        for rec in described:
+            if rec["file"] in used:
+                continue
+            text = f"{rec.get('shows','')} {rec.get('file','')}".lower()
+            if any(w in text for w in words):
+                take(rec, label)
+                break
+    # Fill the grid with whatever else was described, best-described first.
+    for rec in sorted(described, key=lambda r: -len(r.get("shows") or "")):
+        if len(picked) >= limit:
+            break
+        if rec["file"] not in used:
+            take(rec, "also")
+    return picked
+
+
 def _build_visual_prompt(lead: dict[str, Any], out_dir: str) -> str:
     sections = [VISUAL_ROLE.strip()]
     for block in (
@@ -583,6 +635,8 @@ async def run_visual_research(
             "sources": len(prof.get("sources") or []),
             "content_gaps": (prof.get("content_gaps") or [])[:6],
             "photos_read": n_seen,
+            # The four that matter, and the colours as colours.
+            "key_photos": _key_photos(lead_id, visual),
             "palette": visual.get("palette_observed"),
             "text_in_photos": (visual.get("text_in_photos") or [])[:6],
             "existing_site": (lead.get("existing_site") or {}).get("url")
