@@ -55,6 +55,11 @@ HANDLERS = build_handlers(world)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Anything the previous process was in the middle of is gone. Say so, so
+    # the tokens it spent are on the record rather than nowhere.
+    interrupted = orchestrator.report_interrupted_runs()
+    if interrupted:
+        print(f"[boot] {interrupted} run(s) were interrupted by the last restart")
     orchestrator.start()
     try:
         yield

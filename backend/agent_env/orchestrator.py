@@ -10,6 +10,11 @@ from .world import World
 
 MAX_RERUNS = 2  # safety cap so a request_tool loop can't run forever
 
+# How settled a lead must look before the sweep recovers it. Long enough to
+# outlast a server restart and the tail of a killed run; short enough that a
+# genuinely stuck lead is picked up while the operator is still watching.
+RECOVERY_QUIET_SECONDS = 4 * 60
+
 
 class Orchestrator:
     """Drives the world. Two loops:
@@ -134,6 +139,37 @@ class Orchestrator:
                     outcome="completed", details={"lead_id": lead["id"]},
                 )
 
+    def report_interrupted_runs(self) -> int:
+        """Say which runs died with the previous process.
+
+        `usage.record` runs after the streaming loop, so a run killed midway
+        bills nothing and leaves no run_end — its tokens are spent and
+        invisible. On boot, any run_start without a matching run_end belonged
+        to a process that is gone.
+        """
+        events = sorted(state.list_events(limit=400), key=lambda e: e.get("ts") or 0)
+        # Correlate by AGENT and TIME, not by text: a run_start says "building
+        # site: X" and its run_end says "built site for X", so matching the
+        # summaries reported every run as orphaned.
+        ends: dict[str, list[float]] = {}
+        for e in events:
+            if e.get("kind") == "run_end":
+                ends.setdefault(str(e.get("from")), []).append(float(e.get("ts") or 0))
+        orphans = [
+            e for e in events
+            if e.get("kind") == "run_start"
+            and not any(t > float(e.get("ts") or 0)
+                        for t in ends.get(str(e.get("from")), []))
+        ][:5]
+        for e in orphans:
+            state.log_event(
+                "run_end", from_=e.get("from"), to="operator",
+                summary=f"interrupted by a restart: {str(e.get('summary'))[:150]}",
+                outcome="interrupted",
+                details=e.get("details") or {},
+            )
+        return len(orphans)
+
     async def _advance_leads(self) -> None:
         """Move a lead to the next room the moment its stage changes.
 
@@ -172,6 +208,16 @@ class Orchestrator:
                 if (lead_id, stage) in self._dispatched or recovered >= 1:
                     continue
                 if any(w.get("lead_id") == lead_id for w in in_flight_for_role(role)):
+                    continue
+                # A restart is the one thing that empties `_dispatched`, so
+                # every restart hands the recovery branch a fresh allowance.
+                # Restarting four times while a build was running therefore
+                # re-dispatched the same build three times — each new process
+                # correctly seeing a lead with nobody on it, because the run
+                # it had just killed left no trace. A recently touched lead is
+                # left alone: either something is about to pick it up, or a run
+                # died seconds ago and its files are still settling.
+                if time.time() - float(lead.get("updated_ts") or 0) < RECOVERY_QUIET_SECONDS:
                     continue
                 # Old leads that were parked deliberately stay parked.
                 if time.time() - float(lead.get("updated_ts") or 0) > 6 * 3600:
