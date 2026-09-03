@@ -51,6 +51,18 @@ def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
     gp = lead.get("google_profile") or {}
     if gp:
         sections.append(places.as_prompt(gp))
+    shape = lead.get("site_shape") or {}
+    if shape.get("kind"):
+        sections.append(
+            "WHAT IS ACTUALLY AT THEIR ADDRESS — fetched, not guessed:\n"
+            f"  {shape['url']} -> {shape['kind']} "
+            f"({shape.get('visible_words')} readable words, {shape.get('bytes')} bytes)\n"
+            f"  {shape.get('note', '')}"
+            + (f"\n  their real presence: {shape['their_real_presence']}"
+               if shape.get("their_real_presence") else "")
+            + ("\n  `probably_javascript` means a plain fetch cannot judge it. "
+               "Do NOT call it inadequate — hand it to the Gallery to render."
+               if shape["kind"] == "probably_javascript" else ""))
     sections.append(SCHEMA.strip())
     sections.append(
         (instruction or "Qualify this lead.") + "\n\nInvestigate now, then return the JSON."
@@ -104,6 +116,17 @@ async def run_probe(world: World, lead_id: str, instruction: str = "") -> dict[s
             return {"ok": True, "verdict": "disqualified", "lead_id": lead_id,
                     "reason": f"profile says {profile['business_status']}",
                     "from_profile": True}
+
+        # What is actually AT the address they publish. A plain fetch reports
+        # "200, no words" for a JavaScript app, a parked page and a redirect to
+        # Instagram alike, and those want opposite decisions.
+        if profile.get("website"):
+            try:
+                shape = await harvest.page_shape(profile["website"])
+                state.update_lead(lead_id, site_shape=shape)
+                lead = state.get_lead(lead_id) or lead
+            except Exception:  # noqa: BLE001
+                pass
 
         # They have a site. `existing_site.url` is what forces `needs_review`
         # further down, so nothing can call it bad without Lens rendering it.

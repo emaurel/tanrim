@@ -387,19 +387,66 @@ def _build_visual_prompt(lead: dict[str, Any], out_dir: str) -> str:
     sections.append(format_lead(lead))
 
     profile = lead.get("profile") or {}
-    urls = [s.get("url") for s in (profile.get("sources") or []) if s.get("url")]
     socials = (profile.get("contact") or {}).get("socials") or {}
-    urls += [v for v in socials.values() if isinstance(v, str) and v.startswith("http")]
+    facebook = next((v for k, v in socials.items()
+                     if "facebook" in k.lower() and isinstance(v, str)
+                     and v.startswith("http")), "")
+    instagram = next((v for k, v in socials.items()
+                      if "instagram" in k.lower() and isinstance(v, str)
+                      and v.startswith("http")), "")
+    osm_ref = (lead.get("source") or {}).get("ref") or ""
+
+    # Their OWN accounts go to `look_around`, which drives a real browser and
+    # reads the account itself. Directory pages go to `collect_images`, which
+    # scrapes a page's images — and a directory page's images belong to
+    # whichever businesses that page is about. One harvest came back with
+    # twelve photographs of neighbouring salons for exactly this reason.
+    own: list[str] = []
+    if facebook:
+        own.append(f"facebook: {facebook}")
+    if instagram:
+        own.append(f"instagram: {instagram}")
+    if osm_ref:
+        own.append(f"osm_ref: {osm_ref}   (Street View of the frontage)")
+    if own:
+        sections.append(
+            "THEIR OWN ACCOUNTS — call `look_around` with these, FIRST. It "
+            "drives a real browser, so it reads the account rather than "
+            "scraping a page about them, and every picture it brings back is "
+            "actually theirs:\n"
+            + "\n".join(f"- {o}" for o in own)
+            + f"\n\nCall it as: look_around(out_dir=\"{out_dir}\""
+            + (f", facebook=\"{facebook}\"" if facebook else "")
+            + (f", instagram=\"{instagram}\"" if instagram else "")
+            + (f", osm_ref=\"{osm_ref}\"" if osm_ref else "")
+            + ")"
+        )
+    else:
+        sections.append(
+            "No Facebook or Instagram account was found for this business, so "
+            "`look_around` has nothing of theirs to open"
+            + (f" — but it can still fetch Street View of the frontage: "
+               f"look_around(out_dir=\"{out_dir}\", osm_ref=\"{osm_ref}\")"
+               if osm_ref else ".")
+        )
+
+    directory = [s.get("url") for s in (profile.get("sources") or []) if s.get("url")]
     if lead.get("website"):
-        urls.append(lead["website"])
+        directory.insert(0, lead["website"])
     seen: list[str] = []
-    for u in urls:
-        if u not in seen:
+    for u in directory:
+        if u not in seen and not any(
+                h in u for h in ("facebook.com", "instagram.com")):
             seen.append(u)
-    sections.append(
-        "PAGES TO HARVEST PHOTOS FROM — pass these to `collect_images`:\n"
-        + "\n".join(f"- {u}" for u in seen[:14])
-    )
+    if seen:
+        sections.append(
+            "THIRD-PARTY PAGES — `collect_images` scrapes whatever images a "
+            "page carries, so a directory listing gives you photographs of "
+            "every business ON that page, not just this one. Use it after the "
+            "accounts above, and DISCARD anything that is plainly a different "
+            "business:\n"
+            + "\n".join(f"- {u}" for u in seen[:12])
+        )
     gaps = profile.get("content_gaps") or []
     if gaps:
         sections.append(

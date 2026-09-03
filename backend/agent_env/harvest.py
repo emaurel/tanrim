@@ -469,3 +469,70 @@ async def look_around(out_dir: str | Path, facebook: str = "",
         "other people's photographs, and Street View imagery may not be served "
         "outside Google's own APIs. Open each file and describe what you see.")
     return report
+
+
+# ---------------------------------------------------------------------------
+# What is actually AT a domain.
+#
+# A plain fetch reports "200 OK, zero words" for three very different things:
+# a JavaScript site, a parked page, and a redirect to a social profile. They
+# call for opposite decisions, and an audit that cannot tell them apart says
+# "may be fully JS-rendered or may be a parked placeholder" and leaves the
+# judgement to whoever reads it.
+#
+# enteteatete.fr is 104 bytes containing a redirect to Instagram: the business
+# owns a domain and has no site, which makes it a better lead than most — and
+# tells us where its content actually lives.
+# ---------------------------------------------------------------------------
+
+SOCIAL_HOSTS = ("instagram.com", "facebook.com", "linktr.ee", "linkedin.com",
+                "tiktok.com", "x.com", "twitter.com")
+
+
+async def page_shape(url: str) -> dict[str, Any]:
+    """Classify what a URL serves, without judging whether it is any good."""
+    out: dict[str, Any] = {"url": url}
+    try:
+        async with httpx.AsyncClient(timeout=25.0, headers={"User-Agent": UA},
+                                     follow_redirects=True) as c:
+            r = await c.get(url)
+    except Exception as e:  # noqa: BLE001
+        return {**out, "kind": "unreachable", "error": f"{type(e).__name__}: {e}"}
+
+    html = r.text or ""
+    out.update({"status": r.status_code, "final_url": str(r.url),
+                "bytes": len(r.content)})
+    stripped = re.sub(r"(?is)<(script|style|noscript).*?</\1>", " ", html)
+    words = len(re.findall(r"\w+", re.sub(r"<[^>]+>", " ", stripped)))
+    out["visible_words"] = words
+
+    links = re.findall(r'https?://[^"\'\s<>]+', html)
+    social = [u for u in links if any(h in u.lower() for h in SOCIAL_HOSTS)]
+    out["social_links"] = list(dict.fromkeys(social))[:5]
+    redirecting = bool(re.search(
+        r'http-equiv=["\']refresh|location\.(?:href|replace)|window\.location',
+        html, re.I))
+
+    if r.status_code >= 400:
+        out["kind"] = "error"
+    elif words < 30 and social and (redirecting or len(r.content) < 4000):
+        # A near-empty page whose only content is a link out.
+        out["kind"] = "redirect_to_social"
+        out["their_real_presence"] = social[0]
+        out["note"] = (
+            "the domain serves almost nothing and points at a social profile. "
+            "They own a name and have no site — a strong lead, and their "
+            "content is on that profile, not on the web.")
+    elif words < 30 and len(r.content) < 4000:
+        out["kind"] = "parked_or_empty"
+        out["note"] = "almost nothing served, and nowhere it points."
+    elif words < 30:
+        out["kind"] = "probably_javascript"
+        out["note"] = ("a large page with no readable text — very likely a "
+                       "JavaScript app. A plain fetch CANNOT judge this; it "
+                       "has to be rendered in a browser before anyone calls "
+                       "it inadequate.")
+    else:
+        out["kind"] = "real_content"
+        out["note"] = f"{words} words served without JavaScript."
+    return out
