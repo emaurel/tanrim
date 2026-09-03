@@ -70,6 +70,48 @@ def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
     return "\n\n".join(sections)
 
 
+async def ensure_google_profile(lead_id: str, lead: dict[str, Any]) -> dict[str, Any]:
+    """Fetch the Business Profile once, and act on what it says.
+
+    Lives outside `run_probe` because a lead re-entering the pipeline at
+    `qualified` skips qualification entirely — four leads were re-researched
+    with every new source EXCEPT this one, which is the one that answers "do
+    they already have a website".
+    """
+    if (lead.get("google_profile") or {}).get("ok"):
+        return lead
+    if not places.configured():
+        return lead
+    try:
+        point: dict[str, Any] = {}
+        if (lead.get("source") or {}).get("ref"):
+            point = await harvest.osm_coords(lead["source"]["ref"])
+        profile = await places.lookup(
+            lead.get("name") or "", lead.get("address") or "",
+            point.get("lat"), point.get("lon"))
+    except Exception:  # noqa: BLE001
+        return lead
+    state.update_lead(lead_id, google_profile=profile)
+
+    if profile.get("ok") and profile.get("website"):
+        try:
+            shape = await harvest.page_shape(profile["website"])
+            state.update_lead(lead_id, site_shape=shape)
+        except Exception:  # noqa: BLE001
+            pass
+        if not lead.get("website"):
+            state.update_lead(
+                lead_id, website=profile["website"],
+                existing_site={
+                    "url": profile["website"],
+                    "found_by": "their own Google Business Profile",
+                    "note": ("the business publishes this itself, so it is not "
+                             "a guess — Lens must render and judge it before "
+                             "anything calls it inadequate"),
+                })
+    return state.get_lead(lead_id) or lead
+
+
 async def run_probe(world: World, lead_id: str, instruction: str = "") -> dict[str, Any]:
     lead = state.get_lead(lead_id)
     if lead is None:
@@ -84,29 +126,15 @@ async def run_probe(world: World, lead_id: str, instruction: str = "") -> dict[s
     # got wrong the expensive way — one restaurant was pitched as having no web
     # presence while running a site, and another was researched four times
     # after it had already closed.
-    profile: dict[str, Any] = {}
-    if places.configured():
-        try:
-            point = {}
-            if (lead.get("source") or {}).get("ref"):
-                point = await harvest.osm_coords(lead["source"]["ref"])
-            profile = await places.lookup(
-                lead.get("name") or "", lead.get("address") or "",
-                point.get("lat"), point.get("lon"))
-            state.update_lead(lead_id, google_profile=profile)
-            lead = state.get_lead(lead_id) or lead
-        except Exception as e:  # noqa: BLE001
-            # A lookup that fails must not stop the qualification, and must
-            # never be read as "no website".
-            profile = {"ok": False, "reason": f"{type(e).__name__}: {e}"}
+    lead = await ensure_google_profile(lead_id, lead)
+    profile = lead.get("google_profile") or {}
 
     if profile.get("ok"):
         # Not trading: nothing downstream can rescue this, so it ends here.
         if profile.get("business_status") and not profile.get("trading"):
             state.advance_lead(
                 lead_id, "disqualified", agent=AGENT_ID,
-                note=f"Google Business Profile says {profile['business_status']}",
-                google_profile=profile)
+                note=f"Google Business Profile says {profile['business_status']}")
             await world.say(AGENT_ID, "closed — disqualified", seconds=8)
             state.log_event(
                 "run_end", from_=AGENT_ID,
@@ -116,31 +144,6 @@ async def run_probe(world: World, lead_id: str, instruction: str = "") -> dict[s
             return {"ok": True, "verdict": "disqualified", "lead_id": lead_id,
                     "reason": f"profile says {profile['business_status']}",
                     "from_profile": True}
-
-        # What is actually AT the address they publish. A plain fetch reports
-        # "200, no words" for a JavaScript app, a parked page and a redirect to
-        # Instagram alike, and those want opposite decisions.
-        if profile.get("website"):
-            try:
-                shape = await harvest.page_shape(profile["website"])
-                state.update_lead(lead_id, site_shape=shape)
-                lead = state.get_lead(lead_id) or lead
-            except Exception:  # noqa: BLE001
-                pass
-
-        # They have a site. `existing_site.url` is what forces `needs_review`
-        # further down, so nothing can call it bad without Lens rendering it.
-        if profile.get("website") and not lead.get("website"):
-            state.update_lead(
-                lead_id, website=profile["website"],
-                existing_site={
-                    "url": profile["website"],
-                    "found_by": "their own Google Business Profile",
-                    "note": ("the business publishes this itself, so it is not "
-                             "a guess — Lens must render and judge it before "
-                             "anything calls it inadequate"),
-                })
-            lead = state.get_lead(lead_id) or lead
 
     result = await run_agent(
         world,
@@ -259,6 +262,8 @@ async def run_enrich(world: World, lead_id: str, instruction: str = "") -> dict[
     lead = state.get_lead(lead_id)
     if lead is None:
         return {"ok": False, "error": f"no such lead: {lead_id}"}
+    # A lead can enter here without ever passing qualification.
+    lead = await ensure_google_profile(lead_id, lead)
 
     result = await run_agent(
         world,
