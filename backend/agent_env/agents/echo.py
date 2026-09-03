@@ -45,6 +45,11 @@ def preflight(lead: dict[str, Any]) -> list[str]:
         problems.append("no published preview — the email would link to nothing")
     if outreach.get("sent"):
         problems.append("this lead has already been contacted")
+    if outreach.get("bounced"):
+        # Belt and braces: `record_bounce` clears `sent`, but if a redraft ever
+        # restored it, the bounced address must still not count as a contact.
+        problems[:] = [p for p in problems
+                       if p != "this lead has already been contacted"]
     # The authoritative check. `outreach.sent` lives in a dict that a redraft
     # replaces; this one cannot be overwritten by rewriting the email.
     sent_log = lead.get("sent_log") or []
@@ -52,7 +57,15 @@ def preflight(lead: dict[str, Any]) -> list[str]:
         last_sent = max(float(r.get("ts") or 0) for r in sent_log)
         rev = lead.get("revision") or {}
         asked_since = float(rev.get("ts") or 0) > last_sent
-        if not asked_since:
+        # A send that bounced permanently is not a contact. This guard exists so
+        # a business is not pitched twice; a message that reached no inbox
+        # cannot be the first of those two. Without this the `bad_address` card
+        # is a dead end — it invites the operator to supply a working address
+        # and then refuses to use it, forever.
+        bounced_since = any(
+            b.get("permanent") and float(b.get("ts") or 0) >= last_sent
+            for b in (lead.get("bounces") or []))
+        if not asked_since and not bounced_since:
             when = time.strftime("%d/%m %H:%M", time.localtime(last_sent))
             problems.append(
                 f"this business was already emailed on {when} at "
