@@ -377,6 +377,10 @@ class RunResult:
     data: dict[str, Any] | None = None
     input_tokens: int = 0
     output_tokens: int = 0
+    # Everything the agent said and reported during the turn. `text` holds only
+    # the FINAL message, because the SDK's result string replaces it — so the
+    # reasoning that led to an answer is gone by the time anything wants it.
+    transcript: list[str] = field(default_factory=list)
     cache_write: int = 0
     cache_read: int = 0
     cost_usd: float = 0.0
@@ -617,12 +621,26 @@ async def run_agent(
                     text = getattr(block, "text", None)
                     if text:
                         result.text += text
+                        result.transcript.append(text)
                     # Surface tool use in the speech bubble so the dungeon
                     # actually shows what the agent is doing right now.
                     tool_name = getattr(block, "name", None)
-                    if tool_name and getattr(block, "input", None) is not None:
+                    tool_input = getattr(block, "input", None)
+                    if tool_name and tool_input is not None:
                         result.tool_names.append(str(tool_name))
                         await world.say(agent_id, f"{str(tool_name)[:28]}…", seconds=60)
+                        # A report to Ultron is often where the real conclusion
+                        # went — one appraisal put "margin EUR 650, confidence
+                        # medium" there and ended its turn with a sentence that
+                        # said nothing. Keep it, so a retry has the answer to
+                        # convert rather than a blank to fill.
+                        if "report_to_ultron" in str(tool_name):
+                            try:
+                                result.transcript.append(
+                                    "[reported to Ultron] "
+                                    + json.dumps(tool_input, ensure_ascii=False)[:1500])
+                            except Exception:  # noqa: BLE001
+                                result.transcript.append(f"[reported] {tool_input}"[:1500])
             res = getattr(message, "result", None)
             if isinstance(res, str) and res:
                 result.text = res
@@ -661,14 +679,28 @@ async def run_agent(
         # doubling the cost and the wall-clock, and overwriting work that has
         # already been verified. All that is wanted here is the JSON.
         if expect_json and result.data is None and result.text.strip():
+            # Give it the whole turn. Quoting only the final message meant a
+            # retry that had nothing to convert reinvented the answer from
+            # scratch — one appraisal went from 650 at medium confidence to 500
+            # at low, silently replacing a considered number with a guess.
+            said = "\n\n".join(result.transcript[-12:]).strip()
+            # The final message too, unless it is already in there: sometimes
+            # the answer IS in it and only the fencing was wrong.
+            final = (result.text or "").strip()
+            if final and final not in said:
+                said = f"{said}\n\n{final}" if said else final
             retry_prompt = (
                 "You were asked to end your turn with a single JSON object and "
-                "instead replied with this:\n\n"
-                + result.text.strip()[:800]
-                + "\n\nDo NOT redo any work — it is already done, and calling a "
-                  "meta tool does not deliver it. Convert what you just said into "
-                  "the required JSON object and reply with ONLY that object: no "
-                  "preamble, no markdown fence, no commentary.\n\n"
+                "did not. This is what you said and reported during the turn:\n\n"
+                + said[-6000:]
+                + "\n\nDo NOT redo any work and do NOT reconsider your "
+                  "conclusions — the work is done, and calling a meta tool does "
+                  "not deliver it. Convert what you already decided above into "
+                  "the required JSON object, keeping the SAME numbers, verdicts "
+                  "and reasoning. If something the shape asks for genuinely was "
+                  "not decided, use null rather than inventing a new answer. "
+                  "Reply with ONLY the object: no preamble, no markdown fence, "
+                  "no commentary.\n\n"
                 + (f"The required shape:\n{schema.strip()}" if schema else "")
             )
             retry_opts: dict[str, Any] = {

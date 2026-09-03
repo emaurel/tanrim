@@ -42,8 +42,8 @@ MARGIN_AMOUNT = int(os.getenv("AGENT_ENV_MARGIN_EUR", "500"))
 # because below it the work is not worth doing and it sets what every later
 # quote is compared against; a ceiling because a number nobody believes is
 # just a slower no.
-MARGIN_FLOOR = int(os.getenv("AGENT_ENV_MARGIN_FLOOR_EUR", "300"))
-MARGIN_CEILING = int(os.getenv("AGENT_ENV_MARGIN_CEILING_EUR", "1500"))
+MARGIN_FLOOR = int(os.getenv("AGENT_ENV_MARGIN_FLOOR_EUR", "200"))
+MARGIN_CEILING = int(os.getenv("AGENT_ENV_MARGIN_CEILING_EUR", "500"))
 DOMAIN_YEARS = int(os.getenv("AGENT_ENV_DOMAIN_YEARS", "10"))
 
 # Registration cost per year, by TLD. RDAP answers availability and says
