@@ -734,6 +734,53 @@ async def health_mail():
     return mailbox.check()
 
 
+@app.get("/health/google")
+async def health_google(name: str = "Garage Il Primo",
+                        address: str = "161 Boulevard Stalingrad, 69006 Lyon"):
+    """Is the Google key working, and are BOTH APIs enabled?
+
+    They are separate SKUs on the same key, and enabling one is the common way
+    to end up with half of this working — so each is called for real and
+    reported on its own.
+    """
+    from . import harvest, places
+    out: dict[str, Any] = {"key_present": places.configured()}
+    if not places.configured():
+        out["advice"] = (
+            "Set GOOGLE_MAPS_API_KEY in .env and restart. See /health/google "
+            "again afterwards.")
+        return out
+
+    profile = await places.lookup(name, address)
+    out["places"] = {
+        "ok": profile.get("ok"),
+        "found": profile.get("name"),
+        "website": profile.get("website"),
+        "status": profile.get("business_status"),
+        "reason": profile.get("reason"),
+    }
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        sv = await harvest.street_view(45.7666721, 4.8788234, Path(tmp),
+                                       headings=(0,))
+        out["street_view"] = {
+            "ok": bool(sv.get("files")),
+            "coverage": sv.get("coverage"),
+            "captured": sv.get("captured"),
+            "problems": sv.get("problems"),
+        }
+
+    good = out["places"]["ok"] and out["street_view"]["ok"]
+    out["advice"] = (
+        "Both APIs are answering." if good else
+        "Enable whichever failed on the Cloud project: 'Places API (New)' and "
+        "'Street View Static API'. A key with only one enabled returns "
+        "REQUEST_DENIED on the other. Billing must be on the project even "
+        "inside the free allowance.")
+    return out
+
+
 @app.get("/health/domain-pricing")
 async def health_domain_pricing(domain: str = "example-test-name.fr"):
     """Is the registrar actually answering, for a real name?
