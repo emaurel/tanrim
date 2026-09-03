@@ -24,6 +24,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -48,8 +49,11 @@ CONTENT_TYPES = {
     ".pdf": "application/pdf",
 }
 
-# Never upload these: QA screenshots, harvested photos (not ours to republish),
-# the skills symlink, the rollback copy.
+# Never upload these: the skills symlink, the incumbent's renders, the
+# rollback copy. `photos/` is handled separately — see `collect`: only the
+# photographs the page actually references are shipped, never the whole
+# harvest, because a harvest also contains a franchise's marketing banner, a
+# stock-library portrait and a screenshot of a map.
 SKIP_NAMES = {".claude", "photos", "incumbent", ".previous"}
 SKIP_PREFIXES = ("shot-",)
 # Directories that DO ship, with their path preserved. `assets/` holds files the
@@ -89,9 +93,34 @@ def project_name(slug: str) -> str:
     return name.strip("-") or "site"
 
 
+def referenced_photos(site_dir: Path) -> set[str]:
+    """Filenames under `photos/` that the built page actually asks for.
+
+    The preview may show the business its own photographs, so those files have
+    to reach the host — but only those. Shipping the directory would publish
+    the rest of the harvest with it, and a harvest reliably contains images of
+    other businesses and a stock photo of a model.
+    """
+    wanted: set[str] = set()
+    for name in ("index.html", "styles.css"):
+        f = site_dir / name
+        if not f.is_file():
+            continue
+        text = f.read_text(errors="replace")
+        wanted |= {m.group(1) for m in
+                   re.finditer(r"photos/([A-Za-z0-9._\-]+)", text)}
+    return wanted
+
+
 def collect(site_dir: Path) -> dict[str, bytes]:
     """The files that make up the site, keyed by their URL path."""
     out: dict[str, bytes] = {}
+    photos_wanted = referenced_photos(site_dir)
+    photo_dir = site_dir / "photos"
+    for name in sorted(photos_wanted):
+        f = photo_dir / name
+        if f.is_file() and not f.is_symlink() and name != "manifest.json":
+            out[f"/photos/{name}"] = f.read_bytes()
     for path in sorted(site_dir.iterdir()):
         if path.is_symlink() or path.name in SKIP_NAMES:
             continue

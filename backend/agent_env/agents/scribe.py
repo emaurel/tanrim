@@ -189,6 +189,19 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
                if owner_assets else "\n")
         )
 
+    used = ((lead.get("site") or {}).get("photos_used") or [])
+    photo_line = ""
+    if used:
+        srcs = sorted({str(u.get("from") or "their public pages").split(",")[0]
+                       for u in used if isinstance(u, dict)})
+        photo_line = (
+            f"\nTHE PAGE USES {len(used)} OF THEIR OWN PHOTOGRAPHS, taken from: "
+            + "; ".join(srcs[:4])
+            + ". You MUST include the paragraph saying where they came from and "
+              "offering to replace or remove them. They did not give us these "
+              "pictures, and the person reading the email is the one who can "
+              "say whether we keep them.\n")
+
     extra = (
         f"THE PREVIEW LINK to put in the email: {preview}\n"
         (f"WHY THIS PRICE: {appraisal.get('why')} — the site is worth this to "
@@ -208,6 +221,7 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
         f"Quote this figure unless the lead's evidence clearly justifies "
         f"otherwise; if you change it, say why in why_this_lands."
         + domain_line
+        + photo_line
         + gap_block
     )
     rev = lead.get("revision") or {}

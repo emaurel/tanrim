@@ -373,6 +373,14 @@ async def record_reply(
                  if invoice.get("ok") else
                  f"Invoice could NOT be generated: {invoice.get('error')}. "
                  "Fix that, generate it, and get paid before going further"),
+                (f"Settle the photographs: the page uses "
+                 f"{len((lead.get('site') or {}).get('photos_used') or [])} taken "
+                 "from their own public pages. Either they confirm we keep them, "
+                 "or replace them with files they send. A preview on our URL is "
+                 "one thing; the same images on their own domain, presented as "
+                 "their site, is another"
+                 if ((lead.get("site") or {}).get("photos_used")) else
+                 "No harvested photographs on the page — nothing to settle there"),
                 f"Register {domain or 'the domain they chose'} at OVH, in THEIR name,"
                 " for the longest term you can",
                 "Point the domain at Cloudflare and attach it to the Pages project",
