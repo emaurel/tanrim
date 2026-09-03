@@ -144,7 +144,8 @@ def build(lead: dict[str, Any]) -> Invoice:
     # actually registered for them, falling back to what was offered.
     domain = (lead.get("domain_registered")
               or ((lead.get("domains") or {}).get("suggested") or [None])[0])
-    quote = config.quote_for(domain, (lead.get("domains") or {}).get("priced"))
+    quote = config.quote_for(domain, (lead.get("domains") or {}).get("priced"),
+                             lead.get("appraisal"))
 
     # You invoice what you QUOTED. Recomputing means any later change to the
     # margin, the rounding or the domain's real price silently desyncs the
@@ -391,7 +392,7 @@ async def create_for_lead(lead_id: str, force: bool = False) -> dict[str, Any]:
     # quote went out at 590 and the domain really costs 75.10, the margin is
     # 514.90, and a ledger that says 500 is telling you the wrong number.
     priced = (lead.get("domains") or {}).get("priced") or {}
-    split = config.quote_for(inv.domain, priced)
+    split = config.quote_for(inv.domain, priced, lead.get("appraisal"))
     real_domain = float(priced.get("total") if priced.get("total") is not None
                         else split["domain_cost"])
     if existing and force:

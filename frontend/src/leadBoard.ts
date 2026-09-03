@@ -15,7 +15,7 @@ import { subscribe } from "./net/ws";
 import type { WireEvent } from "./types";
 
 const STAGE_ORDER = [
-  "sourced", "needs_review", "qualified", "enriched", "visualised",
+  "sourced", "needs_review", "qualified", "enriched", "appraised", "visualised",
   "built", "qa_passed", "published", "drafted", "contacted", "replied", "won",
 ];
 const DEAD = new Set(["disqualified", "qa_failed", "lost"]);
@@ -528,8 +528,24 @@ function stageControl(lead: any): HTMLElement {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ stage: sel.value, reason: why.value }),
       });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d?.detail ?? `${r.status}`);
+      let d = await r.json();
+      if (r.status === 409 && d?.detail) {
+        // They are holding our email and have not answered. Say what moving it
+        // would mean, and let the operator decide rather than just refusing.
+        if (!window.confirm(`${d.detail}\n\nMove it anyway?`)) {
+          msg.textContent = "left alone";
+          return;
+        }
+        const again = await fetch(`/leads/${lead.id}/stage`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ stage: sel.value, reason: why.value, force: true }),
+        });
+        d = await again.json();
+        if (!again.ok) throw new Error(d?.detail ?? `${again.status}`);
+      } else if (!r.ok) {
+        throw new Error(d?.detail ?? `${r.status}`);
+      }
       const bits = ["moved"];
       if (d.agents_stopped?.length) bits.push(`stopped ${d.agents_stopped.join(", ")}`);
       if (d.approvals_dismissed?.length)

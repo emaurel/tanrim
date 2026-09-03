@@ -1092,6 +1092,7 @@ html, body {
 .rp-lead-stage[data-stage="needs_review"] { --stage: #d8a85a; }
 .rp-lead-stage[data-stage="qualified"],
 .rp-lead-stage[data-stage="enriched"]     { --stage: #8fc98f; }
+.rp-lead-stage[data-stage="appraised"]    { --stage: #8fc98f; }
 .rp-lead-stage[data-stage="visualised"]   { --stage: #9ec5e8; }
 .rp-lead-stage[data-stage="built"]        { --stage: #b9a3d8; }
 .rp-lead-stage[data-stage="qa_passed"]    { --stage: #6abf8f; }

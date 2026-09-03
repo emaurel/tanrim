@@ -6,6 +6,8 @@ import { stageCounts, type Lead } from "./leadRoom";
 const ROOM_FOR_STAGE: Record<string, { room: string; next: string }> = {
   sourced:   { room: "Assay Room",     next: "qualify it" },
   qualified: { room: "Factory",        next: "build the site" },
+  enriched:  { room: "Assay Room",     next: "price it at the Ledger" },
+  appraised: { room: "Gallery",        next: "read their photographs" },
   built:     { room: "Gallery",        next: "inspect it" },
   qa_failed: { room: "Factory",        next: "rebuild with Lens's notes" },
   qa_passed: { room: "Shipping Bay",   next: "request publish" },

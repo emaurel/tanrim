@@ -483,6 +483,7 @@ STAGES = [
     "needs_review",   # it HAS a site — Lens must render and judge it first
     "qualified",      # confirmed real, earning, and genuinely web-deficient
     "enriched",       # deep-researched: we know enough to build something real
+    "appraised",      # sized: what this business can bear, and what we quote
     "visualised",     # their published photos have been read — palette, board, feel
     "built",          # Forge generated a site
     "qa_passed",      # Lens verified the UI
@@ -554,6 +555,35 @@ def superseded(lead_id: str) -> bool:
         return False
     moved = _OPERATOR_MOVES.get(lead_id)
     return bool(moved and moved > float(ctx.get("started_ts") or 0))
+
+# Stages that cause work to be redone. Moving a lead back into one of these
+# after we have emailed the business means rebuilding, re-researching or
+# re-drafting for someone who is currently holding our pitch.
+REWORK_STAGES = frozenset({
+    "sourced", "needs_review", "qualified", "enriched", "appraised",
+    "visualised", "built", "qa_passed", "published", "drafted", "qa_failed",
+})
+
+
+def awaiting_their_answer(lead: dict[str, Any]) -> bool:
+    """We have emailed them and they have not said anything since.
+
+    The line that matters. Before the send, a lead is ours to work on freely;
+    after it, the business is holding a specific page at a specific price, and
+    quietly rebuilding underneath them is how the link in their inbox stops
+    matching what we described. Once they reply, everything reopens — that is
+    what a revision IS.
+    """
+    sent_log = lead.get("sent_log") or []
+    if not sent_log:
+        return False
+    last_sent = max(float(r.get("ts") or 0) for r in sent_log)
+    replies = lead.get("replies") or []
+    last_reply = max((float(r.get("ts") or 0) for r in replies), default=0.0)
+    revision = lead.get("revision") or {}
+    asked = max(last_reply, float(revision.get("ts") or 0))
+    return asked <= last_sent
+
 
 def add_lead(
     name: str,
@@ -641,6 +671,21 @@ def advance_lead(
     is always a complete record of who moved the lead and why."""
     if stage not in ALL_STAGES:
         raise ValueError(f"unknown stage: {stage}")
+    _current = get_lead(lead_id) or {}
+    if (stage in REWORK_STAGES and awaiting_their_answer(_current)
+            and not fields.pop("force_rework", False)):
+        # They have our email and have not answered. Redoing the work now
+        # changes what they are looking at, and — twice in one evening — it
+        # was a test that did it, on a business that had really been emailed.
+        sent_to = (_current.get("sent_log") or [{}])[-1].get("to")
+        log_event(
+            "run_end", from_=agent or "?", to="operator",
+            summary=f"refused to move {_current.get('name')} back to '{stage}': "
+                    f"it was emailed to {sent_to} and they have not replied",
+            outcome="refused", details={"lead_id": lead_id, "stage": stage},
+        )
+        return None
+
     if agent != "operator" and superseded(lead_id):
         # The operator moved this lead while this run was working. Their
         # decision stands; the run's conclusion is about a lead that no longer

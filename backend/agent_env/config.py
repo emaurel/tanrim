@@ -38,6 +38,12 @@ QUOTE_CURRENCY = os.getenv("AGENT_ENV_QUOTE_CURRENCY", "EUR")
 # quoted price is this PLUS ten years of registration, so the margin does not
 # quietly shrink on a business whose name only survives on an expensive TLD.
 MARGIN_AMOUNT = int(os.getenv("AGENT_ENV_MARGIN_EUR", "500"))
+# The appraisal may move the price within these, and no further. A floor
+# because below it the work is not worth doing and it sets what every later
+# quote is compared against; a ceiling because a number nobody believes is
+# just a slower no.
+MARGIN_FLOOR = int(os.getenv("AGENT_ENV_MARGIN_FLOOR_EUR", "300"))
+MARGIN_CEILING = int(os.getenv("AGENT_ENV_MARGIN_CEILING_EUR", "1500"))
 DOMAIN_YEARS = int(os.getenv("AGENT_ENV_DOMAIN_YEARS", "10"))
 
 # Registration cost per year, by TLD. RDAP answers availability and says
@@ -65,7 +71,8 @@ def domain_cost(domain: str | None) -> tuple[float, str]:
 
 
 def quote_for(domain: str | None = None,
-              priced: dict[str, Any] | None = None) -> dict[str, Any]:
+              priced: dict[str, Any] | None = None,
+              appraisal: dict[str, Any] | None = None) -> dict[str, Any]:
     """The single source of the number.
 
     The customer is told ONE all-in figure. The split — what is the work and
@@ -84,12 +91,27 @@ def quote_for(domain: str | None = None,
     else:
         cost, tld = domain_cost(domain)
         verified, price_source, premium = False, "per-TLD estimate", None
-    raw = MARGIN_AMOUNT + cost
+
+    # What the work is worth to THIS business, if it has been appraised.
+    # Clamped: the appraisal advises, the bounds decide.
+    margin = float(MARGIN_AMOUNT)
+    margin_source = "the standard rate"
+    if appraisal and appraisal.get("margin"):
+        try:
+            asked = float(appraisal["margin"])
+        except (TypeError, ValueError):
+            asked = margin
+        margin = max(float(MARGIN_FLOOR), min(float(MARGIN_CEILING), asked))
+        margin_source = (
+            f"appraised ({appraisal.get('confidence', 'unknown')} confidence)"
+            + (f", clamped from {asked:.0f}" if abs(asked - margin) >= 1 else ""))
+    raw = margin + cost
     total = float(-(-raw // QUOTE_ROUND_TO) * QUOTE_ROUND_TO) if QUOTE_ROUND_TO > 1 else raw
     return {
         "total": total,
         "currency": QUOTE_CURRENCY,
-        "margin": float(MARGIN_AMOUNT),
+        "margin": round(margin, 2),
+        "margin_source": margin_source,
         "domain_cost": cost,
         "domain_years": DOMAIN_YEARS,
         "tld": tld,

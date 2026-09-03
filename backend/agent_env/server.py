@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -318,6 +319,22 @@ async def set_lead_stage(lead_id: str, body: dict[str, Any]):
     if lead.get("stage") == stage:
         return {"ok": True, "unchanged": True, "stage": stage}
 
+    # A business that is holding our email, and has not replied, should not be
+    # quietly rebuilt underneath. Still possible — but deliberately, not by a
+    # stray click, and the answer says exactly what it would mean.
+    if stage in state.REWORK_STAGES and state.awaiting_their_answer(lead):
+        if not body.get("force"):
+            sent = (lead.get("sent_log") or [{}])[-1]
+            when = time.strftime("%d/%m %H:%M", time.localtime(sent.get("ts", 0)))
+            raise HTTPException(409, (
+                f"{lead.get('name')} was emailed on {when} at {sent.get('to')} "
+                "and has not replied. Moving it back to "
+                f"'{stage}' would redo the work behind a page they are looking "
+                "at right now, and the price and link in their inbox would stop "
+                "matching. If they have answered, record the reply instead — "
+                "that reopens everything properly. To do it anyway, resend with "
+                "force: true."))
+
     # Record the decision BEFORE stopping anything, so a run that finishes in
     # the same instant is still recognised as overtaken and its write refused.
     state.mark_operator_move(lead_id)
@@ -340,7 +357,8 @@ async def set_lead_stage(lead_id: str, body: dict[str, Any]):
 
     state.advance_lead(
         lead_id, stage, agent="operator",
-        note=(f"moved by hand: {reason}" if reason else "moved by hand")[:300])
+        note=(f"moved by hand: {reason}" if reason else "moved by hand")[:300],
+        force_rework=bool(body.get("force")))
     state.log_event(
         "run_end", from_="operator", to="operator",
         summary=f"{lead.get('name')} moved by hand: "

@@ -55,7 +55,7 @@ export interface LeadRoomSpec {
 }
 
 const STAGE_ORDER = [
-  "sourced", "qualified", "built", "qa_passed",
+  "sourced", "qualified", "enriched", "appraised", "built", "qa_passed",
   "published", "drafted", "contacted", "replied", "won",
 ];
 

@@ -20,3 +20,7 @@ workbenches:
     name: Dossier Desk
     job: Deep web research — menu, prices, verified hours, every fact sourced
     stages: [qualified]
+  - id: ledger
+    name: The Ledger
+    job: What the business can bear — filed accounts, size, and the price we ask
+    stages: [enriched]

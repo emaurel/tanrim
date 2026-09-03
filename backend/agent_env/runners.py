@@ -46,8 +46,9 @@ def _wrong_stage(role: str, lead: dict[str, Any]) -> dict[str, Any] | None:
 
 
 async def _run_probe(world: World, task: dict[str, Any]) -> Any:
-    """Probe qualifies a `sourced` lead and researches a `qualified` one. Which
-    job runs is decided by the lead's stage, never by the dispatcher."""
+    """Probe has three jobs, and the lead's stage decides which — never the
+    dispatcher. `sourced` = qualify, `qualified` = research the dossier,
+    `enriched` = appraise it at the Ledger and set the price."""
     lead_id = task.get("lead_id")
     if not lead_id:
         return _needs_lead("probe")
@@ -58,8 +59,12 @@ async def _run_probe(world: World, task: dict[str, Any]) -> Any:
     wrong = _wrong_stage("probe", lead)
     if wrong:
         return wrong
-    if lead.get("stage") == "qualified":
+    stage = lead.get("stage")
+    if stage == "qualified":
         return await probe.run_enrich(world, lead_id, task.get("prompt", ""))
+    if stage == "enriched":
+        # The Ledger: size the business and set the price before anyone builds.
+        return await probe.run_appraise(world, lead_id, task.get("prompt", ""))
     return await probe.run_probe(world, lead_id, task.get("prompt", ""))
 
 
@@ -91,7 +96,7 @@ async def _run_lens(world: World, task: dict[str, Any]) -> Any:
     stage = lead.get("stage")
     if stage == "needs_review":
         return await lens.run_incumbent_review(world, lead_id, task.get("prompt", ""))
-    if stage == "enriched":
+    if stage == "appraised":
         return await lens.run_visual_research(world, lead_id, task.get("prompt", ""))
     return await lens.run_qa(world, lead_id, task.get("prompt", ""))
 

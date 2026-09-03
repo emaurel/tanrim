@@ -119,8 +119,9 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
     # Priced on the domain we are actually offering, since ten years of it is
     # inside the figure. One number goes to the customer; the split never does.
     priced = dom.get("priced")
-    quote = config.quote_for(free[0] if free else None, priced)
-    price = config.quote_display(free[0] if free else None, priced)
+    appraisal = lead.get("appraisal") or {}
+    quote = config.quote_for(free[0] if free else None, priced, appraisal)
+    price = f"{int(quote['total']) if float(quote['total']).is_integer() else quote['total']} {quote['currency']}"
     filled = (
         template
         .replace("{{PREVIEW_URL}}", preview)
@@ -190,7 +191,12 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
 
     extra = (
         f"THE PREVIEW LINK to put in the email: {preview}\n"
-        f"THE PRICE to quote: {price} (one-off, for the site as built, the "
+        (f"WHY THIS PRICE: {appraisal.get('why')} — the site is worth this to "
+         f"them because {appraisal.get('what_the_site_is_worth_to_them')}. Use "
+         f"that reasoning to inform the tone, NOT as something to state; never "
+         f"tell a business what you think they turn over.\n"
+         if appraisal.get("why") else "")
+        + f"THE PRICE to quote: {price} (one-off, for the site as built, the "
         f"domain registered in their name, and handover).\n"
         f"QUOTE IT AS ONE ALL-IN FIGURE. Do NOT break it down, do not say what "
         f"part of it is the domain, and do not mention that the price is "

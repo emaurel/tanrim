@@ -323,7 +323,7 @@ class AssayHandler(LeadRoomHandler):
     """
 
     agent_id, action_name, model = "probe", "run_probe", probe.MODEL
-    accepts_stages = ("sourced", "qualified")
+    accepts_stages = ("sourced", "qualified", "enriched")
 
     async def state(self) -> dict[str, Any]:
         base = await super().state()
@@ -341,6 +341,8 @@ class AssayHandler(LeadRoomHandler):
             return {"ok": False, "error": "no such lead"}
         if lead.get("stage") == "qualified":
             return await probe.run_enrich(self.world, lead_id, instruction)
+        if lead.get("stage") == "enriched":
+            return await probe.run_appraise(self.world, lead_id, instruction)
         return await probe.run_probe(self.world, lead_id, instruction)
 
     async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -382,13 +384,13 @@ class GalleryHandler(LeadRoomHandler):
     """
 
     agent_id, action_name, model = "lens", "run_qa", lens.MODEL
-    accepts_stages = ("needs_review", "enriched", "built")
+    accepts_stages = ("needs_review", "appraised", "built")
 
     async def state(self) -> dict[str, Any]:
         base = await super().state()
         # Split the queue so the panel can label the three jobs distinctly.
         base["incumbent_queue"] = state.list_leads(stage="needs_review", limit=40)
-        base["photo_queue"] = state.list_leads(stage="enriched", limit=40)
+        base["photo_queue"] = state.list_leads(stage="appraised", limit=40)
         base["build_queue"] = state.list_leads(stage="built", limit=40)
         # Leads Lens has already ruled on — including the ones it sent away,
         # which are the most informative for calibrating how strict it is.
@@ -409,7 +411,7 @@ class GalleryHandler(LeadRoomHandler):
         stage = lead.get("stage")
         if stage == "needs_review":
             return await lens.run_incumbent_review(self.world, lead_id, instruction)
-        if stage == "enriched":
+        if stage == "appraised":
             return await lens.run_visual_research(self.world, lead_id, instruction)
         return await lens.run_qa(self.world, lead_id, instruction)
 

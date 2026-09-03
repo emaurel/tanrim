@@ -11,7 +11,7 @@ import json
 from typing import Any
 
 from .. import state
-from .. import harvest, places
+from .. import company, config, harvest, places
 from ..agent_helpers import (
     format_escalations,
     format_feedback,
@@ -467,3 +467,102 @@ async def find_contact(world: World, lead_id: str, instruction: str = "") -> dic
         outcome="completed",
         details={"lead_id": lead_id, "cost_usd": result.cost_usd})
     return {"ok": True, "found": found, "email_set": patch.get("email")}
+
+
+# ---------------------------------------------------------------------------
+# The Ledger: what this business can bear, and what we ask for the site.
+#
+# A separate pass from the dossier on purpose. The research answers "what do
+# they sell"; this answers "what is it worth to them", and the second question
+# needs the first one finished. Keeping them apart also means the price can be
+# revisited without paying for the whole dossier again.
+# ---------------------------------------------------------------------------
+
+APPRAISE_ROLE = _P("APPRAISE_ROLE")
+APPRAISE_SCHEMA = _P("APPRAISE_SCHEMA")
+
+
+async def run_appraise(world: World, lead_id: str, instruction: str = "") -> dict[str, Any]:
+    lead = state.get_lead(lead_id)
+    if lead is None:
+        return {"ok": False, "error": f"no such lead: {lead_id}"}
+
+    # The register first, in code — filed accounts are a fact to be fetched,
+    # and a model asked to find them can only do worse.
+    registry = await company.lookup(
+        lead.get("name") or "", lead.get("address") or "",
+        dossier=lead.get("profile"))
+    state.update_lead(lead_id, company_registry=registry)
+
+    prof = lead.get("profile") or {}
+    sections = [
+        APPRAISE_ROLE.strip(),
+        company.as_prompt(registry),
+        places.as_prompt(lead.get("google_profile") or {}),
+        "THE DOSSIER — what they sell, at what price, and how they operate:\n"
+        + json.dumps({k: prof.get(k) for k in
+                      ("identity", "offering", "hours", "practical",
+                       "reputation_for_us_only", "location")
+                      if prof.get(k)}, ensure_ascii=False, indent=2)[:6000],
+        f"THE BOUNDS. Recommend a margin between {config.MARGIN_FLOOR} and "
+        f"{config.MARGIN_CEILING} {config.QUOTE_CURRENCY}. The standard rate is "
+        f"{config.MARGIN_AMOUNT}; move off it only with a reason from the "
+        f"evidence. The domain is added separately as a pass-through cost, so "
+        f"do not include it.",
+        APPRAISE_SCHEMA.strip(),
+        (instruction or "Appraise this lead.") + "\n\nReturn the JSON.",
+    ]
+
+    result = await run_agent(
+        world,
+        role=AGENT_ID, room_id=ROOM_ID, model=MODEL,
+        prompt="\n\n".join(sections),
+        summary=f"appraising: {lead.get('name')}",
+        workbench="ledger",
+        say=f"pricing {str(lead.get('name'))[:24]}…",
+        original_task={"lead_id": lead_id, "instruction": instruction},
+        builtin_tools=["WebSearch", "WebFetch"],
+        max_turns=14,
+        max_budget_usd=0.75,
+        schema=APPRAISE_SCHEMA,
+    )
+    parsed = result.data or {}
+    if not parsed or parsed.get("margin") in (None, ""):
+        # No appraisal is not a blocker: the standard rate still applies, and
+        # a lead must not stall because one judgement could not be parsed.
+        state.advance_lead(
+            lead_id, "appraised", agent=AGENT_ID,
+            note="appraisal unreadable — quoting the standard rate",
+            company_registry=registry)
+        state.log_event("run_end", from_=result.worker_id or AGENT_ID,
+                        summary=f"appraisal unparsable for {lead.get('name')} — "
+                                "falling back to the standard rate",
+                        outcome="failed", details={"lead_id": lead_id})
+        return {"ok": False, "error": "could not parse the appraisal",
+                "raw": (result.text or "")[:400]}
+
+    quote = config.quote_for(
+        ((lead.get("domains") or {}).get("suggested") or [None])[0],
+        (lead.get("domains") or {}).get("priced"), parsed)
+    appraisal = {**parsed, "cost_usd": result.cost_usd,
+                 "quote_total": quote["total"],
+                 "margin_applied": quote["margin"],
+                 "margin_source": quote["margin_source"]}
+
+    state.advance_lead(
+        lead_id, "appraised", agent=AGENT_ID,
+        note=(f"{quote['margin']:.0f} {config.QUOTE_CURRENCY} for the work — "
+              f"{str(parsed.get('why') or '')[:180]}"),
+        appraisal=appraisal, company_registry=registry)
+
+    turnover = ("turnover unknown" if not parsed.get("turnover_known")
+                else f"turnover {parsed.get('turnover')}")
+    await world.say(AGENT_ID, f"{quote['margin']:.0f} {config.QUOTE_CURRENCY}", seconds=8)
+    state.log_event(
+        "run_end", from_=result.worker_id or AGENT_ID,
+        summary=f"appraised {lead.get('name')}: {turnover}, "
+                f"margin {quote['margin']:.0f} ({parsed.get('confidence')}) — "
+                f"{str(parsed.get('why') or '')[:120]}",
+        outcome="completed",
+        details={"lead_id": lead_id, "cost_usd": result.cost_usd})
+    return {"ok": True, "appraisal": appraisal, "lead_id": lead_id}
