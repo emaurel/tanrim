@@ -143,7 +143,20 @@ async def _run_echo(world: World, task: dict[str, Any]) -> Any:
     wrong = _wrong_stage("echo", lead)
     if wrong:
         return wrong
-    # Same: Echo raises the send gate, the operator passes it.
+    # Communications has two benches and they do different jobs. The Outbox
+    # works `drafted` — raise the send gate for the operator. The Inbox works
+    # `contacted` and `replied`, where there is nothing to dispatch: replies
+    # arrive on the mailbox poll, not on a tick.
+    #
+    # Calling request_send for all three meant every contacted lead was asked
+    # to send again, refused with "this lead has already been contacted", and
+    # logged as a failure — on every stage change and after every restart. The
+    # refusal is right; asking was not.
+    stage = lead.get("stage")
+    if stage != "drafted":
+        return {"ok": True, "skipped": f"nothing to send at '{stage}' — "
+                                       "the Inbox waits on the mailbox poll"}
+    # Echo raises the send gate, the operator passes it.
     return await echo.request_send(world, lead_id)
 
 
