@@ -204,7 +204,7 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
 
     extra = (
         f"THE PREVIEW LINK to put in the email: {preview}\n"
-        (f"WHY THIS PRICE: {appraisal.get('why')} — the site is worth this to "
+        + (f"WHY THIS PRICE: {appraisal.get('why')} — the site is worth this to "
          f"them because {appraisal.get('what_the_site_is_worth_to_them')}. Use "
          f"that reasoning to inform the tone, NOT as something to state; never "
          f"tell a business what you think they turn over.\n"
