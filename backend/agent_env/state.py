@@ -664,6 +664,17 @@ def awaiting_their_answer(lead: dict[str, Any]) -> bool:
     if not sent_log:
         return False
     last_sent = max(float(r.get("ts") or 0) for r in sent_log)
+
+    # A permanent bounce AFTER the last send means nobody is holding anything:
+    # the message reached no inbox. Treating it as "awaiting their answer"
+    # refused the very move the bounce handler needs to make — En Tête à Tête's
+    # address did not exist, the bounce was detected and a card was raised, and
+    # the lead then stayed at `contacted` with the dead address still on it,
+    # because this guard silently declined to return it to `drafted`.
+    for b in (lead.get("bounces") or []):
+        if b.get("permanent") and float(b.get("ts") or 0) >= last_sent:
+            return False
+
     replies = lead.get("replies") or []
     last_reply = max((float(r.get("ts") or 0) for r in replies), default=0.0)
     revision = lead.get("revision") or {}

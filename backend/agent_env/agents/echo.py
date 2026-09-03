@@ -480,7 +480,11 @@ async def record_bounce(
     state.advance_lead(
         lead_id, "drafted", agent=AGENT_ID,
         note=f"{address} does not exist — the outreach never arrived",
-        email=None, email_bounced=address, bounces=bounces, outreach=outreach)
+        email=None, email_bounced=address, bounces=bounces, outreach=outreach,
+        # A bounce is proof of non-delivery, which is exactly the evidence the
+        # rework guard exists to demand. Stated at the call site too, so this
+        # move does not depend on the guard's own reading of the bounce list.
+        force_rework=True)
 
     state.add_user_approval(
         kind="bad_address",
