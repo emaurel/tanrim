@@ -35,16 +35,20 @@ AGENCY_ADDRESS = os.getenv("AGENT_ENV_AGENCY_ADDRESS", "").strip()
 QUOTE_CURRENCY = os.getenv("AGENT_ENV_QUOTE_CURRENCY", "EUR")
 
 # What the work is worth, before the pass-through cost of the domain. The
-# quoted price is this PLUS ten years of registration, so the margin does not
-# quietly shrink on a business whose name only survives on an expensive TLD.
-MARGIN_AMOUNT = int(os.getenv("AGENT_ENV_MARGIN_EUR", "500"))
+# quoted price is this PLUS `DOMAIN_YEARS` of registration, so the margin does
+# not quietly shrink on a business whose name only survives on an expensive TLD.
+MARGIN_AMOUNT = int(os.getenv("AGENT_ENV_MARGIN_EUR", "400"))
 # The appraisal may move the price within these, and no further. A floor
 # because below it the work is not worth doing and it sets what every later
 # quote is compared against; a ceiling because a number nobody believes is
 # just a slower no.
-MARGIN_FLOOR = int(os.getenv("AGENT_ENV_MARGIN_FLOOR_EUR", "200"))
-MARGIN_CEILING = int(os.getenv("AGENT_ENV_MARGIN_CEILING_EUR", "500"))
-DOMAIN_YEARS = int(os.getenv("AGENT_ENV_DOMAIN_YEARS", "10"))
+MARGIN_FLOOR = int(os.getenv("AGENT_ENV_MARGIN_FLOOR_EUR", "100"))
+MARGIN_CEILING = int(os.getenv("AGENT_ENV_MARGIN_CEILING_EUR", "400"))
+# How many years of the domain the quote covers. Three keeps the all-in
+# figure honest without pre-paying most of a decade for a business that
+# has not yet decided it wants a website; they own the name and can renew
+# it themselves after that.
+DOMAIN_YEARS = int(os.getenv("AGENT_ENV_DOMAIN_YEARS", "3"))
 
 # Registration cost per year, by TLD. RDAP answers availability and says
 # nothing about price, so this is a table rather than a lookup — keep it

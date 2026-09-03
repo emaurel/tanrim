@@ -882,15 +882,37 @@ async function buildTimeline(): Promise<HTMLElement> {
 
   const factsEl = document.createElement("div");
   factsEl.className = "lb-facts";
+  // A URL, an address or a phone number on this card is something you want to
+  // OPEN, not select and copy. Only http(s), mailto and tel are ever put in an
+  // href — the values come from agent output, and a scheme allowlist is what
+  // keeps a "javascript:" in a scraped field from becoming a live link.
+  const hrefFor = (v: string): string | null => {
+    const t = v.trim();
+    if (/^https?:\/\/\S+$/i.test(t)) return t;
+    if (/^www\.\S+$/i.test(t)) return `https://${t}`;
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return `mailto:${t}`;
+    // French numbers arrive as "+33 1 99 00 00 00" or "04 37 42 09 90"
+    if (/^\+?[\d][\d\s.()-]{7,}$/.test(t)) return `tel:${t.replace(/[\s.()-]/g, "")}`;
+    return null;
+  };
   const fact = (k: string, v?: string) => {
     if (!v) return;
     const row = document.createElement("div");
     const kk = document.createElement("span");
     kk.className = "lb-fact-k";
     kk.textContent = k;
-    const vv = document.createElement("span");
-    vv.className = "lb-fact-v";
+    const href = hrefFor(v);
+    const vv = document.createElement(href ? "a" : "span");
+    vv.className = href ? "lb-fact-v lb-link" : "lb-fact-v";
     vv.textContent = v;
+    if (href) {
+      const a = vv as HTMLAnchorElement;
+      a.href = href;
+      if (href.startsWith("http")) {
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+      }
+    }
     row.append(kk, vv);
     factsEl.appendChild(row);
   };

@@ -1479,6 +1479,11 @@ html, body {
 .lb-facts > div { display: flex; gap: 10px; }
 .lb-fact-k { color: #6a6a78; min-width: 96px; font-size: 10px; }
 .lb-fact-v { color: #b8b8c4; word-break: break-all; font-size: 11px; }
+/* A value you can open. Underlined on hover rather than always, so a card full
+   of addresses and phone numbers does not turn into a wall of blue. */
+a.lb-link { color: #7fb3d5; text-decoration: none; cursor: pointer; }
+a.lb-link:hover { color: #a8d0e8; text-decoration: underline; }
+a.lb-link:focus-visible { outline: 2px solid #7fb3d5; outline-offset: 2px; border-radius: 2px; }
 .lb-warn {
   color: #c9a86a;
   background: #1c1810;
