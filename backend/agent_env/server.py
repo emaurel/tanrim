@@ -829,7 +829,10 @@ async def post_room_action(room_id: str, body: ActionBody) -> dict[str, Any]:
 async def health_mail():
     """Whether outreach can actually happen, and what to change if not."""
     from . import mailbox
-    return mailbox.check()
+    report = mailbox.check()
+    # "No replies yet" and "the poller never ran" look identical without this.
+    report["last_poll"] = state.get_meta("last_mail_poll")
+    return report
 
 
 @app.get("/health/google")

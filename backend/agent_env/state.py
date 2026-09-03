@@ -788,3 +788,29 @@ def clear_task_reruns() -> None:
     _ensure()
     with _lock:
         TASK_RERUNS_FILE.write_text("{}")
+
+# ---------------------------------------------------------------------------
+# Small facts about the system rather than about a lead: the last time the
+# mailbox was read, and anything else that is a heartbeat rather than an
+# event. Kept out of the event log because a heartbeat every five minutes
+# would bury the events worth reading.
+# ---------------------------------------------------------------------------
+
+META_FILE = STATE_DIR / "meta.json" if "STATE_DIR" in dir() else LEADS_FILE.parent / "meta.json"
+
+
+def set_meta(key: str, value: Any) -> None:
+    with _lock:
+        try:
+            data = json.loads(META_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        data[key] = value
+        META_FILE.write_text(json.dumps(data, indent=2))
+
+
+def get_meta(key: str, default: Any = None) -> Any:
+    try:
+        return json.loads(META_FILE.read_text()).get(key, default)
+    except (OSError, json.JSONDecodeError):
+        return default

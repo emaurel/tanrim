@@ -86,7 +86,19 @@ class Orchestrator:
 
         try:
             arrived = await asyncio.to_thread(mailbox.poll)
+            # A poll that matches nothing logs nothing, so there was no way to
+            # tell "no replies yet" from "the poller never ran". Record the
+            # heartbeat instead of an event per poll, which would be noise
+            # every five minutes.
+            state.set_meta("last_mail_poll", {
+                "ts": time.time(), "matched": len(arrived),
+                "ok": True,
+            })
         except Exception as e:  # noqa: BLE001
+            state.set_meta("last_mail_poll", {
+                "ts": time.time(), "ok": False,
+                "error": f"{type(e).__name__}: {e}"[:200],
+            })
             state.log_event(
                 "run_end", from_="echo",
                 summary=f"could not read the mailbox: {type(e).__name__}: {e}"[:240],
