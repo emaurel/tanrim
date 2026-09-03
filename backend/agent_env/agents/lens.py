@@ -281,6 +281,14 @@ def _build_incumbent_prompt(lead: dict[str, Any], url: str, out_dir: str) -> str
             }, ensure_ascii=False, indent=2)[:1200]
         )
     sections.append(f"THE SITE TO JUDGE: {url}\nSAVE SCREENSHOTS INTO: {out_dir}")
+    shape = lead.get("site_shape") or {}
+    if shape.get("kind"):
+        sections.append(
+            "WHAT THAT ADDRESS ACTUALLY SERVES — fetched, not guessed:\n"
+            f"  {shape.get('url')}\n"
+            f"  {shape['kind']} — {shape.get('visible_words')} readable words, "
+            f"{shape.get('bytes')} bytes\n"
+            f"  {shape.get('note', '')}")
     sections.append(INCUMBENT_SCHEMA.strip())
     sections.append("Render it now, look at both screenshots, then decide.")
     return "\n\n".join(sections)

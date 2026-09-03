@@ -614,6 +614,41 @@ async def look_around(out_dir: str | Path, facebook: str = "",
 SOCIAL_HOSTS = ("instagram.com", "facebook.com", "linktr.ee", "linkedin.com",
                 "tiktok.com", "x.com", "twitter.com")
 
+# Somebody else's platform, with a page ABOUT this business on it. Not a
+# website they own, and not something we are competing with: a salon's Planity
+# entry said "ce coiffeur n'est pas encore réservable en ligne sur Planity" —
+# a directory stub for a business that is not even a customer of the platform.
+# A business whose only web presence is one of these is exactly our lead.
+PLATFORM_HOSTS = (
+    "planity.com", "doctolib.", "treatwell.", "fresha.com", "booksy.",
+    "thefork.", "lafourchette.", "tripadvisor.", "ubereats.com", "deliveroo.",
+    "just-eat.", "pagesjaunes.fr", "yelp.", "allogarage.fr", "motrio.fr",
+    "autofirst-france.fr", "sluurpy.", "mappy.com", "petitfute.com",
+    "resmio.", "zenchef.com", "michelin.com", "theforkmanager.",
+    "facebook.com", "instagram.com", "linktr.ee",
+)
+
+# A site the business DOES own, built on a hosted builder. Their own content,
+# their own name on it — judge it on merit like any other site. Franquette's
+# eatbu page carries 764 words and a menu; that is a website.
+BUILDER_HOSTS = (
+    "eatbu.com", "wixsite.com", "business.site", "weebly.com", "jimdosite.com",
+    "webflow.io", "wordpress.com", "blogspot.", "myshopify.com",
+    "squarespace.com", "godaddysites.com", "systeme.io", "sumup.link",
+)
+
+
+def _host_kind(url: str) -> tuple[str, str] | None:
+    """Whether a URL is a platform profile or a builder-hosted site."""
+    low = (url or "").lower()
+    for h in PLATFORM_HOSTS:
+        if h in low:
+            return "platform_listing", h
+    for h in BUILDER_HOSTS:
+        if h in low:
+            return "site_builder", h
+    return None
+
 
 async def page_shape(url: str) -> dict[str, Any]:
     """Classify what a URL serves, without judging whether it is any good."""
@@ -639,8 +674,32 @@ async def page_shape(url: str) -> dict[str, Any]:
         r'http-equiv=["\']refresh|location\.(?:href|replace)|window\.location',
         html, re.I))
 
-    if r.status_code >= 400:
+    # Whose page IS this? Decided from the host, before anything counts words:
+    # a platform profile with a thousand words of the platform's own marketing
+    # is still not a website the business owns.
+    host_kind = _host_kind(out.get("final_url") or url)
+    # The host wins over a failed fetch: Facebook refuses a plain client
+    # whenever it likes, and being unable to read the page does not make it
+    # any more of a website they own.
+    if host_kind and host_kind[0] == "platform_listing":
+        out["kind"] = "platform_listing"
+        out["platform"] = host_kind[1]
+        out["note"] = (
+            f"a page about them on {host_kind[1]}, not a website they own. "
+            "Most of the words on it belong to the platform. A business whose "
+            "only web presence is a listing like this has no site of its own — "
+            "this does NOT disqualify the lead.")
+        if r.status_code >= 400:
+            out["note"] += f" (the page itself would not load: HTTP {r.status_code})"
+    elif r.status_code >= 400:
         out["kind"] = "error"
+    elif host_kind and host_kind[0] == "site_builder" and words >= 100:
+        out["kind"] = "site_builder"
+        out["platform"] = host_kind[1]
+        out["note"] = (
+            f"their OWN site, hosted on {host_kind[1]} — {words} words of "
+            "their own content. Judge it on merit like any other site; we "
+            "cannot beat one that is already working.")
     elif words < 30 and social and (redirecting or len(r.content) < 4000):
         # A near-empty page whose only content is a link out.
         out["kind"] = "redirect_to_social"
