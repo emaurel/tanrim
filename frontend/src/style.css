@@ -1982,3 +1982,110 @@ a.lb-link:focus-visible { outline: 2px solid #7fb3d5; outline-offset: 2px; borde
   line-height: 15px;
   white-space: nowrap;
 }
+
+/* ---------------------------------------------------------------------------
+   Settings: the pipeline as a vertical spine. Each step is one row — where the
+   lead is, who picks it up, and where it can go — so the gate checkbox sits
+   physically on the arrow it controls.
+   --------------------------------------------------------------------------- */
+
+#settings {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: #0d0d10;
+  display: none;
+  flex-direction: column;
+}
+#settings.st--open { display: flex; }
+
+.st-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 16px 20px 40px;
+}
+
+.st-intro, .st-note {
+  max-width: 62ch;
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.65;
+  color: #9a93ad;
+}
+.st-note { color: #6f6980; margin-bottom: 20px; }
+.st-error {
+  color: #e0a0a0;
+  background: #241416;
+  border: 1px solid #4a2830;
+  padding: 10px 12px;
+  font-size: 11px;
+}
+
+.st-flow { display: flex; flex-direction: column; gap: 0; max-width: 900px; }
+
+/* A step. The left rail is the spine; the row is a 3-column grid so every
+   stage chip, room label and outcome list lines up down the page. */
+.st-step {
+  display: grid;
+  grid-template-columns: 190px 1fr 260px;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 12px;
+  border-left: 2px solid #26222e;
+  position: relative;
+}
+.st-step + .st-step { border-top: 1px solid #17161d; }
+.st-step--gated {
+  border-left-color: #c9a86a;
+  background: rgba(201, 168, 106, 0.045);
+}
+
+.st-from { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.st-chip { align-self: flex-start; }
+.st-waiting { font-size: 9.5px; color: #7f7891; letter-spacing: 0.4px; }
+
+.st-arrow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 16px;
+  border-left: 1px dashed #2e2a38;
+}
+.st-who { display: flex; align-items: baseline; gap: 8px; }
+.st-room { font-size: 11px; color: #d8d0f0; letter-spacing: 0.6px; }
+.st-role { font-size: 9.5px; color: #6f6980; }
+
+.st-gate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: #b8b0c8;
+  cursor: pointer;
+  user-select: none;
+  width: fit-content;
+}
+.st-gate input { accent-color: #c9a86a; cursor: pointer; margin: 0; }
+.st-gate:hover { color: #e6dcff; }
+.st-gate--locked { color: #7f7891; cursor: default; }
+.st-gate--locked input { accent-color: #5a5468; cursor: default; }
+.st-gate--locked:hover { color: #7f7891; }
+.st-why {
+  font-size: 9.5px;
+  color: #5f5a70;
+  max-width: 46ch;
+  line-height: 1.5;
+}
+.st-err { color: #e0a0a0; font-size: 9.5px; margin-left: 6px; }
+
+.st-to { display: flex; flex-direction: column; gap: 4px; }
+.st-out { display: flex; align-items: center; gap: 6px; }
+.st-out-arrow { color: #5f5a70; font-size: 11px; width: 11px; text-align: center; }
+.st-out[data-kind="reject"] .st-out-arrow { color: #8a5f5f; }
+.st-out[data-kind="park"] .st-out-arrow { color: #8a7f5f; }
+.st-kind { font-size: 9px; color: #6f6980; letter-spacing: 0.4px; }
+
+@media (max-width: 780px) {
+  .st-step { grid-template-columns: 1fr; gap: 8px; }
+  .st-arrow { padding-left: 10px; }
+}

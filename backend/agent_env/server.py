@@ -23,6 +23,8 @@ from . import assets as assets_mod
 from . import config
 from . import prompts as prompts_mod
 from . import skills as skills_mod
+from . import rooms as rooms_mod
+from . import runners
 from . import state
 from . import usage as usage_mod
 from .agents import courier as courier_mod
@@ -853,6 +855,65 @@ async def post_room_action(room_id: str, body: ActionBody) -> dict[str, Any]:
     return await handler.action(body.name, body.payload)
 
 
+class GateToggle(BaseModel):
+    stage: str
+    on: bool
+
+
+@app.get("/pipeline")
+async def get_pipeline() -> dict[str, Any]:
+    """The stage graph, who works each step, and which steps are gated.
+
+    Built from `state.PIPELINE` and the room manifests, so it cannot drift from
+    what the transport actually does — the same `role_for_stage` the transport
+    uses is what names the room here.
+    """
+    gates = state.stage_gates()
+    counts = state.lead_counts_by_stage()
+    steps = []
+    for step in state.pipeline_steps():
+        stage, role = step["from"], step["role"]
+        room_id = rooms_mod.room_for_role(role)
+        room = next((r for r in rooms_mod.load_rooms() if r.id == room_id), None)
+        steps.append({
+            "stage": stage,
+            "role": role,
+            "room_id": room_id,
+            "room_name": getattr(room, "name", room_id),
+            "outcomes": step["outcomes"],
+            "gated": stage in gates,
+            "permanent": stage in state.PERMANENT_GATES,
+            "permanent_reason": state.PERMANENT_GATES.get(stage),
+            "waiting": counts.get(stage, 0),
+        })
+    return {
+        "steps": steps,
+        "stages": list(state.STAGES),
+        "dead_stages": sorted(state.DEAD_STAGES),
+        "gates": gates,
+    }
+
+
+@app.post("/pipeline/gate")
+async def set_pipeline_gate(body: GateToggle) -> dict[str, Any]:
+    if body.stage in state.PERMANENT_GATES:
+        raise HTTPException(
+            400, f"'{body.stage}' is always gated: "
+                 f"{state.PERMANENT_GATES[body.stage]}")
+    try:
+        gates = state.set_stage_gate(body.stage, body.on)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    state.log_event(
+        "user_approval", from_="operator",
+        summary=f"{'now asking' if body.on else 'no longer asking'} before the "
+                f"'{body.stage}' step runs",
+        outcome="applied", details={"stage": body.stage, "on": body.on},
+    )
+    await world.publish({"type": "approvals_updated"})
+    return {"ok": True, "gates": gates}
+
+
 @app.get("/health/mail")
 async def health_mail():
     """Whether outreach can actually happen, and what to change if not."""
@@ -1059,6 +1120,48 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
         if request_id:
             new_status = "approved" if body.decision == "approved" else "denied"
             state.update_tool_request(request_id, status=new_status)
+
+    elif rec["kind"] == "stage_gate":
+        # A step the operator asked to be consulted about. Approving runs it;
+        # rejecting leaves the lead parked where it is, which is a real choice
+        # and not a failure — the gate exists to let a lead wait.
+        lead_id = rec["payload"].get("lead_id")
+        role = rec["payload"].get("role")
+        stage = rec["payload"].get("stage")
+        runner = runners.AGENT_RUNNERS.get(role) if role else None
+        if lead_id and role and body.decision == "approved" and runner is not None:
+            lead = state.get_lead(lead_id)
+            if lead is None:
+                raise HTTPException(404, "no such lead")
+            if lead.get("stage") != stage:
+                # It moved while the card was open — running the step now would
+                # be work about a state that no longer holds.
+                state.log_event(
+                    "user_approval", from_="operator", to=role,
+                    summary=f"{lead.get('name')} left '{stage}' while the gate "
+                            f"was open (now '{lead.get('stage')}') — not run",
+                    outcome="skipped", details={"lead_id": lead_id},
+                )
+            else:
+                state.log_event(
+                    "dispatch_end", from_="operator", to=role,
+                    summary=f"{lead.get('name')} at '{stage}' → {role}: "
+                            "approved at the gate",
+                    outcome="dispatched",
+                    details={"lead_id": lead_id, "stage": stage},
+                )
+                asyncio.create_task(runner(world, {
+                    "lead_id": lead_id,
+                    "prompt": f"This lead just reached '{stage}'.",
+                }))
+        elif lead_id:
+            state.log_event(
+                "user_approval", from_="operator", to=role or "?",
+                summary=f"declined to run {role} on "
+                        f"{(state.get_lead(lead_id) or {}).get('name')} — "
+                        f"the lead stays at '{stage}'",
+                outcome="rejected", details={"lead_id": lead_id},
+            )
 
     elif rec["kind"] == "publish_site":
         # Gate 1. Approving here is what actually puts the site on a URL.

@@ -2,6 +2,7 @@ import type { AgentState, RoomSpec, WireEvent } from "./types";
 import { subscribe } from "./net/ws";
 import { buildToggle } from "./notify";
 import { buildBoardButton } from "./leadBoard";
+import { buildSettingsButton } from "./settings";
 import { openRoomPanel } from "./panels";
 
 interface State {
@@ -29,6 +30,7 @@ export function mount(): void {
   countEl = aside.querySelector(".crew-count");
   aside.querySelector("header")!.appendChild(buildToggle());
   aside.querySelector("header")!.appendChild(buildBoardButton());
+  aside.querySelector("header")!.appendChild(buildSettingsButton());
 
   // Collapse the crew list so it isn't permanently over the map. The choice
   // persists, because someone who closed it once meant it.

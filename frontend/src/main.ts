@@ -4,12 +4,14 @@ import { mount as mountCrew } from "./agentList";
 import { startApprovalSync } from "./approvals";
 import { installUnlockHandlers } from "./notify";
 import { installLeadBoard } from "./leadBoard";
+import { installSettings } from "./settings";
 
 mountCrew();
 // Browsers block audio until the user has interacted with the page.
 installUnlockHandlers();
 startApprovalSync();
 installLeadBoard();
+  installSettings();
 
 new Phaser.Game({
   type: Phaser.AUTO,

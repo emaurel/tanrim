@@ -4,6 +4,7 @@ import asyncio
 import time
 from typing import Any
 
+from . import rooms as rooms_mod
 from . import state, workers
 from .agents import tinker, ultron
 from .runners import AGENT_RUNNERS
@@ -281,6 +282,45 @@ class Orchestrator:
             ]
             if pending:
                 continue
+            # A step the operator has ticked in Settings stops here and asks.
+            # The question is asked BEFORE the run, so which outgoing edge the
+            # room would take is not yet known — that is why a gate belongs to
+            # the step rather than to one arrow. Courier and Echo are gated in
+            # code and raise their own richer cards, so they are not doubled up.
+            if (state.step_is_gated(stage)
+                    and stage not in state.PERMANENT_GATES):
+                state.add_user_approval(
+                    kind="stage_gate",
+                    room_id=rooms_mod.room_for_role(role) or "throne",
+                    requesting_agent=role,
+                    summary=f"{lead.get('name')} is at '{stage}' — run {role}?",
+                    payload={
+                        "lead_id": lead_id,
+                        "business": lead.get("name"),
+                        "stage": stage,
+                        "role": role,
+                        "outcomes": [
+                            {"to": to, "kind": kind}
+                            for f, to, r, kind in state.PIPELINE
+                            if f == stage and r == role
+                        ],
+                        "what_this_means":
+                            f"You asked to be consulted before {role} works a "
+                            f"lead at '{stage}'. Approve to run it now; reject "
+                            f"to leave the lead parked here. Untick this step "
+                            f"in Settings to stop being asked.",
+                    },
+                )
+                state.log_event(
+                    "dispatch_end", from_="system", to=role,
+                    summary=f"{lead.get('name')} at '{stage}' → {role}: "
+                            "asking first, this step is gated",
+                    outcome="gated",
+                    details={"lead_id": lead_id, "stage": stage},
+                )
+                await self.world.publish({"type": "approvals_updated"})
+                continue
+
             state.log_event(
                 "dispatch_end", from_="system", to=role,
                 summary=f"{lead.get('name')} "

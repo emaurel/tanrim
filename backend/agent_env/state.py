@@ -1023,3 +1023,120 @@ def list_lead_rows(
         _ROWS_CACHE.clear()
     _ROWS_CACHE[key] = (stamp, raw)
     return orjson.loads(raw)
+
+
+# ---------------------------------------------------------------------------
+# The pipeline, declared.
+#
+# Until now the stage graph existed only in agents' `advance_lead` calls and in
+# CLAUDE.md's prose, so nothing could draw it or reason about it. These are the
+# transitions agents actually make, cross-checked against every transition in
+# every lead's history on 2026-09-03 — the operator can move a lead anywhere by
+# hand and those moves are deliberately NOT listed here, because they are not
+# pipeline steps.
+#
+# `role` is who performs the step; the room is derived from the manifests via
+# `rooms.room_for_role`, so this never disagrees with the map.
+# ---------------------------------------------------------------------------
+
+# (from_stage, to_stage, role, what kind of edge it is)
+PIPELINE: tuple[tuple[str, str, str, str], ...] = (
+    ("sourced",      "qualified",    "probe",   "forward"),
+    ("sourced",      "needs_review", "probe",   "branch"),
+    ("sourced",      "disqualified", "probe",   "reject"),
+
+    ("needs_review", "qualified",    "lens",    "forward"),
+    ("needs_review", "disqualified", "lens",    "reject"),
+
+    ("qualified",    "enriched",     "probe",   "forward"),
+    ("qualified",    "qualified",    "probe",   "park"),
+
+    ("enriched",     "appraised",    "probe",   "forward"),
+    ("enriched",     "needs_review", "probe",   "branch"),
+    ("enriched",     "qualified",    "probe",   "park"),
+
+    ("appraised",    "visualised",   "lens",    "forward"),
+
+    ("visualised",   "built",        "forge",   "forward"),
+
+    ("built",        "qa_passed",    "lens",    "forward"),
+    ("built",        "qa_failed",    "lens",    "reject"),
+
+    ("qa_failed",    "built",        "forge",   "forward"),
+
+    ("qa_passed",    "published",    "courier", "forward"),
+
+    ("published",    "drafted",      "scribe",  "forward"),
+
+    ("drafted",      "contacted",    "echo",    "forward"),
+
+    ("contacted",    "replied",      "echo",    "forward"),
+    ("contacted",    "drafted",      "echo",    "bounce"),
+    ("contacted",    "lost",         "echo",    "reject"),
+
+    ("replied",      "qa_failed",    "echo",    "branch"),
+    ("replied",      "won",          "echo",    "forward"),
+)
+
+
+def pipeline_steps() -> list[dict[str, Any]]:
+    """The pipeline grouped by step — one entry per (stage, role) pair.
+
+    A step is what actually runs: the room that works `stage` picks a lead up
+    and decides which of its outgoing edges to take. That is why a gate belongs
+    to the step and not to one edge: the operator is asked BEFORE the run, when
+    which edge it will take is not yet known.
+    """
+    order = {s: i for i, s in enumerate(STAGES)}
+    steps: dict[tuple[str, str], dict[str, Any]] = {}
+    for frm, to, role, kind in PIPELINE:
+        key = (frm, role)
+        step = steps.setdefault(key, {
+            "from": frm, "role": role, "outcomes": [],
+            "order": order.get(frm, 99),
+        })
+        step["outcomes"].append({"to": to, "kind": kind})
+    return sorted(steps.values(), key=lambda s: s["order"])
+
+
+# ---------------------------------------------------------------------------
+# Operator gates on pipeline steps.
+#
+# The two permanent gates — publishing a preview and sending an email — are in
+# code because they reach outside the system and must never depend on a
+# setting. These are the discretionary ones: the operator ticks a step and the
+# pipeline stops there and asks, instead of running it. Nothing is gated by
+# default, so the pipeline behaves exactly as before until a box is ticked.
+# ---------------------------------------------------------------------------
+
+# Always gated, whatever the settings say. Listed so the UI can show them as
+# fixed rather than pretending they are choices.
+PERMANENT_GATES = {
+    "qa_passed": "publishing a preview puts a page about a real business on a "
+                 "public URL",
+    "drafted": "sending reaches a stranger's inbox and cannot be taken back",
+}
+
+
+def stage_gates() -> dict[str, bool]:
+    """Which pipeline steps the operator wants to be asked about."""
+    raw = get_meta("stage_gates", {}) or {}
+    return {k: bool(v) for k, v in raw.items() if v}
+
+
+def set_stage_gate(stage: str, on: bool) -> dict[str, bool]:
+    """Tick or untick one step. Permanent gates cannot be turned off."""
+    if stage not in STAGES:
+        raise ValueError(f"unknown stage: {stage}")
+    gates = dict(get_meta("stage_gates", {}) or {})
+    if on:
+        gates[stage] = True
+    else:
+        gates.pop(stage, None)
+    set_meta("stage_gates", gates)
+    return {k: bool(v) for k, v in gates.items() if v}
+
+
+def step_is_gated(stage: str) -> bool:
+    """Should the pipeline ask before running the room that works `stage`?"""
+    return stage in PERMANENT_GATES or bool(stage_gates().get(stage))
