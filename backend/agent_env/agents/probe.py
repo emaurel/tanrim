@@ -93,6 +93,23 @@ async def ensure_google_profile(lead_id: str, lead: dict[str, Any]) -> dict[str,
         return lead
     state.update_lead(lead_id, google_profile=profile)
 
+    # The profile's website field is whatever the owner typed there, and for a
+    # business with no site it is very often their Instagram or Facebook — the
+    # link a person reads straight off the Google card. `places.classify_site`
+    # separates the two, because filing a social account as a website is wrong
+    # twice: Lens spends a render judging an Instagram profile as a web page,
+    # and we lose the contact route we were separately failing to find.
+    if profile.get("ok") and profile.get("social"):
+        state.update_lead(lead_id, **{
+            net: url for net, url in profile["social"].items()
+            if not lead.get(net)
+        })
+
+    if profile.get("ok") and profile.get("link_hub") and not lead.get("website"):
+        # A page of links is not a site of their own, but the accounts behind
+        # it are routes worth having.
+        state.update_lead(lead_id, link_hub=profile["link_hub"])
+
     if profile.get("ok") and profile.get("website"):
         try:
             shape = await harvest.page_shape(profile["website"])

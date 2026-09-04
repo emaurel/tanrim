@@ -31,6 +31,7 @@ The catalogue comes from `fonts.google.com/metadata/fonts`, which needs no key
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -98,7 +99,13 @@ def catalogue(refresh: bool = False) -> list[dict[str, Any]]:
 
     try:
         CACHE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE.write_text(json.dumps({"ts": time.time(), "families": families}))
+        # Written and renamed, not written in place: this file is 450 KB and
+        # another process reading it mid-write gets truncated JSON, an empty
+        # catalogue, and a tool that reports "no fonts match" instead of an
+        # error.
+        tmp = CACHE.with_name(CACHE.name + f".tmp{os.getpid()}")
+        tmp.write_text(json.dumps({"ts": time.time(), "families": families}))
+        os.replace(tmp, CACHE)
     except OSError:
         pass
     _MEM["families"] = families
@@ -161,14 +168,39 @@ def search(category: str | None = None,
         fams = [f for f in fams
                 if q in (f.get("family") or "").lower()
                 or any(q in str(c).lower() for c in f.get("classifications") or [])]
-    if min_thickness is not None:
-        fams = [f for f in fams if (f.get("thickness") or 0) >= min_thickness]
-    if min_width is not None:
-        fams = [f for f in fams if (f.get("width") or 0) >= min_width]
     if needs_italic:
         fams = [f for f in fams if f.get("italic")]
-    fams.sort(key=lambda f: f.get("popularity") or 9999)
-    return fams[:limit]
+
+    # Google publishes `thickness` and `width` for only a third of its
+    # families — 1,011 of 1,522 latin-ext families carry None, including 115
+    # Handwriting faces. Treating unmeasured as zero, which `(x or 0) >= n`
+    # does, silently excluded two thirds of the catalogue from every filtered
+    # search and is why Lens reported "zero matches for every query I try".
+    #
+    # So a filter now ranks rather than deletes: families Google measured and
+    # that match come first, then unmeasured families of the right category,
+    # labelled. Never knowing a font's weight is a reason to look at it and
+    # decide, not a reason to pretend it does not exist.
+    def measured(f: dict[str, Any]) -> bool:
+        return f.get("thickness") is not None and f.get("width") is not None
+
+    if min_thickness is None and min_width is None:
+        fams.sort(key=lambda f: f.get("popularity") or 9999)
+        return fams[:limit]
+
+    hits, unmeasured = [], []
+    for f in fams:
+        if not measured(f):
+            unmeasured.append({**f, "shape": "not measured by Google"})
+            continue
+        if min_thickness is not None and (f["thickness"] or 0) < min_thickness:
+            continue
+        if min_width is not None and (f["width"] or 0) < min_width:
+            continue
+        hits.append(f)
+    hits.sort(key=lambda f: f.get("popularity") or 9999)
+    unmeasured.sort(key=lambda f: f.get("popularity") or 9999)
+    return (hits + unmeasured)[:limit]
 
 
 def describe(fams: list[dict[str, Any]]) -> str:

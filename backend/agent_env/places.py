@@ -52,6 +52,43 @@ DETAIL_FIELDS = ",".join((
 ))
 
 
+# A Google Business Profile's "website" field is whatever the owner typed, and
+# for a business with no site that is very often their Instagram or Facebook —
+# which is exactly the link a person reads off the knowledge panel.
+#
+# Recording it as a website is wrong twice over. It is not a site, so the lead
+# went to `needs_review` and Lens spent a render judging an Instagram profile
+# as though it were a web page; and it IS a contact route, which is the thing
+# we were separately failing to find. All three leads whose profile carried one
+# had it filed as `existing_site.url`.
+SOCIAL_HOSTS = {
+    "instagram": ("instagram.com",),
+    "facebook": ("facebook.com", "fb.com", "fb.me"),
+    "linkedin": ("linkedin.com",),
+    "tiktok": ("tiktok.com",),
+    "x": ("twitter.com", "x.com"),
+}
+# Not a social account and not a site of their own either: a link tree is a
+# page of links, so it is worth following but never worth calling a website.
+LINK_HUBS = ("linktr.ee", "linktree.com", "beacons.ai", "bio.link", "campsite.bio")
+
+
+def classify_site(url: str) -> tuple[str, str | None]:
+    """Is this URL a real website, a social account, or a link hub?
+
+    Returns (kind, network) where kind is "site" | "social" | "hub".
+    """
+    low = (url or "").lower()
+    if not low:
+        return "site", None
+    for network, hosts in SOCIAL_HOSTS.items():
+        if any(h in low for h in hosts):
+            return "social", network
+    if any(h in low for h in LINK_HUBS):
+        return "hub", None
+    return "site", None
+
+
 def configured() -> bool:
     return bool(os.getenv("GOOGLE_MAPS_API_KEY"))
 
@@ -136,8 +173,19 @@ async def lookup(name: str, address: str = "", lat: float | None = None,
         "name": (p.get("displayName") or {}).get("text"),
         "address": p.get("formattedAddress"),
         "maps_url": p.get("googleMapsUri"),
-        # The field this exists for.
-        "website": p.get("websiteUri"),
+        # The field this exists for — but only when it really is a website.
+        "website": (p.get("websiteUri")
+                    if classify_site(p.get("websiteUri") or "")[0] == "site"
+                    else None),
+        # ...and the same field when it is actually how you message them.
+        "social": ({classify_site(p.get("websiteUri"))[1]: p.get("websiteUri")}
+                   if p.get("websiteUri")
+                   and classify_site(p.get("websiteUri"))[0] == "social"
+                   else {}),
+        "link_hub": (p.get("websiteUri")
+                     if classify_site(p.get("websiteUri") or "")[0] == "hub"
+                     else None),
+        "listed_url": p.get("websiteUri"),
         "phone": p.get("nationalPhoneNumber") or p.get("internationalPhoneNumber"),
         "business_status": p.get("businessStatus"),
         "trading": p.get("businessStatus") == "OPERATIONAL",
@@ -204,6 +252,18 @@ def as_prompt(profile: dict[str, Any]) -> str:
             f"  WEBSITE: {profile['website']}  <-- they HAVE a site. The lead "
             "goes to needs_review so Lens can render and judge it; nothing may "
             "call it bad unseen, and we do not pitch against a working site.")
+    elif profile.get("social"):
+        for net, url in profile["social"].items():
+            lines.append(
+                f"  {net.upper()}: {url}  <-- the profile's website field is "
+                f"their {net} account, not a site. So they have NO website, "
+                "and this is a way to reach them: record it under "
+                "contact.socials, do NOT record it as an existing site.")
+    elif profile.get("link_hub"):
+        lines.append(
+            f"  LINK HUB: {profile['link_hub']}  <-- a page of links, not a "
+            "site of their own. Open it: the accounts behind it are contact "
+            "routes, and a business using one has no website.")
     else:
         lines.append("  website: none listed on the profile")
     if profile.get("phone"):
