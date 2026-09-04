@@ -1125,6 +1125,26 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
             new_status = "approved" if body.decision == "approved" else "denied"
             state.update_tool_request(request_id, status=new_status)
 
+    elif rec["kind"] == "manual_outreach":
+        # The operator messaged them on Instagram or Facebook themselves.
+        # Approving records that contact, which is what stops the lead being
+        # pitched again and starts the silence timer; rejecting leaves it be.
+        lead_id = rec["payload"].get("lead_id")
+        routes = rec["payload"].get("routes") or {}
+        if lead_id and body.decision == "approved":
+            route = next(iter(routes), "social")
+            handle = routes.get(route, route)
+            asyncio.create_task(echo_mod.mark_contacted(
+                world, lead_id,
+                note=f"messaged by hand on {route} ({handle})", via=route))
+        elif lead_id:
+            state.log_event(
+                "user_approval", from_="operator", to="echo",
+                summary=f"declined to message "
+                        f"{(state.get_lead(lead_id) or {}).get('name')} by hand",
+                outcome="rejected", details={"lead_id": lead_id},
+            )
+
     elif rec["kind"] == "stage_gate":
         # A step the operator asked to be consulted about. Approving runs it;
         # rejecting leaves the lead parked where it is, which is a real choice

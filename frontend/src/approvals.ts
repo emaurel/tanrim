@@ -314,6 +314,66 @@ return true;
 
   // The email never arrived. Not a decision about the business — a missing
   // address, and the work is all still there waiting for one.
+  // No email, but we have their Instagram or Facebook. Nothing here can send a
+  // DM, so this card exists to hand over the two things needed to do it by
+  // hand: the account to open, and the text to paste.
+  if (a.kind === "manual_outreach") {
+    host.appendChild(kv("Business", String(p.business ?? "?")));
+
+    const routes: Record<string, string> = (p.routes ?? {}) as any;
+    for (const [k, v] of Object.entries(routes)) {
+      const row = document.createElement("div");
+      row.className = "rp-brief-field";
+      const lab = document.createElement("span");
+      lab.className = "rp-brief-label";
+      lab.textContent = k;
+      const val = document.createElement("span");
+      val.className = "rp-brief-value";
+      const link = document.createElement("a");
+      link.href = v;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = v;
+      val.appendChild(link);
+      row.append(lab, val);
+      host.appendChild(row);
+    }
+    if (p.phone) host.appendChild(kv("Phone on file", String(p.phone)));
+    if (p.preview_url) host.appendChild(kv("Preview they can open", String(p.preview_url)));
+    const pr: any = p.pricing ?? {};
+    if (pr.total) {
+      host.appendChild(kv(
+        "Quoted", `${pr.total} ${pr.currency ?? "EUR"}`
+        + ` (${pr.margin} flat + ${Number(pr.domain_cost).toFixed(2)} domain`
+        + ` + ${Number(pr.spend_eur ?? 0).toFixed(2)} compute)`));
+    }
+
+    if (p.subject) host.appendChild(kv("Subject", String(p.subject)));
+    if (p.body) {
+      const wrap = document.createElement("div");
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "rp-btn";
+      copy.textContent = "copy the message";
+      copy.addEventListener("click", () => {
+        void navigator.clipboard.writeText(String(p.body)).then(
+          () => { copy.textContent = "copied"; },
+          () => { copy.textContent = "could not copy — select it below"; });
+      });
+      wrap.appendChild(copy);
+      const pre = document.createElement("pre");
+      pre.className = "rp-pre";
+      pre.textContent = String(p.body);
+      wrap.appendChild(pre);
+      host.appendChild(labelled("the message to send", wrap));
+    }
+    for (const q of ((p.other_problems ?? []) as string[])) {
+      host.appendChild(note(q));
+    }
+    if (p.what_this_means) host.appendChild(note(String(p.what_this_means)));
+    return true;
+  }
+
   if (a.kind === "bad_address") {
     host.appendChild(kv("Business", String(p.business ?? "?")));
     host.appendChild(kv("Bounced", String(p.bounced_address ?? "?")));

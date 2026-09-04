@@ -153,6 +153,49 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
             domain_check = {"domain": named, "rechecked": False,
                             "error": f"{type(e).__name__}: {e}"}
 
+    # No email, but their Instagram or Facebook is on file: that is a route,
+    # and the operator works it by hand. Hand over the handle and the text
+    # rather than refusing — refusing is what left a finished, published site
+    # with nowhere to go.
+    routes = state.contact_routes(lead)
+    social = {k: v for k, v in routes.items() if k in ("instagram", "facebook")}
+    if not lead.get("email") and social:
+        state.add_user_approval(
+            kind="manual_outreach",
+            room_id=ROOM_ID,
+            requesting_agent=AGENT_ID,
+            summary=f"Message {lead.get('name')} yourself on "
+                    + " or ".join(social),
+            payload={
+                "lead_id": lead_id,
+                "business": lead.get("name"),
+                "routes": social,
+                "phone": lead.get("phone"),
+                "subject": (lead.get("outreach") or {}).get("subject"),
+                "body": outgoing_body(lead),
+                "preview_url": lead.get("preview_url"),
+                "pricing": pricing_now,
+                "other_problems": [p for p in problems
+                                   if "recipient email" not in p],
+                "what_this_means":
+                    "There is no email address for this business, but we have "
+                    "their social account. Nothing here can send a direct "
+                    "message, so copy the text and send it yourself. Approve "
+                    "once you have — that records the contact so the lead is "
+                    "never pitched twice and the silence timer starts. Reject "
+                    "to leave it alone.",
+            },
+        )
+        await world.say(AGENT_ID, "needs you to message them", seconds=8)
+        state.log_event(
+            "user_approval", from_=AGENT_ID, to="operator",
+            summary=f"manual outreach needed for {lead.get('name')}: "
+                    + ", ".join(f"{k} {v}" for k, v in social.items()),
+            details={"lead_id": lead_id},
+        )
+        await world.publish({"type": "approvals_updated"})
+        return {"ok": True, "manual": True, "routes": social}
+
     if problems:
         await world.say(AGENT_ID, "blocked — see panel", seconds=8)
         # This runs in a detached task, so a bare return tells nobody: the lead
@@ -286,16 +329,28 @@ async def do_send(world: World, lead_id: str) -> dict[str, Any]:
     return {"ok": True, "sent": True, "to": to}
 
 
-async def mark_contacted(world: World, lead_id: str, note: str = "sent manually") -> dict[str, Any]:
-    """For when you sent it yourself from your own mail client."""
+async def mark_contacted(world: World, lead_id: str, note: str = "sent manually",
+                         via: str = "manual") -> dict[str, Any]:
+    """For when you sent it yourself — from your mail client, or as a DM."""
     lead = state.get_lead(lead_id)
     if lead is None:
         return {"ok": False, "error": f"no such lead: {lead_id}"}
     outreach = dict(lead.get("outreach") or {})
-    outreach.update({"sent": True, "transport": "manual"})
-    state.advance_lead(lead_id, "contacted", agent=AGENT_ID, note=note, outreach=outreach)
+    outreach.update({"sent": True, "transport": via, "sent_ts": time.time()})
+    # The same append-only record an SMTP send writes. `outreach` is replaced
+    # wholesale by a redraft, so a contact recorded only in there disappears —
+    # and `preflight` guards on `sent_log`. Without this line a business
+    # messaged by hand could be pitched a second time.
+    sent_log = list(lead.get("sent_log") or [])
+    sent_log.append({"ts": time.time(), "to": note, "via": via,
+                     "subject": outreach.get("subject")})
+    state.advance_lead(lead_id, "contacted", agent=AGENT_ID, note=note,
+                       outreach=outreach, sent_log=sent_log)
+    state.log_event("run_end", from_=AGENT_ID,
+                    summary=f"{lead.get('name')} contacted by hand: {note}"[:240],
+                    outcome="completed", details={"lead_id": lead_id, "via": via})
     await world.publish({"type": "approvals_updated"})
-    return {"ok": True, "lead_id": lead_id}
+    return {"ok": True, "lead_id": lead_id, "via": via}
 
 
 # ---------- What the client said back ----------

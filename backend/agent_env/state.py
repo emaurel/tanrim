@@ -1140,3 +1140,56 @@ def set_stage_gate(stage: str, on: bool) -> dict[str, bool]:
 def step_is_gated(stage: str) -> bool:
     """Should the pipeline ask before running the room that works `stage`?"""
     return stage in PERMANENT_GATES or bool(stage_gates().get(stage))
+
+
+# ---------------------------------------------------------------------------
+# How we can reach a business.
+#
+# "No contact route, no lead" is the rule, but email is not the only route.
+# A brewery was disqualified with the note "not found — Instagram blocked,
+# Facebook 400": the run had located both accounts and had nowhere to record
+# them, so a business reachable two ways was filed as reachable none — and a
+# full site was built for it anyway, because a later Lens verdict re-qualified
+# it without re-checking.
+#
+# Social accounts count as routes because the operator messages them by hand.
+# Nothing here sends anything: it only decides whether a lead is worth working.
+# A phone number deliberately does NOT count — we do not cold-call.
+# ---------------------------------------------------------------------------
+
+
+def contact_routes(lead: dict[str, Any]) -> dict[str, str]:
+    """Every way we could reach this business, by route name.
+
+    Reads the lead's own fields first, then the dossier's contact block, so it
+    works at qualification (before a dossier exists) and after it.
+    """
+    out: dict[str, str] = {}
+    email = (lead.get("email") or "").strip()
+    if email:
+        out["email"] = email
+
+    socials: dict[str, Any] = {}
+    for src in ((lead.get("profile") or {}).get("contact") or {},
+                (lead.get("audit") or {}).get("contact") or {}):
+        for k, v in ((src.get("socials") or {})).items():
+            if v and not socials.get(k):
+                socials[k] = v
+    for k in ("instagram", "facebook"):
+        # A lead may also carry one at the top level, put there by a harvest.
+        v = socials.get(k) or lead.get(k)
+        if v and isinstance(v, str) and v.strip():
+            out[k] = v.strip()
+    return out
+
+
+def is_reachable(lead: dict[str, Any]) -> bool:
+    """Is there any route to this business at all?"""
+    return bool(contact_routes(lead))
+
+
+def unreachable_note(lead: dict[str, Any]) -> str:
+    """Why a lead is being dropped, in the terms the operator thinks in."""
+    return ("no way to reach them: no email address, no Instagram account and "
+            "no Facebook page. A phone number alone is not a route — we do not "
+            "cold-call.")

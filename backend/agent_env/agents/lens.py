@@ -304,7 +304,15 @@ async def run_incumbent_review(
         return {"ok": False, "error": f"no such lead: {lead_id}"}
     url = (lead.get("website") or "").strip()
     if not url:
-        # Nothing to review — this lead belongs straight in the Factory.
+        # Nothing to review — this lead belongs straight in the Factory, but
+        # only if we can actually reach the business. This path re-qualified a
+        # lead Probe had dropped as unreachable and a full site was built for
+        # it; the reachability rule has to hold on every road into `qualified`,
+        # not just Probe's.
+        if not state.is_reachable(lead):
+            state.advance_lead(lead_id, "disqualified", agent=AGENT_ID,
+                               note=state.unreachable_note(lead))
+            return {"ok": True, "verdict": "unreachable", "lead_id": lead_id}
         state.advance_lead(lead_id, "qualified", agent=AGENT_ID,
                            note="no existing site to review")
         return {"ok": True, "verdict": "no_site", "lead_id": lead_id}
@@ -352,6 +360,11 @@ async def run_incumbent_review(
     review = {**parsed, "url": url, "cost_usd": result.cost_usd}
     stage = "qualified" if verdict == "rebuild_worth_it" else "disqualified"
     note = (parsed.get("why") or "")[:300]
+    # A rebuild worth doing is still not worth doing for a business we cannot
+    # reach. Same rule, same road: every entry to `qualified` checks it.
+    if stage == "qualified" and not state.is_reachable(lead):
+        stage = "disqualified"
+        note = f"{state.unreachable_note(lead)} (a rebuild would have been worth it: {note})"[:300]
     state.advance_lead(lead_id, stage, agent=AGENT_ID, note=note,
                        incumbent_review=review)
 

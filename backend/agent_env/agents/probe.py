@@ -179,9 +179,20 @@ async def run_probe(world: World, lead_id: str, instruction: str = "") -> dict[s
 
     # Hard rule the model doesn't get to override: no contact route, no lead.
     # Everything downstream exists to put a message in front of a person.
-    if verdict in ("qualified", "needs_review") and not contact.get("email"):
+    #
+    # Email is not the only route. Their Instagram or Facebook counts, because
+    # the operator messages those by hand — and an account that is login-walled
+    # or refuses a fetch is still a route. Requiring an email dropped a brewery
+    # whose own verdict read "not found — Instagram blocked, Facebook 400": the
+    # run had found both accounts and had nowhere to record them.
+    #
+    # A phone number is still not a route. We do not cold-call.
+    routes = state.contact_routes({**lead, "audit": parsed,
+                                   "email": contact.get("email") or lead.get("email")})
+    if verdict in ("qualified", "needs_review") and not routes:
         verdict = "disqualified"
-        reason = f"no reachable email address ({reason})" if reason else "no reachable email address"
+        note = state.unreachable_note(lead)
+        reason = f"{note} ({reason})" if reason else note
 
     # Second hard rule, learned the expensive way: a site we have not SEEN
     # cannot be called bad. If any site exists, it goes to the Gallery for a
@@ -199,6 +210,11 @@ async def run_probe(world: World, lead_id: str, instruction: str = "") -> dict[s
     patch: dict[str, Any] = {
         "audit": parsed,
         "email": contact.get("email") or lead.get("email"),
+        # Kept at the top level as well as in the audit: these are how the
+        # operator reaches a business with no email, and a row on the board
+        # should be able to show that without opening the dossier.
+        "instagram": routes.get("instagram") or lead.get("instagram"),
+        "facebook": routes.get("facebook") or lead.get("facebook"),
         "phone": contact.get("phone") or lead.get("phone"),
         "contact_name": contact.get("contact_name"),
         "website": existing.get("url") or lead.get("website"),

@@ -2091,3 +2091,21 @@ a.lb-link:focus-visible { outline: 2px solid #7fb3d5; outline-offset: 2px; borde
   letter-spacing: 0.3px;
 }
 .lb-cost span { font-size: 9px; color: #7f7891; letter-spacing: 0.3px; }
+
+/* The message to copy for a hand-sent DM. Wraps rather than scrolls sideways —
+   it is prose to be read and pasted, not code. */
+.rp-pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: #131118;
+  border: 1px solid #262231;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: #c4bcd4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+}
