@@ -560,7 +560,18 @@ async def run_agent(
     # Claim the lead for this role before anything can yield. Two dispatches of
     # the same work arriving together is normal — the point is that only one
     # of them proceeds.
-    claim = (role, lead_id) if lead_id else None
+    # A delegated specialist runs as the SAME role on the SAME lead — that is
+    # the design: it borrows a worker from the parent's own room. So it must be
+    # exempt from the parent's lead claim, or it collides with the run that
+    # asked for it. It did: Forge recorded
+    # "delegate_subtask returned 'AgentBusy: forge is already working this
+    # lead'; I drew mark.svg + logo.svg myself". Delegation worked before the
+    # claim existed and has been silently impossible since.
+    #
+    # The parent blocks on the specialist, so nothing races: there is exactly
+    # one Forge writing at a time either way, and MAX_DEPTH already stops a
+    # specialist delegating further.
+    claim = (role, lead_id) if lead_id and delegation_depth == 0 else None
     if claim is not None:
         if claim in _LEAD_CLAIMS:
             state.log_event(
