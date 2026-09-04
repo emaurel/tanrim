@@ -11,7 +11,7 @@ import json
 from typing import Any
 
 from .. import state
-from .. import company, config, harvest, places
+from .. import company, config, harvest, places, usage
 from ..agent_helpers import (
     format_escalations,
     format_feedback,
@@ -569,9 +569,13 @@ async def run_appraise(world: World, lead_id: str, instruction: str = "") -> dic
         return {"ok": False, "error": "could not parse the appraisal",
                 "raw": (result.text or "")[:400]}
 
+    # Context on the appraisal record, not the price: under cost-plus the fee is
+    # flat and this projection just shows what the lead would be quoted if it
+    # went out now, at the compute it has consumed so far.
     quote = config.quote_for(
         ((lead.get("domains") or {}).get("suggested") or [None])[0],
-        (lead.get("domains") or {}).get("priced"), parsed)
+        (lead.get("domains") or {}).get("priced"), parsed,
+        spend_usd=usage.for_lead(lead_id)["total"])
     appraisal = {**parsed, "cost_usd": result.cost_usd,
                  "quote_total": quote["total"],
                  "margin_applied": quote["margin"],

@@ -144,8 +144,10 @@ def build(lead: dict[str, Any]) -> Invoice:
     # actually registered for them, falling back to what was offered.
     domain = (lead.get("domain_registered")
               or ((lead.get("domains") or {}).get("suggested") or [None])[0])
-    quote = config.quote_for(domain, (lead.get("domains") or {}).get("priced"),
-                             lead.get("appraisal"))
+    quote = config.quote_for(
+        domain, (lead.get("domains") or {}).get("priced"), lead.get("appraisal"),
+        spend_usd=((lead.get("outreach") or {}).get("quote_basis") or {})
+        .get("spend_usd"))
 
     # You invoice what you QUOTED. Recomputing means any later change to the
     # margin, the rounding or the domain's real price silently desyncs the
@@ -392,9 +394,15 @@ async def create_for_lead(lead_id: str, force: bool = False) -> dict[str, Any]:
     # quote went out at 590 and the domain really costs 75.10, the margin is
     # 514.90, and a ledger that says 500 is telling you the wrong number.
     priced = (lead.get("domains") or {}).get("priced") or {}
-    split = config.quote_for(inv.domain, priced, lead.get("appraisal"))
+    basis = ((lead.get("outreach") or {}).get("quote_basis") or {})
+    split = config.quote_for(inv.domain, priced, lead.get("appraisal"),
+                             spend_usd=basis.get("spend_usd"))
     real_domain = float(priced.get("total") if priced.get("total") is not None
                         else split["domain_cost"])
+    # The compute is a third pass-through alongside the domain. Taken from the
+    # basis recorded when the quote went out, not recomputed: the lead may have
+    # consumed more since, and the client is holding the older figure.
+    real_spend = float(basis.get("spend_eur") or 0.0)
     if existing and force:
         _forget(existing["number"])
     _record({
@@ -402,8 +410,10 @@ async def create_for_lead(lead_id: str, force: bool = False) -> dict[str, Any]:
         "client": inv.client_name, "total": inv.total, "currency": inv.currency,
         "issued": inv.issued, "pdf": str(pdf), "paid": False, "sent": False,
         "series": config.INVOICE_PREFIX,
-        "margin": round(inv.total - real_domain, 2),
+        "margin": round(inv.total - real_domain - real_spend, 2),
         "domain_cost": round(real_domain, 2),
+        "compute_cost": round(real_spend, 2),
+        "compute_cost_usd": round(float(basis.get("spend_usd") or 0), 4),
         "domain_cost_verified": bool(priced.get("verified")),
         "domain_years": split["domain_years"], "domain": inv.domain,
     })

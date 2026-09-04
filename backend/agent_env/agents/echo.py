@@ -18,6 +18,7 @@ from email.message import EmailMessage
 from typing import Any
 
 from .. import config
+from .. import usage
 from .. import domains as domains_mod, state
 from ..config import SITES_DIR
 from ..world import World
@@ -107,6 +108,7 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
     # small dishonesty that loses a client at the worst moment, so it is
     # re-checked here, at the last point before a stranger reads it.
     domain_check: dict[str, Any] = {}
+    pricing_now: dict[str, Any] | None = None
     dom = lead.get("domains") or {}
     named = (dom.get("suggested") or [None])[0]
     if named:
@@ -126,18 +128,24 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
             # comparing against MARGIN_AMOUNT blocked every one of them: three
             # drafts quoted at 330-380 sat at `drafted` with no card and no
             # error, because a lower appraisal looked like an underpriced quote.
+            # The price is meant to be true as of the moment the mail goes, so
+            # it is recomputed HERE — the domain may have got dearer and the
+            # lead may have consumed more compute since the draft was written.
+            # A quote that no longer covers cost-plus is refused rather than
+            # quietly sent at a loss.
             out = lead.get("outreach") or {}
             quoted = float((out.get("quote") or {}).get("amount") or 0)
-            basis = out.get("quote_basis") or {}
-            own_margin = float(basis.get("margin") or config.MARGIN_FLOOR)
-            floor = own_margin + float(priced.get("total") or 0)
-            if quoted and quoted < floor:
+            fresh = config.quote_for(named, priced,
+                                     spend_usd=usage.for_lead(lead_id)["total"])
+            pricing_now = fresh
+            if quoted and quoted < fresh["total"] - 0.5:
                 problems.append(
-                    f"the quoted {quoted:.0f} {config.QUOTE_CURRENCY} no longer "
-                    f"covers its {own_margin:.0f} margin plus the domain "
-                    f"({priced.get('total'):.2f}) — it needs "
-                    f"{floor:.0f} or more. The domain has probably got dearer "
-                    f"since this was drafted; requote.")
+                    f"the quoted {quoted:.0f} {config.QUOTE_CURRENCY} is below "
+                    f"what this lead now costs: {config.MARGIN_AMOUNT} flat + "
+                    f"{fresh['domain_cost']:.2f} domain + "
+                    f"{fresh['spend_eur']:.2f} of compute "
+                    f"(${fresh['spend_usd']:.2f}) = "
+                    f"{fresh['total']:.0f}. Send it back to Scribe to requote.")
             state.update_lead(lead_id, domains={**dom, "priced": priced,
                                                 "last_checked_ts": time.time()})
         except Exception as e:  # noqa: BLE001
@@ -183,9 +191,13 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
             # exact name or guessed from a table. The operator is about to send
             # a number to a stranger; a guessed input to it should be visible.
             "domain_check": domain_check,
-            "pricing": config.quote_for(
+            # Priced at this moment, which is what the figure is supposed to
+            # be true as of. `pricing_now` is set by the re-check above when a
+            # domain was named; otherwise compute it here.
+            "pricing": pricing_now or config.quote_for(
                 ((lead.get("domains") or {}).get("suggested") or [None])[0],
-                (lead.get("domains") or {}).get("priced")),
+                (lead.get("domains") or {}).get("priced"),
+                spend_usd=usage.for_lead(lead_id)["total"]),
             "preview_url": lead.get("preview_url"),
             "transport": "smtp" if smtp_configured() else "manual",
         },

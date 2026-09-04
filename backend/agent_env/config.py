@@ -34,16 +34,26 @@ AGENCY_ADDRESS = os.getenv("AGENT_ENV_AGENCY_ADDRESS", "").strip()
 # Default quote for a spec site, in whole currency units.
 QUOTE_CURRENCY = os.getenv("AGENT_ENV_QUOTE_CURRENCY", "EUR")
 
-# What the work is worth, before the pass-through cost of the domain. The
-# quoted price is this PLUS `DOMAIN_YEARS` of registration, so the margin does
-# not quietly shrink on a business whose name only survives on an expensive TLD.
-MARGIN_AMOUNT = int(os.getenv("AGENT_ENV_MARGIN_EUR", "400"))
-# The appraisal may move the price within these, and no further. A floor
-# because below it the work is not worth doing and it sets what every later
-# quote is compared against; a ceiling because a number nobody believes is
-# just a slower no.
+# Cost-plus. The quote is a flat fee plus the two things the job actually costs
+# us: the domain, and the compute that built the site.
+#
+#     quote = MARGIN_AMOUNT + DOMAIN_YEARS of the domain + what the lead spent
+#
+# The fee is flat, so the appraisal no longer sets the price — it is still
+# recorded, and still worth reading before deciding whether to work a lead at
+# all, but it does not move the number.
+MARGIN_AMOUNT = int(os.getenv("AGENT_ENV_MARGIN_EUR", "100"))
+# Kept so the appraisal's recommendation can still be clamped into a sane range
+# when it is consulted, and so `MARGIN_FLOOR` remains the floor Echo's send
+# preflight checks a stale quote against.
 MARGIN_FLOOR = int(os.getenv("AGENT_ENV_MARGIN_FLOOR_EUR", "100"))
 MARGIN_CEILING = int(os.getenv("AGENT_ENV_MARGIN_CEILING_EUR", "400"))
+
+# The ledger prices every model and API call in USD; the quote is in EUR. A
+# quote that silently added dollars to euros would be wrong by whatever the
+# rate happens to be, so the conversion is explicit and configurable rather
+# than assumed to be 1:1. Set AGENT_ENV_EUR_PER_USD when the rate moves.
+EUR_PER_USD = float(os.getenv("AGENT_ENV_EUR_PER_USD", "0.92"))
 # How many years of the domain the quote covers. Three keeps the all-in
 # figure honest without pre-paying most of a decade for a business that
 # has not yet decided it wants a website; they own the name and can renew
@@ -76,7 +86,8 @@ def domain_cost(domain: str | None) -> tuple[float, str]:
 
 def quote_for(domain: str | None = None,
               priced: dict[str, Any] | None = None,
-              appraisal: dict[str, Any] | None = None) -> dict[str, Any]:
+              appraisal: dict[str, Any] | None = None,
+              spend_usd: float | None = None) -> dict[str, Any]:
     """The single source of the number.
 
     The customer is told ONE all-in figure. The split — what is the work and
@@ -96,20 +107,30 @@ def quote_for(domain: str | None = None,
         cost, tld = domain_cost(domain)
         verified, price_source, premium = False, "per-TLD estimate", None
 
-    # What the work is worth to THIS business, if it has been appraised.
-    # Clamped: the appraisal advises, the bounds decide.
+    # A flat fee. The appraisal is still recorded and still worth reading before
+    # deciding whether to work a lead, but it no longer moves the price: the
+    # quote is the fee plus what the job cost, not what the business looks able
+    # to pay.
     margin = float(MARGIN_AMOUNT)
-    margin_source = "the standard rate"
+    margin_source = "flat fee"
+    appraised_view = None
     if appraisal and appraisal.get("margin"):
         try:
-            asked = float(appraisal["margin"])
+            appraised_view = max(float(MARGIN_FLOOR),
+                                 min(float(MARGIN_CEILING),
+                                     float(appraisal["margin"])))
         except (TypeError, ValueError):
-            asked = margin
-        margin = max(float(MARGIN_FLOOR), min(float(MARGIN_CEILING), asked))
-        margin_source = (
-            f"appraised ({appraisal.get('confidence', 'unknown')} confidence)"
-            + (f", clamped from {asked:.0f}" if abs(asked - margin) >= 1 else ""))
-    raw = margin + cost
+            appraised_view = None
+
+    # The compute this lead actually consumed — model runs and Google API calls
+    # — converted from the ledger's dollars. Passed in rather than looked up
+    # here, because `config` must not import `usage`, and because the caller
+    # decides WHEN the figure is taken: it keeps growing until the mail goes.
+    spend_eur = 0.0
+    if spend_usd:
+        spend_eur = round(float(spend_usd) * EUR_PER_USD, 2)
+
+    raw = margin + cost + spend_eur
     total = float(-(-raw // QUOTE_ROUND_TO) * QUOTE_ROUND_TO) if QUOTE_ROUND_TO > 1 else raw
     return {
         "total": total,
@@ -118,6 +139,14 @@ def quote_for(domain: str | None = None,
         "margin_source": margin_source,
         "domain_cost": cost,
         "domain_years": DOMAIN_YEARS,
+        # The compute, as billed and as converted, so an invoice or a check can
+        # reproduce the figure without guessing the rate that was used.
+        "spend_usd": round(float(spend_usd or 0), 4),
+        "spend_eur": spend_eur,
+        "eur_per_usd": EUR_PER_USD,
+        # What the appraisal WOULD have said, for context only. It does not
+        # affect `total`.
+        "appraised_view": appraised_view,
         "tld": tld,
         "domain": domain,
         # what the rounding actually handed back
@@ -132,8 +161,9 @@ def quote_for(domain: str | None = None,
 
 
 def quote_display(domain: str | None = None,
-                  priced: dict[str, Any] | None = None) -> str:
-    q = quote_for(domain, priced)
+                  priced: dict[str, Any] | None = None,
+                  spend_usd: float | None = None) -> str:
+    q = quote_for(domain, priced, spend_usd=spend_usd)
     n = int(q["total"]) if float(q["total"]).is_integer() else q["total"]
     return f"{n} {q['currency']}"
 

@@ -14,7 +14,8 @@ import time
 import json
 from typing import Any
 
-from .. import config, state
+from .. import config
+from .. import usage, state
 from ..agent_helpers import (
     format_escalations,
     format_feedback,
@@ -122,7 +123,13 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
     # inside the figure. One number goes to the customer; the split never does.
     priced = dom.get("priced")
     appraisal = lead.get("appraisal") or {}
-    quote = config.quote_for(free[0] if free else None, priced, appraisal)
+    # The compute this lead has consumed so far. It cannot include this very
+    # drafting run — that cost is recorded when the run ends — so the figure is
+    # always a little behind, and Echo re-checks it at send time, which is the
+    # moment the price is supposed to be true as of.
+    spend_now = usage.for_lead(lead_id)["total"]
+    quote = config.quote_for(free[0] if free else None, priced, appraisal,
+                             spend_usd=spend_now)
     price = f"{int(quote['total']) if float(quote['total']).is_integer() else quote['total']} {quote['currency']}"
     filled = (
         template
@@ -310,6 +317,12 @@ async def run_outreach(world: World, lead_id: str, instruction: str = "") -> dic
             "margin": quote["margin"],
             "domain_cost": quote["domain_cost"],
             "domain_years": quote["domain_years"],
+            # The compute the price passed through, in both currencies plus the
+            # rate used, so an invoice reproduces the figure exactly instead of
+            # deriving it and getting a different answer.
+            "spend_usd": quote["spend_usd"],
+            "spend_eur": quote["spend_eur"],
+            "eur_per_usd": quote["eur_per_usd"],
             "total": quote["total"],
             "margin_source": quote["margin_source"],
             "priced_at_ts": time.time(),
