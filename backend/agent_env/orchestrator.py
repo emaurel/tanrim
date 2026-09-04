@@ -330,10 +330,36 @@ class Orchestrator:
                 outcome="dispatched",
                 details={"lead_id": lead_id, "stage": stage},
             )
-            asyncio.create_task(runner(self.world, {
+            task = asyncio.create_task(runner(self.world, {
                 "lead_id": lead_id,
                 "prompt": f"This lead just reached '{stage}'.",
             }))
+            # The mark above says "this (lead, stage) has been dispatched", and
+            # the recovery branch trusts it forever. But a room at capacity
+            # refuses the work and the run never happens — so with five workers
+            # and nineteen leads arriving at once, five would run and fourteen
+            # would sit at their stage untouched until a restart.
+            #
+            # A refusal is a normal outcome, not a dispatch, so the mark comes
+            # back off and the sweep picks the lead up on a later tick.
+            task.add_done_callback(
+                lambda t, key=(lead_id, stage): self._unmark_if_refused(t, key))
+
+    def _unmark_if_refused(self, task: "asyncio.Task", key: tuple[str, str]) -> None:
+        """Undo the dispatch mark when the run was declined rather than done."""
+        if task.cancelled():
+            self._dispatched.discard(key)
+            return
+        if task.exception() is not None:
+            self._dispatched.discard(key)
+            return
+        result = task.result()
+        if isinstance(result, dict) and not result.get("ok"):
+            err = str(result.get("error") or "").lower()
+            # "already running" is a genuine duplicate: the work IS happening,
+            # so leave the mark. Capacity and busy-room refusals are not.
+            if "already running" not in err and "already working" not in err:
+                self._dispatched.discard(key)
 
     async def _gatekeeper_loop(self) -> None:
         """Routes pending tool requests through Ultron → Tinker."""
