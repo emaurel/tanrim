@@ -13,7 +13,7 @@ import shutil
 import time
 from typing import Any
 
-from .. import assets, skills, state
+from .. import assets, fonts, skills, state
 from ..agent_helpers import (
     AgentBusy,
     format_escalations,
@@ -82,9 +82,46 @@ def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
                 k: visual.get(k) for k in (
                     "palette_observed", "text_in_photos", "atmosphere", "signage",
                     "proves", "photo_slots_needed", "design_direction",
+                    "typography", "logo_reference",
                 ) if visual.get(k)
             }, ensure_ascii=False, indent=2)[:6000]
         )
+
+        # The typeface, ready to paste. Lens picks a Google Font by looking at
+        # their sign; handing over the exact <link> is what stops a build
+        # naming a family and then not loading it, which renders in whatever
+        # the browser substitutes and quietly undoes the whole point.
+        typo = visual.get("typography") or {}
+        picks, lines = [], []
+        for slot in ("wordmark", "supporting"):
+            entry = typo.get(slot) or {}
+            fam = fonts.resolve(entry.get("google_font") or "")
+            conf = entry.get("confidence") or "?"
+            if fam and conf != "nothing matches":
+                picks.append(fam)
+                lines.append(f"  {slot}: {fam} — {conf}. "
+                             f"{entry.get('why') or ''}".rstrip())
+            elif entry.get("google_font") and conf != "nothing matches":
+                # Named something that is not in the catalogue. Say so rather
+                # than passing it through: the stylesheet would 400 and the
+                # page would render in a substitute with nobody the wiser.
+                lines.append(
+                    f"  {slot}: \"{entry['google_font']}\" is NOT a Google "
+                    "Font, so it cannot be loaded. Set this in a plain family "
+                    "and letterspace it rather than substituting a lookalike.")
+            elif entry.get("described"):
+                lines.append(
+                    f"  {slot}: no webfont matches what Lens saw "
+                    f"({entry.get('described')}). Set it in something plain and "
+                    "letterspace it; do NOT reach for a novelty face.")
+        if lines:
+            block = ["THEIR TYPEFACE, read off their own sign:", *lines]
+            if picks:
+                block.append(
+                    "\nPut this in <head>, exactly as written, and use those "
+                    "families with a real fallback stack:\n"
+                    f'  <link rel="stylesheet" href="{fonts.css_url(picks)}">')
+            sections.append("\n".join(block))
 
     profile = lead.get("profile")
     if profile:
