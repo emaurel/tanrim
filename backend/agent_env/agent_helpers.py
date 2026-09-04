@@ -803,7 +803,7 @@ async def run_agent(
             usage.record(
                 agent_id, model, result.input_tokens, result.output_tokens,
                 cache_write=result.cache_write, cache_read=result.cache_read,
-                lead_id=lead_id,
+                lead_id=lead_id, workbench=workbench,
             )
         result.cost_usd = (
             total_cost if total_cost is not None

@@ -831,6 +831,20 @@ function spendTable(sp: any): HTMLElement {
     r.append(k, v);
     box.appendChild(r);
   }
+  // Which bench ate it. A site build and the logo beside it are both `forge`,
+  // so this is the only place the difference shows.
+  for (const b of (sp.benches ?? [])) {
+    if (!b.workbench || b.workbench === "unattributed") continue;
+    const r = document.createElement("div");
+    r.className = "lb-x-row";
+    const k = document.createElement("span");
+    k.textContent = `at the ${b.workbench} bench`;
+    const v = document.createElement("span");
+    v.textContent = `${money(b.cost_usd)} · ${b.runs} run(s) · `
+      + `${(b.output_tokens ?? 0).toLocaleString()} out`;
+    r.append(k, v);
+    box.appendChild(r);
+  }
   for (const a of (sp.apis ?? [])) {
     const r = document.createElement("div");
     r.className = "lb-x-row";

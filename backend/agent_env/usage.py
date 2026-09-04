@@ -108,6 +108,7 @@ def record(
     cache_read: int = 0,
     ts: float | None = None,
     lead_id: str | None = None,
+    workbench: str | None = None,
 ) -> dict[str, Any]:
     """Record one call's spend.
 
@@ -127,6 +128,11 @@ def record(
         # per-lead totals start from when this was added rather than being
         # reconstructed — nothing recorded the association before.
         "lead_id": lead_id,
+        # Which bench the run was at. This is what separates a site build from
+        # the logo drawn beside it: both are `forge` on the same lead, so
+        # without it the two are indistinguishable in the ledger and there is
+        # no way to answer "what does a logo cost".
+        "workbench": workbench,
         "kind": "model",
         "input_tokens": int(input_tokens),
         "cache_write_tokens": int(cache_write),
@@ -286,11 +292,28 @@ def for_lead(lead_id: str) -> dict[str, Any]:
             b["runs"] += 1
             b["output_tokens"] += int(r.get("output_tokens") or 0)
             b["cost_usd"] += float(r.get("cost_usd") or 0)
+    # Also split by bench, which is the split that answers a question you
+    # cannot otherwise ask: a site build and the logo drawn for it are both
+    # `forge` on the same lead, and only the bench tells them apart.
+    benches: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        if r.get("kind") == "api":
+            continue
+        key = r.get("workbench") or "unattributed"
+        b = benches.setdefault(key, {"workbench": key, "runs": 0,
+                                     "cost_usd": 0.0, "output_tokens": 0})
+        b["runs"] += 1
+        b["cost_usd"] += float(r.get("cost_usd") or 0)
+        b["output_tokens"] += int(r.get("output_tokens") or 0)
+    for b in benches.values():
+        b["cost_usd"] = round(b["cost_usd"], 4)
+
     model_total = round(sum(b["cost_usd"] for b in models.values()), 4)
     api_total = round(sum(b["cost_usd"] for b in apis.values()), 4)
     return {
         "lead_id": lead_id,
         "agents": sorted(models.values(), key=lambda b: -b["cost_usd"]),
+        "benches": sorted(benches.values(), key=lambda b: -b["cost_usd"]),
         "apis": sorted(apis.values(), key=lambda b: -b["cost_usd"]),
         "model_cost": model_total,
         "api_cost": api_total,
