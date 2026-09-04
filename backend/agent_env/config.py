@@ -240,6 +240,23 @@ def invoice_config_problems() -> list[str]:
     return problems
 
 
+# Where a draft goes when the business has no email address of its own.
+#
+# The pitch cannot be sent — there is nobody to send it to — but the operator
+# can forward it, or paste it into an Instagram or Facebook message. So it is
+# relayed to them instead, as a real email they can act on from their phone,
+# rather than living only as text to copy out of a web panel.
+#
+# This is NOT contacting the business. Nothing about the relay touches
+# `sent_log` or marks the lead contacted: it is a message from the system to
+# its operator, and the business has still heard nothing.
+OPERATOR_EMAIL = (os.getenv("AGENT_ENV_OPERATOR_EMAIL") or "").strip()
+
+
+def relay_configured() -> bool:
+    return bool(OPERATOR_EMAIL)
+
+
 def outreach_footer(language: str = "en") -> str:
     """Sender identity + opt-out, appended to every outreach email."""
     who = AGENCY_NAME or "(agency name not configured — set AGENT_ENV_AGENCY_NAME)"

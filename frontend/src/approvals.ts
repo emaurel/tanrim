@@ -348,6 +348,11 @@ return true;
         + ` + ${Number(pr.spend_eur ?? 0).toFixed(2)} compute)`));
     }
 
+    if (p.relayed_to) {
+      host.appendChild(note(
+        `The draft has been emailed to ${p.relayed_to} so you can forward it `
+        + "or paste it into a DM. Nothing has gone to the business."));
+    }
     if (p.subject) host.appendChild(kv("Subject", String(p.subject)));
     if (p.body) {
       const wrap = document.createElement("div");

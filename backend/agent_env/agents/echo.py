@@ -159,13 +159,20 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
     # with nowhere to go.
     routes = state.contact_routes(lead)
     social = {k: v for k, v in routes.items() if k in ("instagram", "facebook")}
-    if not lead.get("email") and social:
+    # No email at all is enough to hand over — a social account makes it
+    # actionable, but even without one the draft is ready and the operator may
+    # have a route we do not know about (they walked past the place, they know
+    # the owner). Refusing outright is what left a finished, published site
+    # with nowhere to go.
+    if not lead.get("email"):
         state.add_user_approval(
             kind="manual_outreach",
             room_id=ROOM_ID,
             requesting_agent=AGENT_ID,
-            summary=f"Message {lead.get('name')} yourself on "
-                    + " or ".join(social),
+            summary=(f"Message {lead.get('name')} yourself on "
+                     + " or ".join(social)) if social else
+                    f"{lead.get('name')} has no address — the draft is ready "
+                    "but you will need a route",
             payload={
                 "lead_id": lead_id,
                 "business": lead.get("name"),
@@ -177,15 +184,33 @@ async def request_send(world: World, lead_id: str) -> dict[str, Any]:
                 "pricing": pricing_now,
                 "other_problems": [p for p in problems
                                    if "recipient email" not in p],
+                "relayed_to": config.OPERATOR_EMAIL or None,
                 "what_this_means":
                     "There is no email address for this business, but we have "
                     "their social account. Nothing here can send a direct "
-                    "message, so copy the text and send it yourself. Approve "
-                    "once you have — that records the contact so the lead is "
-                    "never pitched twice and the silence timer starts. Reject "
-                    "to leave it alone.",
+                    "message, so the draft has been emailed to you instead — "
+                    "forward it, or paste it into a DM. The text is below too. "
+                    "Approve once you have sent it: that records the contact so "
+                    "the lead is never pitched twice and the silence timer "
+                    "starts. Reject to leave it alone. Nothing has reached the "
+                    "business yet.",
             },
         )
+        relayed = relay_email(lead, social)
+        if relayed.get("ok"):
+            state.log_event(
+                "run_end", from_=AGENT_ID, to="operator",
+                summary=f"relayed {lead.get('name')}'s draft to "
+                        f"{relayed['to']} — no address for the business, so "
+                        "nothing was sent to them",
+                outcome="completed", details={"lead_id": lead_id})
+        elif relayed.get("reason"):
+            state.log_event(
+                "run_end", from_=AGENT_ID, to="operator",
+                summary=f"could not relay {lead.get('name')}'s draft: "
+                        f"{relayed['reason']}"[:240],
+                outcome="failed", details={"lead_id": lead_id})
+
         await world.say(AGENT_ID, "needs you to message them", seconds=8)
         state.log_event(
             "user_approval", from_=AGENT_ID, to="operator",
@@ -265,6 +290,51 @@ def _send_smtp(to: str, subject: str, body: str) -> None:
         server.starttls(context=ssl.create_default_context())
         server.login(os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"])
         server.send_message(msg)
+
+
+def relay_email(lead: dict[str, Any], routes: dict[str, str]) -> dict[str, Any]:
+    """Send the draft to the OPERATOR, because the business has no address.
+
+    The pitch is ready and there is nobody to send it to. Rather than leaving
+    it as text to copy out of a panel, it goes to the operator as a real email
+    they can forward, or paste into a DM, from wherever they are.
+
+    Two things this must never do, and does not:
+
+    - **Mark the business contacted.** This is a message from the system to its
+      operator. `sent_log` is untouched, `outreach.sent` stays false, and the
+      business has still heard nothing — so the "never pitch twice" guard is
+      not spent, and the silence timer does not start.
+    - **Look like the pitch.** The subject and a header block say plainly which
+      business it is for, which account to send it to, and that it has NOT been
+      sent. A relay that arrived looking like the outreach itself would be
+      forwarded to the wrong person eventually.
+    """
+    if not config.relay_configured():
+        return {"ok": False, "reason": "AGENT_ENV_OPERATOR_EMAIL is not set"}
+    if not smtp_configured():
+        return {"ok": False, "reason": "SMTP is not configured"}
+
+    name = lead.get("name") or "this business"
+    where = ("\n".join(f"  {k}: {v}" for k, v in routes.items())
+             or "  (no social account on file either)")
+    header = (
+        "This is a hand-off, not a sent email. "
+        f"{name} has no email address, so the draft below has NOT gone "
+        "anywhere.\n\n"
+        "Send it yourself — forward this, or paste the part under the line "
+        "into a message on:\n"
+        f"{where}\n\n"
+        "Then approve the card in Communications, which is what records the "
+        "contact so the lead is never pitched twice.\n\n"
+        + ("-" * 60) + "\n\n"
+    )
+    subject = f"[to send by hand] {name} — {(lead.get('outreach') or {}).get('subject') or 'outreach'}"
+    try:
+        _send_smtp(config.OPERATOR_EMAIL, subject, header + outgoing_body(lead))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "to": config.OPERATOR_EMAIL, "subject": subject}
 
 
 async def do_send(world: World, lead_id: str) -> dict[str, Any]:
