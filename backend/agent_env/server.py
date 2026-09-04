@@ -610,6 +610,10 @@ async def lead_timeline(lead_id: str):
 
     return {
         "lead": state.lead_summary(lead),
+        # What this lead has cost, on the card rather than only inside the
+        # dossier: it is the figure that decides whether the price is right,
+        # and it belongs next to the business it is about.
+        "spend": usage_mod.for_lead(lead_id),
         "entries": entries,
         "active": active,
         "invoice": invoices_mod.for_lead(lead_id),

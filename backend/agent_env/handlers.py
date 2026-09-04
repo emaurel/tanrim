@@ -111,13 +111,13 @@ class TreasuryHandler(RoomHandler):
             # to price at zero, so the dearest agent in the pipeline reported
             # every run as free; this makes that state visible instead.
             "unpriced_models": usage.unpriced_models(all_records),
-            # What each lead has cost, models and external APIs together.
-            # Only from when per-lead attribution was added — nothing recorded
-            # the association before, so the rest sits in `unattributed`.
-            "by_lead": usage.by_lead(),
-            # Just enough to put a name on each row.
-            "leads": [{"id": l["id"], "name": l.get("name")}
-                      for l in state.list_leads(limit=500)],
+            # Per-lead spend lives on each lead's own card, where the figure
+            # is next to the business it is about. It is NOT sent here: it was
+            # `usage.by_lead()`, which filters the whole ledger once per lead —
+            # 411 ms across 23 leads — on every poll of this panel.
+            #
+            # `unattributed` stays, because it is about THESE totals
+            # reconciling: spend from before per-lead attribution existed.
             "unattributed": usage.unattributed(),
             "api_pricing": usage.API_PRICING,
             "is_empty": len(all_records) == 0,

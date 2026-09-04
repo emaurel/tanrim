@@ -1960,28 +1960,6 @@ a.lb-link:focus-visible { outline: 2px solid #7fb3d5; outline-offset: 2px; borde
 }
 
 /* ---- Treasury: per-lead spend ---- */
-.rp-lead-spend > li { flex-direction: column; align-items: stretch; gap: 4px; }
-.rp-spend-bars { display: flex; flex-direction: column; gap: 2px; }
-.rp-spend-bar {
-  position: relative;
-  background: #14141c;
-  border: 1px solid #1f1f29;
-  height: 15px;
-}
-.rp-spend-bar span {
-  position: absolute; inset: 0 auto 0 0;
-  background: #2b2340;
-  display: block;
-}
-.rp-spend-bar em {
-  position: relative;
-  font-style: normal;
-  font-size: 9.5px;
-  color: #b8b8c4;
-  padding-left: 5px;
-  line-height: 15px;
-  white-space: nowrap;
-}
 
 /* ---------------------------------------------------------------------------
    Settings: the pipeline as a vertical spine. Each step is one row — where the
@@ -2089,3 +2067,27 @@ a.lb-link:focus-visible { outline: 2px solid #7fb3d5; outline-offset: 2px; borde
   .st-step { grid-template-columns: 1fr; gap: 8px; }
   .st-arrow { padding-left: 10px; }
 }
+
+/* The cost of a lead, top right of its card. Small, monospaced digits so the
+   figure reads as data rather than as a headline. */
+.lb-lead-head { position: relative; }
+.lb-cost {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  padding: 3px 8px;
+  border: 1px solid #2b2636;
+  border-radius: 3px;
+  background: #17141d;
+  cursor: help;
+  flex: 0 0 auto;
+}
+.lb-cost strong {
+  font-size: 12px;
+  color: #d8cfa8;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+}
+.lb-cost span { font-size: 9px; color: #7f7891; letter-spacing: 0.3px; }

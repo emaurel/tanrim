@@ -766,6 +766,49 @@ function facts(obj: any, depth = 0): HTMLElement {
 }
 
 /** Model runs and external API calls, with the split that matters. */
+/**
+ * What this lead has cost, top right of its card.
+ *
+ * Deliberately small and always present: the total, and the one agent that ate
+ * most of it. Forge is usually that agent and usually by a long way — on one
+ * lead it was $22.56 of $30.38 — which is the fact that decides whether a
+ * 330 EUR quote is a business or a hobby. The full split stays in the Spend
+ * section of the dossier below; this is the number you should not have to open
+ * anything to see.
+ */
+function costBadge(sp: any): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "lb-cost";
+  const total = Number(sp?.total ?? 0);
+  const amount = document.createElement("strong");
+  amount.textContent = total >= 1
+    ? `$${total.toFixed(2)}`
+    : total > 0 ? `$${total.toFixed(3)}` : "$0";
+  el.appendChild(amount);
+
+  const agents = (sp?.agents ?? []) as { agent: string; cost_usd: number }[];
+  const top = agents.reduce(
+    (best, a) => (a.cost_usd > (best?.cost_usd ?? -1) ? a : best),
+    null as null | { agent: string; cost_usd: number });
+  const detail = document.createElement("span");
+  if (top && total > 0) {
+    const pct = Math.round((top.cost_usd / total) * 100);
+    detail.textContent = `${top.agent} ${pct}%`;
+    el.title = agents
+      .slice()
+      .sort((a, b) => b.cost_usd - a.cost_usd)
+      .map((a) => `${a.agent}  $${a.cost_usd.toFixed(3)}`)
+      .join("\n")
+      + `\n\n${sp.runs ?? 0} run(s)`
+      + (sp.api_cost ? `  ·  $${Number(sp.api_cost).toFixed(4)} of API calls` : "");
+  } else {
+    detail.textContent = "nothing spent yet";
+    el.title = "No model runs or API calls have been attributed to this lead.";
+  }
+  el.appendChild(detail);
+  return el;
+}
+
 function spendTable(sp: any): HTMLElement {
   const box = document.createElement("div");
   box.className = "lb-dfacts";
@@ -835,7 +878,7 @@ function dossierSections(d: any): HTMLElement[] {
   add("Replies", "what they said back", d.replies);
   add("Bounces", "delivery failures", d.bounces);
   add("Contact hunt", "addresses Probe found, and where", d.contact_hunt);
-  if (d.spend) out.push(sub("Spend", "what this lead has cost to work",
+  if (d.spend) out.push(sub("Spend", "every run and API call, itemised",
                             spendTable(d.spend), 
                             Math.round((d.spend.total ?? 0) * 100) / 100));
   add("Invoice", "", d.invoice);
@@ -879,6 +922,7 @@ async function buildTimeline(): Promise<HTMLElement> {
   h.textContent = lead.name || selected.slice(0, 8);
   head.appendChild(h);
   head.appendChild(stageChip(lead.stage));
+  head.appendChild(costBadge(data.spend));
 
   const factsEl = document.createElement("div");
   factsEl.className = "lb-facts";
