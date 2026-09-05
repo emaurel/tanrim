@@ -109,6 +109,15 @@ class RoomSpec(BaseModel):
     max_workers: int = 1
 
 
+# Tiles reserved at the top of every room for its name plate.
+#
+# One, not two. Rooms are 8 tiles tall: two for the margins, two for the idle
+# strip at the bottom, and a two-tile title band left only two tiles for the
+# benches — which then overlapped each other, because a bench has a minimum
+# height of 2. One tile is 32px, which is enough for a name plate anyway.
+TITLE_STRIP = 1
+
+
 def _layout_workbenches(room: RoomSpec) -> None:
     """Fill in any missing bench geometry, so a manifest only has to name them.
 
@@ -125,8 +134,13 @@ def _layout_workbenches(room: RoomSpec) -> None:
     margin = 1
     # Keep a strip at the bottom free as the idle area.
     idle_strip = 2 if room.size.h >= 6 else 0
+    # ...and a strip at the TOP for the room's name plate. Benches used to be
+    # laid out from the top margin, so the first one sat under the title and
+    # covered it — the name is what the map is navigated by, and it should
+    # never be something a bench can win against.
+    title_strip = TITLE_STRIP if room.size.h >= 6 else 0
     usable_w = max(1, room.size.w - margin * 2)
-    usable_h = max(1, room.size.h - margin * 2 - idle_strip)
+    usable_h = max(1, room.size.h - margin * 2 - idle_strip - title_strip)
     cell_w = usable_w / cols
     cell_h = usable_h / rows
     pad_x = min(0.6, cell_w * 0.12)
@@ -138,7 +152,7 @@ def _layout_workbenches(room: RoomSpec) -> None:
         col, row = i % cols, i // cols
         bench.position = Vec2(
             x=int(round(margin + col * cell_w + pad_x)),
-            y=int(round(margin + row * cell_h + pad_y)),
+            y=int(round(margin + title_strip + row * cell_h + pad_y)),
         )
         bench.size = Size(
             w=max(2, int(round(cell_w - pad_x * 2))),

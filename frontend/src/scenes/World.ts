@@ -281,23 +281,32 @@ export class World extends Phaser.Scene {
         .setStrokeStyle(1, 0x000000, 0.45)
         .setFillStyle(0, 0);
 
-      // A plaque behind the name. Text alone had to compete with whatever
-      // colour the room's floor happened to be, and at low zoom it lost.
-      const title = this.add.text(px + W + 6, py + W + 4, room.name.toUpperCase(), {
-        fontFamily: "monospace", fontSize: "20px", color: "#f7f4e9",
+      // The name gets a bar of its own across the top of the room. The layout
+      // reserves a tile for it (`rooms.TITLE_STRIP`), so no bench is ever
+      // placed there and nothing can cover the one thing the map is navigated
+      // by. The bar spans the full interior width, which also gives the room
+      // a header rather than a floating sticker.
+      const barH = TILE;
+      const bar = this.add.rectangle(px + W, py + W, pw - W * 2, barH,
+                                     0x0e0e13, 0.92).setOrigin(0, 0);
+      const barLip = this.add.rectangle(px + W, py + W + barH - 1,
+                                        pw - W * 2, 1, base, 0.5).setOrigin(0, 0);
+      const title = this.add.text(px + W + 8, py + W + barH / 2,
+                                  room.name.toUpperCase(), {
+        fontFamily: "monospace", fontSize: "18px", color: "#f7f4e9",
         fontStyle: "bold",
-        backgroundColor: "#0e0e13",
-        padding: { x: 7, y: 4 },
-      }).setResolution(TEXT_DPR).setOrigin(0, 0).setDepth(6);
+      }).setResolution(TEXT_DPR).setOrigin(0, 0.5).setDepth(7);
+      bar.setDepth(6);
+      barLip.setDepth(6);
       // Held at a constant SCREEN size, so zooming out does not shrink the
       // one thing you navigate by.
-      this.fixedLabels.push({ obj: title, min: 0.75, max: 2.2 });
+      this.fixedLabels.push({ obj: title, min: 0.7, max: 1.9 });
       // The room's purpose lives in its panel, not on the floor — with
       // workbenches drawn inside, a paragraph per room made the map unreadable.
       walls.setDepth(0);
       floor.setDepth(1);
       inner.setDepth(2);
-      this.worldLayer.add([walls, floor, inner, title]);
+      this.worldLayer.add([walls, floor, inner, bar, barLip, title]);
 
       // Workbenches: the stations inside a room where each kind of job is done.
       // Drawn under the sprites so an agent standing at one reads as being AT
