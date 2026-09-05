@@ -15,7 +15,7 @@ interface AgentSprite {
   label: Phaser.GameObjects.Text;
   speech: Phaser.GameObjects.Text;
   shadow: Phaser.GameObjects.Image;
-  anims: { walk: string; idle: string };
+  anims: { walk: string; idle: string; work: string };
   busyGlow?: Phaser.GameObjects.Arc;
   state: AgentState;
 }
@@ -351,7 +351,24 @@ export class World extends Phaser.Scene {
         lip.setDepth(3);
         foot.setDepth(3);
         edge.setDepth(3);
-        this.worldLayer.add([plate, lip, foot, edge, label]);
+        // The furniture itself: a throne in the Throne, an anvil in the Armory,
+        // a drafting table at the Craft Bench. Which piece a bench gets is
+        // keyed off its manifest id, so a new bench gets a sensible desk
+        // without anyone drawing anything.
+        const kind = art.furnitureKindFor(bench.id);
+        const furnKey = art.furnitureTexture(this, kind, hex(room.color));
+        const furn = this.add.image(bx + bw / 2, by + bh - 5, furnKey)
+          .setOrigin(0.5, 1)
+          .setDepth(3);
+        // Sized to the bench rather than to a fixed scale. At a flat 2x a
+        // piece was 20px tall on a 54px bench and read as a speck; this fills
+        // the bench the way a real object would, clamped to whole numbers so
+        // the pixels stay square, and capped so it never overflows the width.
+        const targetH = (bh - 4) * 0.72;
+        const fit = Math.min(targetH / furn.height, (bw - 10) / furn.width);
+        furn.setScale(Math.max(1, Math.floor(fit)));
+
+        this.worldLayer.add([plate, lip, foot, edge, furn, label]);
       }
     }
     // A Container renders in insertion order unless it is sorted, so the room
@@ -477,7 +494,10 @@ export class World extends Phaser.Scene {
       s.body.play(s.anims.walk, true);
       s.body.setFlipX(wx < s.body.x);
       this.puff(s.body.x, s.body.y + 10);
-      this.time.delayedCall(340, () => s?.body.play(s.anims.idle, true));
+      this.time.delayedCall(340, () => {
+        if (!s?.body.active) return;
+        s.body.play(s.state.busy ? s.anims.work : s.anims.idle, true);
+      });
     }
     s.state = a;
     const dur = moved ? 340 : 120;
@@ -486,8 +506,14 @@ export class World extends Phaser.Scene {
     this.tweens.add({ targets: s.label, x: wx, y: wy - 22, duration: dur });
     this.tweens.add({ targets: s.speech, x: wx, y: wy - 38, duration: dur });
 
-    // Busy reads at a glance: a working agent is lit, an idle one is not.
+    // Busy reads at a glance: a working agent is lit and has its hands moving,
+    // an idle one stands. Not while walking — the stride owns the sprite until
+    // it arrives, and the arrival is what starts the work.
     s.body.setTint(a.busy ? 0xffffff : 0xcfcfd8);
+    if (!moved) {
+      const want = a.busy ? s.anims.work : s.anims.idle;
+      if (s.body.anims.getName() !== want) s.body.play(want, true);
+    }
     if (a.busy && !s.busyGlow) {
       s.busyGlow = this.add.circle(wx, wy, 15, hex(a.color), 0.16);
       this.worldLayer.add(s.busyGlow);

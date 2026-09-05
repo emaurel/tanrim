@@ -158,14 +158,14 @@ export function wallTexture(scene: Phaser.Scene, key: string, base: number,
 const BODY = [
   "....hhhh....",
   "...hhhhhh...",
-  "..hhffffhh..",
-  "..hff ee ff.",
-  "..hffffffh..",
-  "...ffffff...",
+  "...hffffh...",
+  "...heffeh...",
+  "...hffffh...",
+  "....hhhh....",
   "...tttttt...",
-  "..abbkkbba..",
-  "..abbkkbba..",
-  "..abbbbbba..",
+  "..sbbkkbbs..",
+  "..sbbkkbbs..",
+  "..sbbbbbbs..",
   "...bbbbbb...",
   "...tttttt...",
   "...bb..bb...",
@@ -173,12 +173,52 @@ const BODY = [
 const LEGS_A = ["...ll..ll...", "...ll..ll..."];
 const LEGS_B = ["...ll..ll...", "..ll....ll.."];
 
+/**
+ * Working: the same figure with its hands raised and lowered.
+ *
+ * Two frames is all it takes to read as effort, and it is deliberately the
+ * same body as the idle pose — a busy agent is recognisably the same character
+ * doing something, not a different sprite. The glow says "this one is
+ * working"; this says what working looks like.
+ */
+const WORK_UP = [
+  "....hhhh....",
+  "...hhhhhh...",
+  "...hffffh...",
+  "...heffeh...",
+  "...hffffh...",
+  "....hhhh....",
+  "..sstttttss.",
+  "..sbbkkbbs..",
+  "..sbbkkbbs..",
+  "...bbbbbb...",
+  "...bbbbbb...",
+  "...tttttt...",
+  "...bb..bb...",
+];
+const WORK_DOWN = [
+  "....hhhh....",
+  "...hhhhhh...",
+  "...hffffh...",
+  "...heffeh...",
+  "...hffffh...",
+  "....hhhh....",
+  "...tttttt...",
+  "...bbkkbb...",
+  "..sbbkkbbs..",
+  "..sbbbbbbs..",
+  "..ssbbbbss..",
+  "...tttttt...",
+  "...bb..bb...",
+];
+
 export interface Palette {
   hood: number;
   face: number;
   body: number;
   trim: number;
   emblem: number;
+  sleeve: number;
 }
 
 /** A role's palette, derived from the one colour its manifest declares. */
@@ -189,14 +229,19 @@ export function paletteFor(color: number): Palette {
     body: color,
     trim: shade(color, -0.3),
     emblem: shade(color, 0.45),
+    sleeve: shade(color, 0.28),
   };
 }
 
 function drawRows(ctx: CanvasRenderingContext2D, rows: string[], p: Palette,
                   originY: number) {
   const map: Record<string, number | null> = {
-    h: p.hood, f: p.face, e: 0x101014, b: p.body,
-    t: p.trim, a: p.trim, l: p.hood, k: p.emblem, " ": null, ".": null,
+    h: p.hood, f: p.face, e: 0x141018, b: p.body,
+    t: p.trim, a: p.trim, l: p.hood, k: p.emblem,
+    // Sleeves, lighter than the robe. Drawn in the body colour they vanished
+    // into it and the figure had no arms at all.
+    s: p.sleeve,
+    " ": null, ".": null,
   };
   rows.forEach((row, y) => {
     for (let x = 0; x < row.length; x++) {
@@ -219,20 +264,26 @@ export function characterTexture(scene: Phaser.Scene, key: string,
   const w = 12;
   const h = BODY.length + 2;
   if (scene.textures.exists(key)) return key;
-  const { tex, ctx } = canvasFor(scene, key, w * 2, h);
 
-  drawRows(ctx, BODY, p, 0);
-  drawRows(ctx, LEGS_A, p, BODY.length);
+  // 0 stand · 1 step · 2 hands down · 3 hands up
+  const frames: Array<[string[], string[]]> = [
+    [BODY, LEGS_A],
+    [BODY, LEGS_B],
+    [WORK_DOWN, LEGS_A],
+    [WORK_UP, LEGS_A],
+  ];
+  const { tex, ctx } = canvasFor(scene, key, w * frames.length, h);
 
-  ctx.save();
-  ctx.translate(w, 0);
-  drawRows(ctx, BODY, p, 0);
-  drawRows(ctx, LEGS_B, p, BODY.length);
-  ctx.restore();
+  frames.forEach(([body, legs], i) => {
+    ctx.save();
+    ctx.translate(w * i, 0);
+    drawRows(ctx, body, p, 0);
+    drawRows(ctx, legs, p, body.length);
+    ctx.restore();
+  });
 
   tex.refresh();
-  tex.add(0, 0, 0, 0, w, h);
-  tex.add(1, 0, w, 0, w, h);
+  frames.forEach((_, i) => tex.add(i, 0, w * i, 0, w, h));
   return key;
 }
 
@@ -332,7 +383,18 @@ export function ensureAnims(scene: Phaser.Scene, key: string) {
       key: idle, frames: [{ key, frame: 0 }], frameRate: 1, repeat: -1,
     });
   }
-  return { walk, idle };
+  const work = `${key}-work`;
+  if (!scene.anims.exists(work)) {
+    scene.anims.create({
+      key: work,
+      // Slow. A frantic hammer reads as a glitch; this reads as someone
+      // getting on with it, and these runs take minutes.
+      frames: [{ key, frame: 2 }, { key, frame: 3 }],
+      frameRate: 3,
+      repeat: -1,
+    });
+  }
+  return { walk, idle, work };
 }
 
 /**
@@ -354,4 +416,269 @@ export function ensureTorchAnim(scene: Phaser.Scene, key = "torch"): string {
     });
   }
   return anim;
+}
+
+/* ------------------------------------------------------------------ *
+ * Furniture — what each workbench actually IS
+ * ------------------------------------------------------------------ */
+
+/*
+ *  k dark outline   w wood      W wood, lit    m metal    M metal, lit
+ *  a the room's own colour       p paper/glass  g glow
+ *  . transparent
+ *
+ * Every piece is 16 wide and sits on a common baseline so that benches of
+ * different kinds line up when they are side by side in a room.
+ */
+const FURNITURE: Record<string, string[]> = {
+  // Ultron reads the board from a throne.
+  throne: [
+    "....kkkkkk....",
+    "...kaaaaaak...",
+    "...kaWWWWak...",
+    "...kaWWWWak...",
+    "..kkaaaaaakk..",
+    "..kMMMMMMMMk..",
+    "..kMWWWWWWMk..",
+    "..kkMMMMMMkk..",
+    "...k......k...",
+    "...kk....kk...",
+  ],
+  // The Build Floor: a bench with tools racked above it.
+  workbench: [
+    "..kkkkkkkkkk..",
+    "..kmMmkmkMmk..",
+    "..k........k..",
+    "kkkkkkkkkkkkkk",
+    "kWWWWWWWWWWWWk",
+    "kWWWWWWWWWWWWk",
+    "kkkkkkkkkkkkkk",
+    "..kw......wk..",
+    "..kw......wk..",
+    "..kk......kk..",
+  ],
+  // Craft Bench: a drafting table, tilted, with a sheet on it.
+  drafting: [
+    ".........kkkk.",
+    "......kkkppppk",
+    "...kkkppppppk.",
+    "kkkppppppppk..",
+    "kppppppppkk...",
+    "kkkkkkkkk.....",
+    "..kwwwwk......",
+    "..kw..wk......",
+    "..kw..wk......",
+    "..kk..kk......",
+  ],
+  // Inspection Bay and Incumbent Wall: a screen on a stand.
+  screen: [
+    "..kkkkkkkkkk..",
+    "..kaaaaaaaak..",
+    "..kappppppak..",
+    "..kappppppak..",
+    "..kappppppak..",
+    "..kaaaaaaaak..",
+    "..kkkkkkkkkk..",
+    ".....kmmk.....",
+    "....kmmmmk....",
+    "...kkmmmmkk...",
+  ],
+  // The Light Box: a lit panel on a table.
+  lightbox: [
+    "..............",
+    "..kkkkkkkkkk..",
+    "..kggggggggk..",
+    "..kgppppppgk..",
+    "..kggggggggk..",
+    "kkkkkkkkkkkkkk",
+    "kWWWWWWWWWWWWk",
+    "kkkkkkkkkkkkkk",
+    "..kw......wk..",
+    "..kk......kk..",
+  ],
+  // Both Ledgers, and the Registry: a heavy book on a stand.
+  ledger: [
+    "..............",
+    "....kkkkkk....",
+    "...kppppppk...",
+    "..kpppppppppk.",
+    "..kaaaaaaaaak.",
+    "..kkkkkkkkkkk.",
+    "....kwwwwk....",
+    "....kw..wk....",
+    "....kw..wk....",
+    "....kk..kk....",
+  ],
+  // Weighing Bench: a balance.
+  scales: [
+    ".......k......",
+    "...kkkkkkkkk..",
+    "..kMk..k..kMk.",
+    "..kMk..k..kMk.",
+    "..kkk..k..kkk.",
+    ".......k......",
+    "....kkkkkkk...",
+    "....kwwwwwk...",
+    "....kw...wk...",
+    "....kk...kk...",
+  ],
+  // Dossier Desk, Copy Bench, Pitch Desk: a desk with papers.
+  desk: [
+    "..............",
+    "....kkppk.....",
+    "...kppppk.....",
+    "kkkkkkkkkkkkkk",
+    "kWWWWWWWWWWWWk",
+    "kkkkkkkkkkkkkk",
+    "kw..k....k..wk",
+    "kw..k....k..wk",
+    "kw..k....k..wk",
+    "kk..k....k..kk",
+  ],
+  // Outbox and Inbox: a tray with an envelope in it.
+  tray: [
+    "..............",
+    "....kkkkkk....",
+    "...kppppppk...",
+    "...kpkppkpk...",
+    "..kkkkkkkkkk..",
+    "..kaaaaaaaak..",
+    "..kkkkkkkkkk..",
+    "...kw....wk...",
+    "...kw....wk...",
+    "...kk....kk...",
+  ],
+  // The Crating Bay: a crate.
+  crate: [
+    "..............",
+    "..kkkkkkkkkk..",
+    "..kWwwwwwwWk..",
+    "..kwWwwwwWwk..",
+    "..kwwWwwWwwk..",
+    "..kwwwWWwwwk..",
+    "..kwwWwwWwwk..",
+    "..kwWwwwwWwk..",
+    "..kWwwwwwwWk..",
+    "..kkkkkkkkkk..",
+  ],
+  // The Map Table: a table with a chart unrolled on it.
+  maptable: [
+    "..............",
+    "..kkkkkkkkkk..",
+    "..kppappapk...",
+    "..kpapppapk...",
+    "kkkkkkkkkkkkkk",
+    "kWWWWWWWWWWWWk",
+    "kkkkkkkkkkkkkk",
+    "kw..........wk",
+    "kw..........wk",
+    "kk..........kk",
+  ],
+  // The Round Table, for the retro.
+  roundtable: [
+    "..............",
+    "....kkkkkk....",
+    "..kkWWWWWWkk..",
+    ".kWWWWWWWWWWk.",
+    ".kWWWWWWWWWWk.",
+    "..kkWWWWWWkk..",
+    "....kkkkkk....",
+    ".....kwwk.....",
+    "....kwwwwk....",
+    "...kk....kk...",
+  ],
+  // The Counting Table: coin stacks.
+  counting: [
+    "..............",
+    "...ka....ka...",
+    "...ka..ka.ka..",
+    "..kkakkkakkak.",
+    "kkkkkkkkkkkkkk",
+    "kWWWWWWWWWWWWk",
+    "kkkkkkkkkkkkkk",
+    "kw..........wk",
+    "kw..........wk",
+    "kk..........kk",
+  ],
+  // The Tool Forge, in the Armory: an anvil.
+  anvil: [
+    "..............",
+    "...kkkkkkkk...",
+    "..kMMMMMMMMk..",
+    ".kMMMMMMMMMMk.",
+    "..kMMMMMMMMk..",
+    "....kMMMMk....",
+    "....kMMMMk....",
+    "...kMMMMMMk...",
+    "..kMMMMMMMMk..",
+    "..kkkkkkkkkk..",
+  ],
+  // Comparison Bench: two small frames side by side.
+  compare: [
+    "..............",
+    "..kkkk..kkkk..",
+    "..kppk..kppk..",
+    "..kppk..kaak..",
+    "..kppk..kaak..",
+    "..kkkk..kkkk..",
+    "..............",
+    "kkkkkkkkkkkkkk",
+    "kWWWWWWWWWWWWk",
+    "kkkkkkkkkkkkkk",
+  ],
+};
+
+/** Which piece of furniture a workbench is, by its manifest id. */
+const BENCH_FURNITURE: Record<string, string> = {
+  board: "throne",
+  site: "workbench",
+  craft: "drafting",
+  qa: "screen",
+  incumbent: "screen",
+  photos: "lightbox",
+  review: "compare",
+  ledger: "ledger",
+  registry: "ledger",
+  qualify: "scales",
+  research: "desk",
+  copy: "desk",
+  pitch: "desk",
+  outbox: "tray",
+  inbox: "tray",
+  crate: "crate",
+  map: "maptable",
+  retro: "roundtable",
+  counting: "counting",
+  forge_bench: "anvil",
+};
+
+export function furnitureKindFor(benchId: string): string {
+  return BENCH_FURNITURE[benchId] ?? "desk";
+}
+
+/** A piece of furniture, in the room's colour. Returns the texture key. */
+export function furnitureTexture(scene: Phaser.Scene, kind: string,
+                                 accent: number): string {
+  const key = `furn-${kind}-${accent}`;
+  if (scene.textures.exists(key)) return key;
+  const rows = FURNITURE[kind] ?? FURNITURE.desk;
+  const w = Math.max(...rows.map((r) => r.length));
+  const { tex, ctx } = canvasFor(scene, key, w, rows.length);
+  const map: Record<string, number | null> = {
+    k: 0x14121a,
+    w: 0x5a432c, W: 0x7d6142,
+    m: 0x5b606b, M: 0x8b929e,
+    a: accent, p: 0xd8d2c4, g: 0xf2e6b8,
+    ".": null,
+  };
+  rows.forEach((row, y) => {
+    for (let x = 0; x < row.length; x++) {
+      const col = map[row[x]];
+      if (col == null) continue;
+      ctx.fillStyle = css(col);
+      ctx.fillRect(x, y, 1, 1);
+    }
+  });
+  tex.refresh();
+  return key;
 }
