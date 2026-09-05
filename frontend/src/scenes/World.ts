@@ -3,6 +3,7 @@ import type { AgentState, RoomSpec, WireEvent } from "../types";
 import { subscribe } from "../net/ws";
 import { subscribeCounts } from "../approvals";
 import { openRoomPanel } from "../panels";
+import * as art from "./art";
 
 const TILE = 32;
 const MIN_ZOOM = 0.25;
@@ -10,9 +11,12 @@ const MAX_ZOOM = 4.0;
 const TEXT_DPR = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
 
 interface AgentSprite {
-  body: Phaser.GameObjects.Rectangle;
+  body: Phaser.GameObjects.Sprite;
   label: Phaser.GameObjects.Text;
   speech: Phaser.GameObjects.Text;
+  shadow: Phaser.GameObjects.Image;
+  anims: { walk: string; idle: string };
+  busyGlow?: Phaser.GameObjects.Arc;
   state: AgentState;
 }
 
@@ -31,6 +35,21 @@ export class World extends Phaser.Scene {
     tween: Phaser.Tweens.Tween;
   }> = [];
   private hud!: Phaser.GameObjects.Text;
+  /**
+   * Labels held at a constant SCREEN size.
+   *
+   * Text in world space shrinks with the camera, and the map is normally read
+   * zoomed out — which is exactly when the room names became unreadable. Each
+   * is counter-scaled by 1/zoom every frame, clamped so it neither vanishes
+   * when far out nor swells absurdly when close in.
+   */
+  private fixedLabels: Array<{
+    obj: Phaser.GameObjects.Text;
+    min: number;
+    max: number;
+    /** Detail that should drop away when zoomed out rather than collide. */
+    hideBelowZoom?: number;
+  }> = [];
   private framedOnce = false;
   private isPanning = false;
   private didDrag = false;
@@ -151,10 +170,10 @@ export class World extends Phaser.Scene {
     const from = this.sprites.get(fromId);
     const to = this.sprites.get(toId);
     if (!from || !to) return;
-    const fx = (from.body as Phaser.GameObjects.Rectangle).x;
-    const fy = (from.body as Phaser.GameObjects.Rectangle).y;
-    const tx = (to.body as Phaser.GameObjects.Rectangle).x;
-    const ty = (to.body as Phaser.GameObjects.Rectangle).y;
+    const fx = from.body.x;
+    const fy = from.body.y;
+    const tx = to.body.x;
+    const ty = to.body.y;
 
     const line = this.add.line(0, 0, fx, fy, tx, ty, 0xffe066, 1)
       .setOrigin(0, 0)
@@ -188,6 +207,7 @@ export class World extends Phaser.Scene {
   }
 
   update() {
+    this.scaleLabels();
     if (!this.talkLines.length) return;
     const now = Date.now();
     this.talkLines = this.talkLines.filter((t) => {
@@ -200,10 +220,10 @@ export class World extends Phaser.Scene {
       const from = this.sprites.get(t.fromId);
       const to = this.sprites.get(t.toId);
       if (from && to) {
-        const fx = (from.body as Phaser.GameObjects.Rectangle).x;
-        const fy = (from.body as Phaser.GameObjects.Rectangle).y;
-        const tx = (to.body as Phaser.GameObjects.Rectangle).x;
-        const ty = (to.body as Phaser.GameObjects.Rectangle).y;
+        const fx = from.body.x;
+        const fy = from.body.y;
+        const tx = to.body.x;
+        const ty = to.body.y;
         t.line.setTo(fx, fy, tx, ty);
         if (t.label) t.label.setPosition((fx + tx) / 2, (fy + ty) / 2 - 8);
       }
@@ -211,49 +231,124 @@ export class World extends Phaser.Scene {
     });
   }
 
+  /** Keep world-space labels at a readable size whatever the zoom. */
+  private scaleLabels() {
+    const zoom = this.cameras.main.zoom;
+    if (!this.fixedLabels.length) return;
+    for (const l of this.fixedLabels) {
+      if (!l.obj.active) continue;
+      // Held at screen size, a bench name no longer shrinks to fit its bench,
+      // so at low zoom the names of adjacent benches overlap each other. They
+      // are detail — you navigate by room and by agent — so they fade out
+      // instead of fighting for the same pixels.
+      if (l.hideBelowZoom !== undefined) {
+        const show = zoom >= l.hideBelowZoom;
+        if (l.obj.visible !== show) l.obj.setVisible(show);
+        if (!show) continue;
+      }
+      l.obj.setScale(Phaser.Math.Clamp(1 / zoom, l.min, l.max));
+    }
+  }
+
   private drawRooms() {
     this.worldLayer.removeAll(true);
+    // Those objects are gone; keeping references would counter-scale corpses.
+    this.fixedLabels = [];
     for (const room of this.rooms) {
       const px = room.position.x * TILE;
       const py = room.position.y * TILE;
       const pw = room.size.w * TILE;
       const ph = room.size.h * TILE;
 
-      const floor = this.add.rectangle(px, py, pw, ph, hex(room.color), 1)
+      const base = hex(room.color);
+
+      // A chamber, not a rectangle: stone walls with a lit top course, a
+      // flagstone floor inside them, and torches at the corners. One tiled
+      // texture per room rather than a rectangle per tile — a 40x25 room would
+      // otherwise be a thousand game objects.
+      const wallKey = art.wallTexture(this, `wall-${room.id}`, base);
+      const floorKey = art.floorTexture(this, `floor-${room.id}`, base);
+      const W = 12;  // wall thickness in world units
+
+      const walls = this.add.tileSprite(px, py, pw, ph, wallKey)
         .setOrigin(0, 0);
-      const border = this.add.rectangle(px, py, pw, ph)
+      const floor = this.add.tileSprite(px + W, py + W, pw - W * 2, ph - W * 2,
+                                        floorKey).setOrigin(0, 0);
+      // The floor sits inside the walls, so it needs its own shadow line to
+      // read as recessed.
+      const inner = this.add.rectangle(px + W, py + W, pw - W * 2, ph - W * 2)
         .setOrigin(0, 0)
-        .setStrokeStyle(2, 0x111118, 1)
+        .setStrokeStyle(1, 0x000000, 0.45)
         .setFillStyle(0, 0);
-      const title = this.add.text(px + 10, py + 8, room.name.toUpperCase(), {
-        fontFamily: "monospace", fontSize: "20px", color: "#f4f1de",
+
+      // A plaque behind the name. Text alone had to compete with whatever
+      // colour the room's floor happened to be, and at low zoom it lost.
+      const title = this.add.text(px + W + 6, py + W + 4, room.name.toUpperCase(), {
+        fontFamily: "monospace", fontSize: "20px", color: "#f7f4e9",
         fontStyle: "bold",
-      }).setResolution(TEXT_DPR);
+        backgroundColor: "#0e0e13",
+        padding: { x: 7, y: 4 },
+      }).setResolution(TEXT_DPR).setOrigin(0, 0).setDepth(6);
+      // Held at a constant SCREEN size, so zooming out does not shrink the
+      // one thing you navigate by.
+      this.fixedLabels.push({ obj: title, min: 0.75, max: 2.2 });
       // The room's purpose lives in its panel, not on the floor — with
       // workbenches drawn inside, a paragraph per room made the map unreadable.
-      this.worldLayer.add([floor, border, title]);
+      walls.setDepth(0);
+      floor.setDepth(1);
+      inner.setDepth(2);
+      this.worldLayer.add([walls, floor, inner, title]);
 
       // Workbenches: the stations inside a room where each kind of job is done.
       // Drawn under the sprites so an agent standing at one reads as being AT
       // it. Geometry comes from the manifest (auto-laid-out server-side).
       for (const bench of room.workbenches ?? []) {
         if (!bench.position || !bench.size) continue;
-        const bx = (room.position.x + bench.position.x) * TILE;
-        const by = (room.position.y + bench.position.y) * TILE;
-        const bw = bench.size.w * TILE;
-        const bh = bench.size.h * TILE;
-        const plate = this.add.rectangle(bx, by, bw, bh, 0x000000, 0.16)
+        // Benches are laid out edge to edge by `rooms._layout_workbenches`, so
+        // two neighbours share a boundary and read as one long counter. The
+        // gap is applied here rather than in the layout because the manifest
+        // geometry is also what an agent walks to — the visual inset keeps
+        // them distinct without moving where anyone stands.
+        const GAP = 5;
+        const bx = (room.position.x + bench.position.x) * TILE + GAP;
+        const by = (room.position.y + bench.position.y) * TILE + GAP;
+        const bw = bench.size.w * TILE - GAP * 2;
+        const bh = bench.size.h * TILE - GAP * 2;
+        const benchKey = art.benchTexture(this, `bench-${room.id}`, hex(room.color));
+        const plate = this.add.tileSprite(bx, by, bw, bh, benchKey)
+          .setOrigin(0, 0);
+        // Drawn once at the bench's real edges rather than baked into the
+        // tile: a lit top course and a shadow at its foot is what makes it
+        // read as a slab standing on the floor.
+        const lip = this.add.rectangle(bx, by, bw, 2, 0xffffff, 0.22)
+          .setOrigin(0, 0);
+        const foot = this.add.rectangle(bx, by + bh - 2, bw, 2, 0x000000, 0.45)
           .setOrigin(0, 0);
         const edge = this.add.rectangle(bx, by, bw, bh)
           .setOrigin(0, 0)
-          .setStrokeStyle(1, 0xffffff, 0.16)
+          .setStrokeStyle(1, 0x000000, 0.5)
           .setFillStyle(0, 0);
         const label = this.add.text(bx + 6, by + 5, bench.name, {
           fontFamily: "monospace", fontSize: "11px", color: "#efe9d8",
-        }).setAlpha(0.85).setResolution(TEXT_DPR);
-        this.worldLayer.add([plate, edge, label]);
+          backgroundColor: "#00000066", padding: { x: 3, y: 1 },
+        }).setAlpha(0.92).setResolution(TEXT_DPR).setDepth(5);
+        // Capped at 1: a bench label must never grow larger than it would be
+        // in world space. Counter-scaling it made the names swell as you
+        // zoomed out, which is backwards — a bench is detail, and detail
+        // should recede. It shrinks with its bench and vanishes when small.
+        this.fixedLabels.push({ obj: label, min: 0.55, max: 1.0,
+                                hideBelowZoom: 0.62 });
+        plate.setDepth(3);
+        lip.setDepth(3);
+        foot.setDepth(3);
+        edge.setDepth(3);
+        this.worldLayer.add([plate, lip, foot, edge, label]);
       }
     }
+    // A Container renders in insertion order unless it is sorted, so the room
+    // title — added before the benches inside that room — was being drawn
+    // over by them. Depths are explicit above; this is what applies them.
+    this.worldLayer.sort("depth");
     this.badges.clear();
     this.refreshBadges();
   }
@@ -295,13 +390,21 @@ export class World extends Phaser.Scene {
     if (!s) return;
     // Fade out rather than vanish, so it reads as "that one went home".
     this.tweens.add({
-      targets: [s.body, s.label, s.speech],
+      targets: [s.body, s.label, s.speech, s.shadow,
+                ...(s.busyGlow ? [s.busyGlow] : [])],
       alpha: 0,
       duration: 260,
       onComplete: () => {
         s.body.destroy();
         s.label.destroy();
         s.speech.destroy();
+        // The shadow and the busy glow are separate objects; without these
+        // every retired worker would leave two invisible sprites behind, and
+        // the sweep retires one per finished lead.
+        s.shadow.destroy();
+        s.busyGlow?.destroy();
+        this.fixedLabels = this.fixedLabels.filter(
+          (l) => l.obj !== s!.label && l.obj !== s!.speech);
       },
     });
     this.sprites.delete(agentId);
@@ -318,32 +421,101 @@ export class World extends Phaser.Scene {
     const wy = a.y * TILE;
     let s = this.sprites.get(a.id);
     if (!s) {
-      const body = this.add.rectangle(wx, wy, 18, 18, hex(a.color))
-        .setStrokeStyle(2, 0x000000);
-      const label = this.add.text(wx, wy - 20, a.name, {
-        fontFamily: "monospace", fontSize: "13px", color: "#fff",
+      // One character sheet per colour, not per agent: a room's second and
+      // third worker share the role's colour, so they share the texture.
+      const key = art.characterTexture(this, `chr-${a.color}`, hex(a.color));
+      const anims = art.ensureAnims(this, key);
+
+      const shadow = this.add.image(wx, wy + 12, art.shadowTexture(this))
+        .setScale(art.PX).setAlpha(0.5);
+      const body = this.add.sprite(wx, wy, key, 0)
+        .setScale(art.PX).setOrigin(0.5, 0.62);
+      body.play(anims.idle);
+      // A slow bob, so a room of idle agents still breathes. Small, and inside
+      // the sprite rather than a position change, so it never reads as
+      // wandering out of its room.
+      this.tweens.add({
+        targets: body, y: wy - 1.5, duration: 1100 + Math.random() * 500,
+        yoyo: true, repeat: -1, ease: "Sine.easeInOut",
+      });
+
+      const label = this.add.text(wx, wy - 22, a.name, {
+        fontFamily: "monospace", fontSize: "13px", color: "#ffffff",
         fontStyle: "bold",
-      }).setOrigin(0.5, 1).setResolution(TEXT_DPR);
-      const speech = this.add.text(wx, wy - 36, "", {
+        backgroundColor: "#0e0e13cc", padding: { x: 5, y: 2 },
+      }).setOrigin(0.5, 1).setResolution(TEXT_DPR).setDepth(6);
+      // Agent names are read at the same zoom as room names, and were losing
+      // the same fight against the floor behind them.
+      this.fixedLabels.push({ obj: label, min: 0.7, max: 1.8 });
+      const speech = this.add.text(wx, wy - 38, "", {
         fontFamily: "monospace", fontSize: "12px", color: "#ffe066",
-        backgroundColor: "#222229", padding: { x: 6, y: 3 },
-      }).setOrigin(0.5, 1).setResolution(TEXT_DPR);
-      s = { body, label, speech, state: a };
+        backgroundColor: "#1b1b22ee", padding: { x: 7, y: 4 },
+      }).setOrigin(0.5, 1).setResolution(TEXT_DPR).setDepth(7);
+      this.fixedLabels.push({ obj: speech, min: 0.7, max: 1.8 });
+      shadow.setDepth(4);
+      body.setDepth(5);
+      s = { body, label, speech, shadow, anims, state: a };
       this.sprites.set(a.id, s);
-      this.worldLayer.add([body, label, speech]);
+      this.worldLayer.add([shadow, body, label, speech]);
+      this.worldLayer.sort("depth");
+    }
+
+    const moved = Math.abs(s.body.x - wx) > 1 || Math.abs(s.body.y - wy) > 1;
+    if (moved) {
+      // Walking is a real event in this world — an agent only crosses the
+      // floor to reach the bench it is about to work at — so it gets the
+      // stride, a longer tween, and dust where it started.
+      s.body.play(s.anims.walk, true);
+      s.body.setFlipX(wx < s.body.x);
+      this.puff(s.body.x, s.body.y + 10);
+      this.time.delayedCall(340, () => s?.body.play(s.anims.idle, true));
     }
     s.state = a;
-    this.tweens.add({
-      targets: s.body, x: wx, y: wy, duration: 120, ease: "Linear",
-    });
-    this.tweens.add({
-      targets: s.label, x: wx, y: wy - 20, duration: 120,
-    });
-    this.tweens.add({
-      targets: s.speech, x: wx, y: wy - 36, duration: 120,
-    });
+    const dur = moved ? 340 : 120;
+    this.tweens.add({ targets: s.body, x: wx, y: wy, duration: dur, ease: "Sine.easeInOut" });
+    this.tweens.add({ targets: s.shadow, x: wx, y: wy + 12, duration: dur, ease: "Sine.easeInOut" });
+    this.tweens.add({ targets: s.label, x: wx, y: wy - 22, duration: dur });
+    this.tweens.add({ targets: s.speech, x: wx, y: wy - 38, duration: dur });
+
+    // Busy reads at a glance: a working agent is lit, an idle one is not.
+    s.body.setTint(a.busy ? 0xffffff : 0xcfcfd8);
+    if (a.busy && !s.busyGlow) {
+      s.busyGlow = this.add.circle(wx, wy, 15, hex(a.color), 0.16);
+      this.worldLayer.add(s.busyGlow);
+      this.worldLayer.sendToBack(s.busyGlow);
+      this.tweens.add({
+        targets: s.busyGlow, alpha: { from: 0.2, to: 0.05 },
+        scale: { from: 0.9, to: 1.25 },
+        duration: 900, yoyo: true, repeat: -1, ease: "Sine.easeInOut",
+      });
+    } else if (!a.busy && s.busyGlow) {
+      s.busyGlow.destroy();
+      s.busyGlow = undefined;
+    }
+    if (s.busyGlow) {
+      this.tweens.add({ targets: s.busyGlow, x: wx, y: wy, duration: dur });
+    }
+
     s.speech.setText(a.say || "");
     s.speech.setVisible(Boolean(a.say));
+  }
+
+  /** A little dust where a character pushed off. */
+  private puff(x: number, y: number) {
+    const key = art.dustTexture(this);
+    for (let i = 0; i < 3; i++) {
+      const d = this.add.image(x, y, key)
+        .setScale(art.PX).setAlpha(0.8);
+      this.worldLayer.add(d);
+      this.tweens.add({
+        targets: d,
+        x: x + (Math.random() - 0.5) * 22,
+        y: y - Math.random() * 8,
+        alpha: 0, scale: 1,
+        duration: 380 + Math.random() * 160,
+        onComplete: () => d.destroy(),
+      });
+    }
   }
 
   /** Fit the whole map in view (one-shot — won't re-run on every snapshot). */

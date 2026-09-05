@@ -11,7 +11,7 @@ mountCrew();
 installUnlockHandlers();
 startApprovalSync();
 installLeadBoard();
-  installSettings();
+installSettings();
 
 new Phaser.Game({
   type: Phaser.AUTO,
@@ -24,8 +24,13 @@ new Phaser.Game({
     autoRound: false,
   },
   scene: [World],
+  // Every sprite is generated pixel art, so the renderer must not smooth it.
+  // `pixelArt` sets nearest-neighbour filtering; without it a character scaled
+  // 2x is a blur and the whole style collapses. Text is drawn at a higher
+  // resolution separately, so it stays crisp regardless.
+  pixelArt: true,
   render: {
-    antialias: true,
-    roundPixels: false,
+    antialias: false,
+    roundPixels: true,
   },
 });
