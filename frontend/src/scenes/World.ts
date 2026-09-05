@@ -357,16 +357,16 @@ export class World extends Phaser.Scene {
         // without anyone drawing anything.
         const kind = art.furnitureKindFor(bench.id);
         const furnKey = art.furnitureTexture(this, kind, hex(room.color));
-        const furn = this.add.image(bx + bw / 2, by + bh - 5, furnKey)
+        const furn = this.add.image(bx + bw / 2, by + bh - 1, furnKey)
           .setOrigin(0.5, 1)
           .setDepth(3);
-        // Sized to the bench rather than to a fixed scale. At a flat 2x a
-        // piece was 20px tall on a 54px bench and read as a speck; this fills
-        // the bench the way a real object would, clamped to whole numbers so
-        // the pixels stay square, and capped so it never overflows the width.
-        const targetH = (bh - 4) * 0.72;
-        const fit = Math.min(targetH / furn.height, (bw - 10) / furn.width);
-        furn.setScale(Math.max(1, Math.floor(fit)));
+        // Fitted to the bench, preserving aspect. The source texture is drawn
+        // oversized, so this scales DOWN — which keeps the detail and means a
+        // narrow piece like a throne is never stretched to a wide bench's
+        // width. Height leads, because benches are wide and shallow and it is
+        // the height that says how big the object is.
+        const fit = Math.min((bh - 2) / furn.height, (bw - 6) / furn.width);
+        furn.setScale(fit);
 
         this.worldLayer.add([plate, lip, foot, edge, furn, label]);
       }

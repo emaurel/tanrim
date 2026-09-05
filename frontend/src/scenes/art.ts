@@ -420,211 +420,294 @@ export function ensureTorchAnim(scene: Phaser.Scene, key = "torch"): string {
 
 /* ------------------------------------------------------------------ *
  * Furniture — what each workbench actually IS
+ *
+ * Drawn as isometric boxes rather than flat pixel maps. Hand-authoring a
+ * detailed piece as ASCII means a thousand characters per object and a
+ * lighting model held in your head; composing from boxes gives every piece
+ * the same light (top brightest, left face mid, right face dark), correct
+ * occlusion for free, and lets a throne be six lines instead of six hundred.
  * ------------------------------------------------------------------ */
 
-/*
- *  k dark outline   w wood      W wood, lit    m metal    M metal, lit
- *  a the room's own colour       p paper/glass  g glow
- *  . transparent
+/** Dimetric 2:1 — the standard pixel-art isometric ratio. */
+function iso(x: number, y: number, z: number): [number, number] {
+  return [(x - y) * 2, (x + y) - z * 2];
+}
+
+interface Box {
+  /** position in world units */
+  x: number; y: number; z: number;
+  /** size in world units */
+  w: number; d: number; h: number;
+  color: number;
+  /** lighten or darken the whole box, for trim and detail */
+  tone?: number;
+}
+
+/**
+ * One isometric box, painted as three faces.
  *
- * Every piece is 16 wide and sits on a common baseline so that benches of
- * different kinds line up when they are side by side in a room.
+ * Faces are filled with vertical spans rather than paths so the edges stay on
+ * whole pixels — an antialiased iso edge is the fastest way to stop looking
+ * like pixel art.
  */
-const FURNITURE: Record<string, string[]> = {
-  // Ultron reads the board from a throne.
-  throne: [
-    "....kkkkkk....",
-    "...kaaaaaak...",
-    "...kaWWWWak...",
-    "...kaWWWWak...",
-    "..kkaaaaaakk..",
-    "..kMMMMMMMMk..",
-    "..kMWWWWWWMk..",
-    "..kkMMMMMMkk..",
-    "...k......k...",
-    "...kk....kk...",
+function paintBox(ctx: CanvasRenderingContext2D, b: Box, ox: number, oy: number) {
+  const t = b.tone ?? 0;
+  const top = shade(b.color, 0.22 + t);
+  const left = shade(b.color, -0.06 + t);
+  const right = shade(b.color, -0.34 + t);
+  const edge = shade(b.color, -0.62 + t);
+
+  const px = (x: number, y: number, z: number): [number, number] => {
+    const [sx, sy] = iso(x, y, z);
+    return [Math.round(ox + sx), Math.round(oy + sy)];
+  };
+
+  const quad = (pts: Array<[number, number]>, fill: number) => {
+    ctx.fillStyle = css(fill);
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+    ctx.fill();
+  };
+
+  const { x, y, z, w, d, h } = b;
+  // left face (facing viewer-left, +x side)
+  quad([px(x, y + d, z), px(x + w, y + d, z),
+        px(x + w, y + d, z + h), px(x, y + d, z + h)], left);
+  // right face
+  quad([px(x + w, y, z), px(x + w, y + d, z),
+        px(x + w, y + d, z + h), px(x + w, y, z + h)], right);
+  // top face
+  quad([px(x, y, z + h), px(x + w, y, z + h),
+        px(x + w, y + d, z + h), px(x, y + d, z + h)], top);
+  // a dark seam along the two top edges gives every box a defined lip
+  ctx.strokeStyle = css(edge, 0.55);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const a = px(x, y + d, z + h), c = px(x + w, y + d, z + h);
+  const e = px(x + w, y, z + h);
+  ctx.moveTo(a[0] + 0.5, a[1] + 0.5);
+  ctx.lineTo(c[0] + 0.5, c[1] + 0.5);
+  ctx.lineTo(e[0] + 0.5, e[1] + 0.5);
+  ctx.stroke();
+}
+
+/** A piece of furniture: boxes, painted back to front. */
+type Piece = (accent: number) => Box[];
+
+const WOOD = 0x6b4f34;
+const WOOD_DARK = 0x4a3728;
+const METAL = 0x767d8a;
+const METAL_DARK = 0x4b515c;
+const CLOTH = 0x8f8776;
+const PAPER = 0xd9d3c4;
+
+/** Four legs under a table top. */
+function legs(x: number, y: number, w: number, d: number, h: number,
+              color = WOOD_DARK): Box[] {
+  const s = 1;
+  return [
+    { x: x + 1, y: y + 1, z: 0, w: s, d: s, h, color },
+    { x: x + w - 2, y: y + 1, z: 0, w: s, d: s, h, color },
+    { x: x + 1, y: y + d - 2, z: 0, w: s, d: s, h, color },
+    { x: x + w - 2, y: y + d - 2, z: 0, w: s, d: s, h, color },
+  ];
+}
+
+/** A plain table: legs plus a top. Most benches are a variation on this. */
+function table(w: number, d: number, h = 5, color = WOOD): Box[] {
+  return [
+    ...legs(0, 0, w, d, h),
+    { x: 0, y: 0, z: h, w, d, h: 1.4, color },
+  ];
+}
+
+const PIECES: Record<string, Piece> = {
+  throne: (a) => [
+    // dais
+    { x: -1, y: -1, z: 0, w: 10, d: 10, h: 1, color: 0x3b3340 },
+    // seat block
+    { x: 1, y: 1, z: 1, w: 6, d: 6, h: 3, color: WOOD_DARK },
+    { x: 1, y: 1, z: 4, w: 6, d: 6, h: 0.8, color: a, tone: -0.1 },
+    // tall back
+    { x: 1, y: 5.6, z: 4.8, w: 6, d: 1.4, h: 8, color: WOOD },
+    { x: 2, y: 5.4, z: 6, w: 4, d: 0.4, h: 5, color: a, tone: 0.1 },
+    // arms
+    { x: 0.6, y: 1, z: 4.8, w: 1, d: 5, h: 2, color: WOOD },
+    { x: 6.4, y: 1, z: 4.8, w: 1, d: 5, h: 2, color: WOOD },
+    // finials
+    { x: 1, y: 5.6, z: 12.8, w: 1.2, d: 1.4, h: 1.2, color: METAL },
+    { x: 5.8, y: 5.6, z: 12.8, w: 1.2, d: 1.4, h: 1.2, color: METAL },
   ],
-  // The Build Floor: a bench with tools racked above it.
-  workbench: [
-    "..kkkkkkkkkk..",
-    "..kmMmkmkMmk..",
-    "..k........k..",
-    "kkkkkkkkkkkkkk",
-    "kWWWWWWWWWWWWk",
-    "kWWWWWWWWWWWWk",
-    "kkkkkkkkkkkkkk",
-    "..kw......wk..",
-    "..kw......wk..",
-    "..kk......kk..",
+  workbench: () => [
+    ...legs(0, 0, 12, 7, 5),
+    { x: 0, y: 0, z: 5, w: 12, d: 7, h: 1.6, color: WOOD },
+    // a vice at one end
+    { x: 0.5, y: 2, z: 6.6, w: 1.6, d: 3, h: 1.6, color: METAL },
+    { x: 1.6, y: 2.4, z: 6.6, w: 0.8, d: 2.2, h: 1.2, color: METAL_DARK },
+    // stock and tools on the top
+    { x: 4, y: 1.5, z: 6.6, w: 6, d: 1, h: 0.6, color: WOOD_DARK },
+    { x: 4.5, y: 4, z: 6.6, w: 4, d: 0.8, h: 0.5, color: METAL },
+    { x: 8.5, y: 3, z: 6.6, w: 1, d: 2.4, h: 1, color: METAL_DARK },
   ],
-  // Craft Bench: a drafting table, tilted, with a sheet on it.
-  drafting: [
-    ".........kkkk.",
-    "......kkkppppk",
-    "...kkkppppppk.",
-    "kkkppppppppk..",
-    "kppppppppkk...",
-    "kkkkkkkkk.....",
-    "..kwwwwk......",
-    "..kw..wk......",
-    "..kw..wk......",
-    "..kk..kk......",
+  drafting: (a) => [
+    ...legs(1, 1, 10, 6, 4),
+    // a board on a slant, built as a stack of thin steps
+    ...Array.from({ length: 6 }, (_, i) => ({
+      x: 1, y: 1 + i, z: 4 + i * 0.9, w: 10, d: 1.05, h: 0.9,
+      color: i < 5 ? PAPER : WOOD, tone: -0.02 * i,
+    })),
+    // a straightedge lying across it
+    { x: 1.5, y: 2.5, z: 6.2, w: 9, d: 0.5, h: 0.4, color: a, tone: 0.15 },
+    { x: 3, y: 1.2, z: 4.6, w: 0.6, d: 4, h: 0.4, color: METAL },
   ],
-  // Inspection Bay and Incumbent Wall: a screen on a stand.
-  screen: [
-    "..kkkkkkkkkk..",
-    "..kaaaaaaaak..",
-    "..kappppppak..",
-    "..kappppppak..",
-    "..kappppppak..",
-    "..kaaaaaaaak..",
-    "..kkkkkkkkkk..",
-    ".....kmmk.....",
-    "....kmmmmk....",
-    "...kkmmmmkk...",
+  screen: (a) => [
+    // pedestal
+    { x: 4, y: 3, z: 0, w: 3, d: 3, h: 1, color: METAL_DARK },
+    { x: 5, y: 3.8, z: 1, w: 1, d: 1.4, h: 3, color: METAL },
+    // the panel, standing up
+    { x: 0.5, y: 3.4, z: 4, w: 10, d: 1.2, h: 7, color: METAL_DARK },
+    { x: 1.2, y: 3.2, z: 4.7, w: 8.6, d: 0.4, h: 5.6, color: a, tone: 0.2 },
+    // a couple of bright rows, so it reads as showing something
+    { x: 1.8, y: 3.0, z: 8.6, w: 5, d: 0.3, h: 0.5, color: PAPER },
+    { x: 1.8, y: 3.0, z: 7.4, w: 7, d: 0.3, h: 0.5, color: PAPER, tone: -0.2 },
+    { x: 1.8, y: 3.0, z: 6.2, w: 3.5, d: 0.3, h: 0.5, color: PAPER, tone: -0.3 },
   ],
-  // The Light Box: a lit panel on a table.
-  lightbox: [
-    "..............",
-    "..kkkkkkkkkk..",
-    "..kggggggggk..",
-    "..kgppppppgk..",
-    "..kggggggggk..",
-    "kkkkkkkkkkkkkk",
-    "kWWWWWWWWWWWWk",
-    "kkkkkkkkkkkkkk",
-    "..kw......wk..",
-    "..kk......kk..",
+  lightbox: (a) => [
+    ...legs(0, 0, 11, 7, 4),
+    { x: 0, y: 0, z: 4, w: 11, d: 7, h: 1.2, color: WOOD_DARK },
+    // the lit panel, inset into the top
+    { x: 1, y: 1, z: 5.2, w: 9, d: 5, h: 0.5, color: 0xf3e7bd, tone: 0.1 },
+    // photographs laid on it
+    { x: 2, y: 2, z: 5.7, w: 3, d: 2.2, h: 0.3, color: PAPER },
+    { x: 5.6, y: 2.6, z: 5.7, w: 3, d: 2.2, h: 0.3, color: a, tone: 0.25 },
+    // a lamp arm over it
+    { x: 9.6, y: 3, z: 5.2, w: 0.7, d: 0.7, h: 5, color: METAL_DARK },
+    { x: 6.5, y: 3, z: 9.6, w: 3.8, d: 0.7, h: 0.7, color: METAL_DARK },
+    { x: 6, y: 2.6, z: 8.6, w: 1.6, d: 1.5, h: 1, color: METAL },
   ],
-  // Both Ledgers, and the Registry: a heavy book on a stand.
-  ledger: [
-    "..............",
-    "....kkkkkk....",
-    "...kppppppk...",
-    "..kpppppppppk.",
-    "..kaaaaaaaaak.",
-    "..kkkkkkkkkkk.",
-    "....kwwwwk....",
-    "....kw..wk....",
-    "....kw..wk....",
-    "....kk..kk....",
+  ledger: (a) => [
+    // a lectern
+    { x: 3, y: 3, z: 0, w: 4, d: 4, h: 1, color: WOOD_DARK },
+    { x: 4.2, y: 4, z: 1, w: 1.6, d: 1.6, h: 5, color: WOOD },
+    // the book, open, as two slanted leaves
+    ...Array.from({ length: 4 }, (_, i) => ({
+      x: 1 + i * 0.4, y: 2 + i * 0.35, z: 6 + i * 0.35,
+      w: 4 - i * 0.3, d: 5 - i * 0.5, h: 0.4, color: PAPER, tone: -0.03 * i,
+    })),
+    ...Array.from({ length: 4 }, (_, i) => ({
+      x: 5.4 - i * 0.1, y: 2 + i * 0.35, z: 6 + i * 0.35,
+      w: 4 - i * 0.3, d: 5 - i * 0.5, h: 0.4, color: PAPER, tone: -0.03 * i,
+    })),
+    // spine and a ribbon
+    { x: 4.6, y: 2, z: 6, w: 0.9, d: 5, h: 2, color: a, tone: -0.15 },
   ],
-  // Weighing Bench: a balance.
-  scales: [
-    ".......k......",
-    "...kkkkkkkkk..",
-    "..kMk..k..kMk.",
-    "..kMk..k..kMk.",
-    "..kkk..k..kkk.",
-    ".......k......",
-    "....kkkkkkk...",
-    "....kwwwwwk...",
-    "....kw...wk...",
-    "....kk...kk...",
+  scales: (a) => [
+    { x: 3, y: 3, z: 0, w: 5, d: 5, h: 1.2, color: WOOD_DARK },
+    { x: 5, y: 4.4, z: 1.2, w: 1.2, d: 1.2, h: 7, color: METAL },
+    // the beam
+    { x: 0.5, y: 4.6, z: 8.2, w: 10, d: 0.8, h: 0.7, color: METAL },
+    // two pans, hung at different heights so it reads as weighing
+    { x: 0.2, y: 4, z: 5.6, w: 0.3, d: 0.3, h: 2.6, color: METAL_DARK },
+    { x: -0.8, y: 3.4, z: 4.8, w: 3, d: 2.6, h: 0.6, color: a, tone: 0.1 },
+    { x: 10, y: 4, z: 6.8, w: 0.3, d: 0.3, h: 1.4, color: METAL_DARK },
+    { x: 9, y: 3.4, z: 6.2, w: 3, d: 2.6, h: 0.6, color: a, tone: 0.1 },
   ],
-  // Dossier Desk, Copy Bench, Pitch Desk: a desk with papers.
-  desk: [
-    "..............",
-    "....kkppk.....",
-    "...kppppk.....",
-    "kkkkkkkkkkkkkk",
-    "kWWWWWWWWWWWWk",
-    "kkkkkkkkkkkkkk",
-    "kw..k....k..wk",
-    "kw..k....k..wk",
-    "kw..k....k..wk",
-    "kk..k....k..kk",
+  desk: (a) => [
+    ...legs(0, 0, 11, 7, 4.5),
+    { x: 0, y: 0, z: 4.5, w: 11, d: 7, h: 1.3, color: WOOD },
+    // a drawer bank on one side
+    { x: 7.4, y: 0.6, z: 0.6, w: 3.2, d: 5.8, h: 4, color: WOOD_DARK },
+    { x: 7.2, y: 0.4, z: 1.4, w: 0.4, d: 5, h: 0.7, color: METAL },
+    { x: 7.2, y: 0.4, z: 3, w: 0.4, d: 5, h: 0.7, color: METAL },
+    // papers, an inkwell, a lamp
+    { x: 1, y: 2, z: 5.8, w: 4, d: 3, h: 0.35, color: PAPER },
+    { x: 1.4, y: 2.4, z: 6.15, w: 3.4, d: 2.4, h: 0.25, color: PAPER, tone: -0.08 },
+    { x: 5.6, y: 2.4, z: 5.8, w: 1.1, d: 1.1, h: 1.1, color: a, tone: -0.2 },
+    { x: 1.2, y: 5.2, z: 5.8, w: 0.6, d: 0.6, h: 3.4, color: METAL_DARK },
+    { x: 0.6, y: 4.6, z: 9.2, w: 1.8, d: 1.8, h: 1.1, color: a, tone: 0.2 },
   ],
-  // Outbox and Inbox: a tray with an envelope in it.
-  tray: [
-    "..............",
-    "....kkkkkk....",
-    "...kppppppk...",
-    "...kpkppkpk...",
-    "..kkkkkkkkkk..",
-    "..kaaaaaaaak..",
-    "..kkkkkkkkkk..",
-    "...kw....wk...",
-    "...kw....wk...",
-    "...kk....kk...",
+  tray: (a) => [
+    ...legs(1, 1, 10, 6, 4),
+    { x: 1, y: 1, z: 4, w: 10, d: 6, h: 1, color: WOOD_DARK },
+    // two stacked wire trays
+    { x: 1.4, y: 1.4, z: 5, w: 9, d: 5.2, h: 0.5, color: METAL },
+    { x: 2, y: 2, z: 5.5, w: 7.6, d: 4, h: 0.9, color: PAPER },
+    { x: 1.4, y: 1.4, z: 7, w: 9, d: 5.2, h: 0.5, color: METAL },
+    { x: 2, y: 2, z: 7.5, w: 7.6, d: 4, h: 0.9, color: PAPER, tone: -0.05 },
+    // an envelope on the top, tilted by a hair
+    { x: 2.6, y: 2.4, z: 8.4, w: 6, d: 3.4, h: 0.4, color: a, tone: 0.3 },
   ],
-  // The Crating Bay: a crate.
-  crate: [
-    "..............",
-    "..kkkkkkkkkk..",
-    "..kWwwwwwwWk..",
-    "..kwWwwwwWwk..",
-    "..kwwWwwWwwk..",
-    "..kwwwWWwwwk..",
-    "..kwwWwwWwwk..",
-    "..kwWwwwwWwk..",
-    "..kWwwwwwwWk..",
-    "..kkkkkkkkkk..",
+  crate: (a) => [
+    { x: 0, y: 0, z: 0, w: 9, d: 9, h: 7, color: WOOD },
+    // banding
+    { x: -0.2, y: -0.2, z: 1, w: 9.4, d: 9.4, h: 0.8, color: WOOD_DARK },
+    { x: -0.2, y: -0.2, z: 5, w: 9.4, d: 9.4, h: 0.8, color: WOOD_DARK },
+    // a smaller crate stacked on top, offset
+    { x: 1.5, y: 2, z: 7, w: 5.5, d: 5.5, h: 4, color: WOOD, tone: 0.06 },
+    { x: 1.3, y: 1.8, z: 8, w: 5.9, d: 5.9, h: 0.6, color: WOOD_DARK },
+    // a shipping label
+    { x: 2.4, y: 1.6, z: 9, w: 3.4, d: 0.3, h: 2, color: a, tone: 0.3 },
   ],
-  // The Map Table: a table with a chart unrolled on it.
-  maptable: [
-    "..............",
-    "..kkkkkkkkkk..",
-    "..kppappapk...",
-    "..kpapppapk...",
-    "kkkkkkkkkkkkkk",
-    "kWWWWWWWWWWWWk",
-    "kkkkkkkkkkkkkk",
-    "kw..........wk",
-    "kw..........wk",
-    "kk..........kk",
+  maptable: (a) => [
+    ...legs(0, 0, 12, 8, 4.5),
+    { x: 0, y: 0, z: 4.5, w: 12, d: 8, h: 1.2, color: WOOD_DARK },
+    // a chart unrolled across it, with the roll still at one end
+    { x: 0.8, y: 0.8, z: 5.7, w: 9, d: 6.4, h: 0.35, color: PAPER },
+    { x: 2, y: 2, z: 6.05, w: 2.6, d: 2, h: 0.2, color: a, tone: 0.2 },
+    { x: 5.4, y: 3.4, z: 6.05, w: 2, d: 2.6, h: 0.2, color: a, tone: -0.1 },
+    { x: 9.9, y: 0.8, z: 5.7, w: 1.4, d: 6.4, h: 1.4, color: PAPER, tone: -0.12 },
   ],
-  // The Round Table, for the retro.
-  roundtable: [
-    "..............",
-    "....kkkkkk....",
-    "..kkWWWWWWkk..",
-    ".kWWWWWWWWWWk.",
-    ".kWWWWWWWWWWk.",
-    "..kkWWWWWWkk..",
-    "....kkkkkk....",
-    ".....kwwk.....",
-    "....kwwwwk....",
-    "...kk....kk...",
+  roundtable: (a) => [
+    // a round table, approximated as stacked plates of decreasing size
+    { x: 4, y: 4, z: 0, w: 4, d: 4, h: 4, color: WOOD_DARK },
+    { x: 2.5, y: 2.5, z: 4, w: 7, d: 7, h: 0.6, color: WOOD },
+    { x: 1.2, y: 1.2, z: 4.6, w: 9.6, d: 9.6, h: 0.7, color: WOOD, tone: 0.04 },
+    { x: 0.4, y: 0.4, z: 5.3, w: 11.2, d: 11.2, h: 0.8, color: WOOD, tone: 0.08 },
+    { x: 1.2, y: 1.2, z: 6.1, w: 9.6, d: 9.6, h: 0.4, color: a, tone: -0.05 },
+    // seats around it
+    { x: -1.4, y: 4.5, z: 0, w: 1.6, d: 2.6, h: 3, color: WOOD_DARK },
+    { x: 11.8, y: 4.5, z: 0, w: 1.6, d: 2.6, h: 3, color: WOOD_DARK },
+    { x: 4.5, y: -1.4, z: 0, w: 2.6, d: 1.6, h: 3, color: WOOD_DARK },
   ],
-  // The Counting Table: coin stacks.
-  counting: [
-    "..............",
-    "...ka....ka...",
-    "...ka..ka.ka..",
-    "..kkakkkakkak.",
-    "kkkkkkkkkkkkkk",
-    "kWWWWWWWWWWWWk",
-    "kkkkkkkkkkkkkk",
-    "kw..........wk",
-    "kw..........wk",
-    "kk..........kk",
+  counting: (a) => [
+    ...legs(0, 0, 11, 7, 4.5),
+    { x: 0, y: 0, z: 4.5, w: 11, d: 7, h: 1.3, color: WOOD },
+    { x: 0.6, y: 0.6, z: 5.8, w: 9.8, d: 5.8, h: 0.3, color: CLOTH, tone: -0.2 },
+    // stacks of coins at three heights
+    ...[[1.5, 1.5, 3], [3.2, 2.4, 5], [5, 1.8, 2], [6.4, 3.4, 4],
+        [8.2, 2, 6]].flatMap(([cx, cy, n]) =>
+      Array.from({ length: n }, (_, i) => ({
+        x: cx, y: cy, z: 6.1 + i * 0.32, w: 1.3, d: 1.3, h: 0.32,
+        color: a, tone: 0.18 - (i % 2) * 0.08,
+      }))),
+    // a strongbox at the end
+    { x: 8.4, y: 4.4, z: 5.8, w: 2.2, d: 2.2, h: 1.8, color: METAL_DARK },
+    { x: 8.6, y: 4.2, z: 6.4, w: 1.8, d: 0.3, h: 0.6, color: METAL },
   ],
-  // The Tool Forge, in the Armory: an anvil.
-  anvil: [
-    "..............",
-    "...kkkkkkkk...",
-    "..kMMMMMMMMk..",
-    ".kMMMMMMMMMMk.",
-    "..kMMMMMMMMk..",
-    "....kMMMMk....",
-    "....kMMMMk....",
-    "...kMMMMMMk...",
-    "..kMMMMMMMMk..",
-    "..kkkkkkkkkk..",
+  anvil: () => [
+    // stump
+    { x: 3, y: 3, z: 0, w: 5, d: 5, h: 3.5, color: WOOD_DARK },
+    { x: 2.8, y: 2.8, z: 3.2, w: 5.4, d: 5.4, h: 0.5, color: WOOD },
+    // anvil body: waist, then the flared face
+    { x: 3.8, y: 3.6, z: 3.7, w: 3.4, d: 3.8, h: 1.6, color: METAL_DARK },
+    { x: 3.2, y: 3.2, z: 5.3, w: 4.6, d: 4.6, h: 1.6, color: METAL },
+    // horn
+    { x: 7.8, y: 4, z: 5.6, w: 2.2, d: 1.4, h: 1.1, color: METAL },
+    { x: 9.6, y: 4.3, z: 5.9, w: 1.2, d: 0.9, h: 0.7, color: METAL, tone: -0.1 },
+    // a hammer resting on it
+    { x: 3.6, y: 4, z: 6.9, w: 0.6, d: 3, h: 0.5, color: WOOD },
+    { x: 3.2, y: 3.4, z: 6.9, w: 1.4, d: 1.2, h: 1, color: METAL_DARK },
   ],
-  // Comparison Bench: two small frames side by side.
-  compare: [
-    "..............",
-    "..kkkk..kkkk..",
-    "..kppk..kppk..",
-    "..kppk..kaak..",
-    "..kppk..kaak..",
-    "..kkkk..kkkk..",
-    "..............",
-    "kkkkkkkkkkkkkk",
-    "kWWWWWWWWWWWWk",
-    "kkkkkkkkkkkkkk",
+  compare: (a) => [
+    ...legs(0, 0, 12, 6, 4),
+    { x: 0, y: 0, z: 4, w: 12, d: 6, h: 1.2, color: WOOD_DARK },
+    // two boards propped side by side, one lit, one dull
+    { x: 0.8, y: 3, z: 5.2, w: 4.6, d: 0.8, h: 5.6, color: METAL_DARK },
+    { x: 1.2, y: 2.8, z: 5.7, w: 3.8, d: 0.4, h: 4.6, color: PAPER },
+    { x: 6.4, y: 3, z: 5.2, w: 4.6, d: 0.8, h: 5.6, color: METAL_DARK },
+    { x: 6.8, y: 2.8, z: 5.7, w: 3.8, d: 0.4, h: 4.6, color: a, tone: 0.2 },
   ],
 };
 
@@ -656,29 +739,48 @@ export function furnitureKindFor(benchId: string): string {
   return BENCH_FURNITURE[benchId] ?? "desk";
 }
 
-/** A piece of furniture, in the room's colour. Returns the texture key. */
+/**
+ * A piece of furniture, in the room's colour. Returns the texture key.
+ *
+ * Boxes are painted back to front — sorted by how far from the viewer their
+ * far corner is — which is what makes a stack of coins or a throne's back
+ * occlude correctly without any depth buffer.
+ */
 export function furnitureTexture(scene: Phaser.Scene, kind: string,
                                  accent: number): string {
-  const key = `furn-${kind}-${accent}`;
+  const key = `furn3-${kind}-${accent}`;
   if (scene.textures.exists(key)) return key;
-  const rows = FURNITURE[kind] ?? FURNITURE.desk;
-  const w = Math.max(...rows.map((r) => r.length));
-  const { tex, ctx } = canvasFor(scene, key, w, rows.length);
-  const map: Record<string, number | null> = {
-    k: 0x14121a,
-    w: 0x5a432c, W: 0x7d6142,
-    m: 0x5b606b, M: 0x8b929e,
-    a: accent, p: 0xd8d2c4, g: 0xf2e6b8,
-    ".": null,
-  };
-  rows.forEach((row, y) => {
-    for (let x = 0; x < row.length; x++) {
-      const col = map[row[x]];
-      if (col == null) continue;
-      ctx.fillStyle = css(col);
-      ctx.fillRect(x, y, 1, 1);
+  // Drawn at twice the nominal size. The pieces are described in convenient
+  // world units, but a 40px texture stretched to fill a 54px bench loses the
+  // detail that makes it worth having — so the source is generated large and
+  // the sprite is fitted DOWN to the bench, which keeps every edge sharp.
+  const DETAIL = 2.4;
+  const boxes = (PIECES[kind] ?? PIECES.desk)(accent).map((b) => ({
+    ...b,
+    x: b.x * DETAIL, y: b.y * DETAIL, z: b.z * DETAIL,
+    w: b.w * DETAIL, d: b.d * DETAIL, h: b.h * DETAIL,
+  }));
+
+  // Work out the drawing's extent so the texture is exactly big enough.
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const b of boxes) {
+    for (const [dx, dy, dz] of [[0, 0, 0], [b.w, 0, 0], [0, b.d, 0],
+                                [b.w, b.d, 0], [0, 0, b.h], [b.w, 0, b.h],
+                                [0, b.d, b.h], [b.w, b.d, b.h]]) {
+      const [sx, sy] = iso(b.x + dx, b.y + dy, b.z + dz);
+      minX = Math.min(minX, sx); maxX = Math.max(maxX, sx);
+      minY = Math.min(minY, sy); maxY = Math.max(maxY, sy);
     }
-  });
+  }
+  const pad = 2;
+  const w = Math.ceil(maxX - minX) + pad * 2;
+  const h = Math.ceil(maxY - minY) + pad * 2;
+  const { tex, ctx } = canvasFor(scene, key, w, h);
+
+  const sorted = [...boxes].sort(
+    (p, q) => (p.x + p.y + p.z) - (q.x + q.y + q.z));
+  for (const b of sorted) paintBox(ctx, b, -minX + pad, -minY + pad);
+
   tex.refresh();
   return key;
 }
