@@ -34,7 +34,17 @@ _P = _prompts.loader("forge")
 # so this is the one role where paying for the better model is straightforwardly
 # cheaper than the rebuilds. Swap to "claude-sonnet-5" if a build's cost matters
 # more than its first-pass quality.
-MODEL = "claude-opus-5"
+#: Sonnet, not Opus. Forge was the only agent on the expensive model and the
+#: only one that mattered for cost: builds ran $2.93 to $6.14 each, against
+#: cents for everything else in the pipeline, and a lead that goes through two
+#: revisions pays for three of them.
+#:
+#: Worth doing NOW rather than earlier because the quality question is finally
+#: answerable. `sitecheck` checks what is checkable on every page, Lens judges
+#: craft separately, and `run_stats` records wall clock, output tokens and the
+#: Write/Edit split — so if the pages get worse it shows up as failed checks
+#: and a craft verdict rather than as a feeling. Put it back if they do.
+MODEL = "claude-sonnet-5"
 AGENT_ID = "forge"
 ROOM_ID = "factory"
 

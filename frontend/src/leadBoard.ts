@@ -506,6 +506,9 @@ function stageControl(lead: any): HTMLElement {
     if (st === lead.stage) o.selected = true;
     sel.appendChild(o);
   }
+  // What it was rendered with, so `midEdit` can tell a pending choice from an
+  // untouched one.
+  sel.dataset.was = lead.stage;
 
   const why = document.createElement("input");
   why.type = "text";
@@ -1200,14 +1203,131 @@ async function rerender(): Promise<void> {
   const tlScroll = timelinePane?.scrollTop ?? 0;
   const sameLead = body.dataset.lead === (selected ?? "");
 
+  // Whatever the operator has half-entered, and where the cursor was. The
+  // hold in `scheduleRefresh` stops most rebuilds from landing mid-edit, but
+  // it cannot stop one that was already queued when they clicked into a field
+  // — so anything typed is carried across rather than trusted not to be
+  // interrupted. Belt as well as braces: losing a typed reason is the failure
+  // this whole mechanism exists to prevent.
+  const keep = sameLead ? captureEntry(body) : null;
+
   const nextList = buildList();
   const nextTimeline = await buildTimeline();
   body.replaceChildren(nextList, nextTimeline);
   body.dataset.lead = selected ?? "";
 
+  if (keep) restoreEntry(body, keep);
+
   const l = nextList.querySelector(".lb-list") as HTMLElement | null;
   if (l) l.scrollTop = listScroll;
   if (sameLead) nextTimeline.scrollTop = tlScroll;
+}
+
+interface PendingEntry {
+  why: string;
+  stage: string | null;
+  focus: string | null;
+  caret: number | null;
+}
+
+/** What the operator has entered but not yet submitted. */
+function captureEntry(body: HTMLElement): PendingEntry | null {
+  const why = body.querySelector(".lb-move-why") as HTMLInputElement | null;
+  const stage = body.querySelector(".lb-move-stage") as HTMLSelectElement | null;
+  if (!why && !stage) return null;
+  const active = document.activeElement as HTMLElement | null;
+  return {
+    why: why?.value ?? "",
+    // Only a CHANGED selection is worth carrying; an untouched one should
+    // follow the lead's real stage, which may be exactly what just changed.
+    stage: stage && stage.value !== stage.dataset.was ? stage.value : null,
+    focus: active && body.contains(active) ? active.className || null : null,
+    caret: why && active === why ? why.selectionStart : null,
+  };
+}
+
+function restoreEntry(body: HTMLElement, keep: PendingEntry): void {
+  const why = body.querySelector(".lb-move-why") as HTMLInputElement | null;
+  const stage = body.querySelector(".lb-move-stage") as HTMLSelectElement | null;
+  if (why && keep.why) why.value = keep.why;
+  if (stage && keep.stage) stage.value = keep.stage;
+  if (!keep.focus) return;
+  const again = body.querySelector(`.${keep.focus.split(" ")[0]}`) as HTMLElement | null;
+  if (!again) return;
+  again.focus();
+  if (keep.caret !== null && again === why && why) {
+    try { why.setSelectionRange(keep.caret, keep.caret); } catch { /* not a text field */ }
+  }
+}
+
+/**
+ * Is the operator part-way through filling something in?
+ *
+ * A refresh rebuilds the pane, which destroys whatever is half-typed in it.
+ * That was survivable while refreshes were rare and unusable the moment agents
+ * were working: every sprite move emits a snapshot, so the pane rebuilt every
+ * 1.2 seconds and the reason field for a stage change reset before it could be
+ * finished. Moving a lead by hand became impossible while the pipeline was
+ * busy — which is exactly when it is most wanted.
+ *
+ * Two signals, because focus alone is not enough: someone who has typed a
+ * reason and gone to read the timeline before pressing "move" has not
+ * abandoned the edit.
+ */
+function midEdit(): boolean {
+  if (!host) return false;
+  if (pendingWork()) return true;
+  // A focused field is intent even when it is still empty — they are about to
+  // type. But intent expires: a cursor left in a box while the operator went
+  // to lunch should not freeze the board for the afternoon, so focus alone
+  // holds for a while and then lets go. Anything actually TYPED holds
+  // indefinitely, because losing it is the failure this exists to prevent.
+  const el = document.activeElement as HTMLElement | null;
+  const focused = !!el && host.contains(el)
+    && ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
+  if (!focused) { focusHeldSince = 0; return false; }
+  const now = Date.now();
+  if (!focusHeldSince) focusHeldSince = now;
+  return now - focusHeldSince < FOCUS_HOLD_MS;
+}
+
+/** Something has actually been entered and would be lost by a rebuild. */
+function pendingWork(): boolean {
+  if (!host) return false;
+  const fields = Array.from(host.querySelectorAll<HTMLInputElement>(
+    "input[type=text], textarea"));
+  for (const f of fields) {
+    if (f.value.trim()) return true;
+  }
+  // A dropdown moved off the value it was rendered with is a pending decision.
+  const selects = Array.from(
+    host.querySelectorAll<HTMLSelectElement>("select[data-was]"));
+  for (const sel of selects) {
+    if (sel.value !== sel.dataset.was) return true;
+  }
+  return false;
+}
+
+/** How long an empty but focused field keeps the board still. */
+const FOCUS_HOLD_MS = 45_000;
+let focusHeldSince = 0;
+
+/**
+ * Say so when the pane is deliberately stale.
+ *
+ * Without this the hold is indistinguishable from live updates having broken:
+ * the operator types a reason, watches the board stop moving, and has no way
+ * to know it is waiting for them on purpose.
+ */
+function markHeld(held: boolean): void {
+  if (!host) return;
+  const existing = host.querySelector(".lb-held");
+  if (!held) { existing?.remove(); return; }
+  if (existing) return;
+  const tag = document.createElement("div");
+  tag.className = "lb-held";
+  tag.textContent = "updates paused while you are typing";
+  host.querySelector(".lb-body")?.prepend(tag);
 }
 
 function scheduleRefresh(): void {
@@ -1215,6 +1335,14 @@ function scheduleRefresh(): void {
   refreshTimer = window.setTimeout(async () => {
     refreshTimer = null;
     if (!open || !dirty) return;
+    // Held, not dropped: `dirty` stays true and the timer re-arms, so the pane
+    // catches up the moment the field is submitted or cleared.
+    if (midEdit()) {
+      markHeld(true);
+      scheduleRefresh();
+      return;
+    }
+    markHeld(false);
     dirty = false;
     try {
       await loadLeads();

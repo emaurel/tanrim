@@ -1663,6 +1663,18 @@ a.lb-link:focus-visible { outline: 2px solid #7fb3d5; outline-offset: 2px; borde
   padding: 3px 6px;
 }
 .lb-move-why { flex: 1; min-width: 160px; }
+
+/* The pane holds still while the operator is typing — see `midEdit` in
+   leadBoard.ts. Said out loud, because a board that stops updating is
+   otherwise indistinguishable from one whose live connection has died. */
+.lb-held {
+  padding: 4px 10px;
+  font-size: 11px;
+  letter-spacing: .04em;
+  color: #e0a34a;
+  background: #2a2418;
+  border-bottom: 1px solid #3a3020;
+}
 .lb-move-stage:focus, .lb-move-why:focus { outline: none; border-color: #5a4a7a; }
 .lb-move-go {
   background: #2b2340;
