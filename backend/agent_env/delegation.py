@@ -7,10 +7,18 @@ losing its thread over it.
 
 The shape, deliberately:
 
-- `delegate_subtask` BLOCKS. The specialist runs, reports, and its result comes
-  straight back as the tool result. That keeps it comprehensible to the model
-  that called it: it asked for a thing, it got the thing. The parent holds its
-  own worker while it waits; the specialist takes a different one.
+- `start_subtask` / `collect_subtask` run the specialist CONCURRENTLY with its
+  parent. The first returns a handle at once, the second waits for it — a
+  future, not a poll, so the model still only makes two calls and the second
+  one blocks. Total time is the longer of the two jobs rather than their sum,
+  which matters because the specialist itself waits on a Lens review: a build
+  with a logo used to be three agent runs end to end with the parent idle for
+  two thirds of it.
+- `delegate_subtask` is the blocking version, kept for the case where the
+  parent genuinely cannot proceed without the result.
+- Because parent and specialist now write the same directory at the same time,
+  a specialist's artifacts can no longer be identified by diffing it —
+  `PARENT_SUFFIXES` excludes the page itself, which is always the parent's.
 - The specialist can call `request_review` to have another room's agent judge
   its work — a logo checked by Lens before it is handed over. That is the part
   that makes delegation worth more than the parent just doing it inline.
@@ -42,10 +50,20 @@ SPECIALIST_PROMPT = _P("SPECIALIST_PROMPT")
 REVIEW_PROMPT = _P("REVIEW_PROMPT")
 
 
+#: What a specialist never produces. Once a subtask can run CONCURRENTLY with
+#: its parent, a before/after diff of the directory no longer identifies its
+#: work: the parent writes index.html and styles.css during exactly that
+#: window, and they would be handed back as the specialist's artifacts. A
+#: specialist makes assets — an SVG, a raster, a font — and the page is always
+#: the parent's.
+PARENT_SUFFIXES = {".html", ".htm", ".css"}
+
+
 def _artifact_files(cwd: Path, before: set[str]) -> list[str]:
-    """Files that appeared while the specialist worked."""
+    """Files that appeared while the specialist worked, excluding the parent's."""
     after = {p.name for p in cwd.glob("*") if p.is_file()}
-    return sorted(after - before)
+    return sorted(n for n in (after - before)
+                  if Path(n).suffix.lower() not in PARENT_SUFFIXES)
 
 
 async def run_specialist(

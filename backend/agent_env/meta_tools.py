@@ -5,6 +5,7 @@ Ultron for review and (if approved) Tinker for fabrication.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -148,6 +149,98 @@ def make_meta_server(
 
     tools = [request_tool_fn, ask_ultron_fn, report_to_ultron_fn]
 
+    # Subtasks started but not yet collected, by handle. Held in this closure
+    # so the set is per-run, like the budget, and cannot leak between builds.
+    pending: dict[str, Any] = {}
+
+    async def _spawn(args: dict[str, Any]) -> Any:
+        """The specialist coroutine, ready to await or to run as a task."""
+        from pathlib import Path
+
+        from .delegation import run_specialist
+
+        return await run_specialist(
+            world,
+            parent_role=agent_id,
+            room_id=room_id,
+            model=model or "claude-sonnet-4-6",
+            name=(args.get("name") or "subtask").strip()[:60],
+            instruction=args.get("instruction") or "",
+            deliverable=args.get("deliverable") or "",
+            cwd=Path(ctx["cwd"]),
+            lead_id=ctx.get("lead_id"),
+            depth=MAX_DEPTH,
+        )
+
+    def _refuse(why: str) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": why}]}
+
+    def _check(args: dict[str, Any]) -> dict[str, Any] | None:
+        if budget["used"] >= MAX_PER_RUN:
+            return _refuse(f"Delegation budget for this run is spent "
+                           f"({MAX_PER_RUN}). Do the rest yourself.")
+        if not ctx.get("cwd"):
+            return _refuse("You have no working directory, so there is nowhere "
+                           "for a specialist to write. Do it yourself.")
+        if not (args.get("instruction") or "").strip():
+            return _refuse("A specialist needs an instruction.")
+        return None
+
+    @tool(
+        "start_subtask",
+        _P("start_subtask"),
+        {"name": str, "instruction": str, "deliverable": str},
+    )
+    async def start_subtask_fn(args: dict[str, Any]) -> dict[str, Any]:
+        """Hire a specialist and DO NOT wait for it.
+
+        The blocking version put the specialist's whole run inside the
+        parent's, so a build with a logo cost the page plus the logo plus the
+        Lens review that checked it, end to end, with the parent idle for two
+        thirds of that. Nothing required it: the parent has plenty to do while
+        somebody else draws a wordmark.
+
+        A handle now comes back immediately and `collect_subtask` waits for the
+        result, which is a future rather than a poll — the model makes two
+        calls, and the second one blocks. Total time becomes the longer of the
+        two jobs instead of their sum.
+        """
+        refusal = _check(args)
+        if refusal:
+            return refusal
+        budget["used"] += 1
+        name = (args.get("name") or "subtask").strip()[:60]
+        handle = f"{name}-{len(pending) + 1}"
+        pending[handle] = asyncio.create_task(_spawn(args), name=f"subtask:{handle}")
+        return _refuse(
+            f'Started "{name}" — handle: {handle}. It is working now, in your '
+            f"directory, while you carry on. Write the rest of the page, then "
+            f'call collect_subtask("{handle}") to pick up what it made. Do not '
+            f"touch its deliverable until you have collected it.")
+
+    @tool(
+        "collect_subtask",
+        _P("collect_subtask"),
+        {"handle": str},
+    )
+    async def collect_subtask_fn(args: dict[str, Any]) -> dict[str, Any]:
+        handle = (args.get("handle") or "").strip()
+        task = pending.get(handle)
+        if task is None:
+            return _refuse(
+                f"No subtask with handle {handle!r}. "
+                + (f"Outstanding: {', '.join(pending)}." if pending
+                   else "Nothing is running."))
+        try:
+            out = await task
+        except Exception as e:  # noqa: BLE001
+            pending.pop(handle, None)
+            return _refuse(f"The specialist failed: {type(e).__name__}: {e}. "
+                           "Do it yourself.")
+        pending.pop(handle, None)
+        return {"content": [{"type": "text",
+                             "text": json.dumps(out, ensure_ascii=False, indent=2)}]}
+
     @tool(
         "delegate_subtask",
         _P("delegate_subtask"),
@@ -226,7 +319,18 @@ def make_meta_server(
         return {"content": [{"type": "text", "text": json.dumps(out, ensure_ascii=False, indent=2)}]}
 
     if delegation_depth < MAX_DEPTH:
+        # start/collect first, because it is the one to reach for: the parent
+        # keeps working while the specialist does. `delegate_subtask` stays for
+        # the case where the parent genuinely cannot continue without the
+        # result, and for anything that already calls it.
+        tools.append(start_subtask_fn)
+        tools.append(collect_subtask_fn)
         tools.append(delegate_subtask_fn)
+        # Anything still running when the parent finishes is drained rather
+        # than abandoned: its deliverable is already being written into the
+        # build directory, and a task cancelled mid-write leaves a broken file
+        # in a site that is about to be inspected.
+        ctx["drain_subtasks"] = pending
     # Anyone with a directory may ask for a review — a specialist most of all.
     if ctx.get("cwd"):
         tools.append(request_review_fn)

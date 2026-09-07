@@ -638,6 +638,37 @@ async def run_agent(
     if agent is not None:
         agent.busy = True
         agent.lead_id = lead_id
+    deleg_ctx: dict[str, Any] = {
+        **(delegation_context or {}),
+        "lead_id": lead_id,
+        "cwd": str(cwd) if cwd is not None else None,
+    }
+
+    async def _drain_subtasks() -> None:
+        """Finish any specialist the agent started and forgot to collect.
+
+        Awaited rather than cancelled. A specialist writes its deliverable
+        straight into the build directory, so a task killed mid-write leaves a
+        truncated SVG in a site that is about to be inspected — and the run has
+        already been paid for either way. An agent that reaches the end without
+        collecting is a prompt problem, so it is logged as one.
+        """
+        tasks = deleg_ctx.get("drain_subtasks") or {}
+        for handle, task in list(tasks.items()):
+            if task.done():
+                tasks.pop(handle, None)
+                continue
+            state.log_event(
+                "run_end", from_=agent_id,
+                summary=f"finished without collecting subtask {handle!r} — "
+                        "waiting for it rather than killing it mid-write",
+                outcome="uncollected")
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=240)
+            except Exception:                     # noqa: BLE001
+                task.cancel()
+            tasks.pop(handle, None)
+
     started_ts = time.time()
     _IN_FLIGHT[agent_id] = {
         "role": role,
@@ -671,11 +702,9 @@ async def run_agent(
                 worker_id=agent_id,
                 model=model,
                 delegation_depth=delegation_depth,
-                delegation_context={
-                    **(delegation_context or {}),
-                    "lead_id": lead_id,
-                    "cwd": str(cwd) if cwd is not None else None,
-                },
+                # Held in a local, not built inline, so the drain below can
+                # reach the subtasks the meta server registers in it.
+                delegation_context=deleg_ctx,
             )
         }
         room_tools = resolve_room_tools(room_id)
@@ -904,6 +933,7 @@ async def run_agent(
                 summary=f"schema retry {'recovered' if result.data else 'failed'}",
                 outcome="retry",
             )
+        await _drain_subtasks()
         result.seconds = round(time.time() - started_ts, 1)
         return result
     except Exception as e:

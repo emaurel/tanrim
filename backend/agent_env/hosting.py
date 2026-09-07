@@ -126,6 +126,20 @@ def collect(site_dir: Path) -> dict[str, bytes]:
     """The files that make up the site, keyed by their URL path."""
     out: dict[str, bytes] = {}
     photos_wanted = referenced_photos(site_dir)
+    # Every filename mentioned by any page or stylesheet, for the image rule
+    # below. Read once rather than per candidate.
+    referenced: set[str] = set()
+    for f in sorted(site_dir.rglob("*")):
+        if f.is_symlink() or not f.is_file():
+            continue
+        if f.suffix.lower() not in (".html", ".htm", ".css", ".js"):
+            continue
+        if any(part in SKIP_NAMES for part in f.relative_to(site_dir).parts[:-1]):
+            continue
+        text = f.read_text(errors="replace")
+        referenced |= {m.group(1) for m in
+                       re.finditer(r"[\"'(/\s]([A-Za-z0-9._\-]+\.(?:png|jpe?g|webp|gif))",
+                                   text, re.I)}
     photo_dir = site_dir / "photos"
     for name in sorted(photos_wanted):
         f = photo_dir / name
@@ -149,7 +163,17 @@ def collect(site_dir: Path) -> dict[str, bytes]:
             continue
         if not path.is_file() or path.name.startswith(SKIP_PREFIXES):
             continue
-        out[f"/{path.name}"] = path.read_bytes()
+        # An IMAGE nobody references does not ship. A build left five render
+        # artifacts named `v-d-full.png` and friends in the directory — 4.2 MB
+        # of them — and they were not called `shot-*`, so the prefix skip did
+        # not catch them and the deploy would have published the lot. Naming
+        # every kind of scratch file a build might leave is a losing game;
+        # requiring an image to be referenced is not, and it keeps `og.png`,
+        # which appears in a meta tag rather than an `<img>`.
+        if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            if path.name not in referenced:
+                continue
+        out[f"/{path.name}"] = assets.for_web(path.read_bytes(), path.name)
     return out
 
 
