@@ -18,6 +18,21 @@ interface AgentSprite {
   anims: { walk: string; idle: string; work: string };
   busyGlow?: Phaser.GameObjects.Arc;
   state: AgentState;
+  /**
+   * Where the agent IS, in world pixels — the single source of truth, tweened
+   * on this record rather than on the display objects.
+   *
+   * It used to be tweened onto each object separately, and the idle bob was a
+   * second, endless tween writing `body.y` towards the position the sprite was
+   * SPAWNED at. So when an agent walked to a workbench its name, shadow and
+   * speech arrived and its body did not: two tweens were fighting over one
+   * property and the eternal one won. With the position held here and the bob
+   * added to it on the way out, nothing can disagree about where an agent is.
+   */
+  px: number;
+  py: number;
+  /** The breathing offset, in pixels. Never touches a position directly. */
+  bob: number;
 }
 
 export class World extends Phaser.Scene {
@@ -61,6 +76,11 @@ export class World extends Phaser.Scene {
   constructor() { super("World"); }
 
   create() {
+    // A handle on the scene, so the world can be inspected from the console or
+    // from a headless browser. Sprite positions are the sort of thing that is
+    // wrong by two pixels for a week; being able to read them is what turns
+    // "the sprite looks off" into a number.
+    (window as unknown as { __world?: unknown }).__world = this;
     this.cameras.main.setBackgroundColor("#0d0d10");
     this.worldLayer = this.add.container(0, 0);
 
@@ -208,6 +228,7 @@ export class World extends Phaser.Scene {
 
   update() {
     this.scaleLabels();
+    this.placeAgents();
     if (!this.talkLines.length) return;
     const now = Date.now();
     this.talkLines = this.talkLines.filter((t) => {
@@ -440,13 +461,6 @@ export class World extends Phaser.Scene {
       const body = this.add.sprite(wx, wy, key, 0)
         .setScale(art.PX).setOrigin(0.5, 0.62);
       body.play(anims.idle);
-      // A slow bob, so a room of idle agents still breathes. Small, and inside
-      // the sprite rather than a position change, so it never reads as
-      // wandering out of its room.
-      this.tweens.add({
-        targets: body, y: wy - 1.5, duration: 1100 + Math.random() * 500,
-        yoyo: true, repeat: -1, ease: "Sine.easeInOut",
-      });
 
       const label = this.add.text(wx, wy - 22, a.name, {
         fontFamily: "monospace", fontSize: "13px", color: "#ffffff",
@@ -463,20 +477,27 @@ export class World extends Phaser.Scene {
       this.fixedLabels.push({ obj: speech, min: 0.7, max: 1.8 });
       shadow.setDepth(4);
       body.setDepth(5);
-      s = { body, label, speech, shadow, anims, state: a };
+      s = { body, label, speech, shadow, anims, state: a,
+            px: wx, py: wy, bob: 0 };
       this.sprites.set(a.id, s);
       this.worldLayer.add([shadow, body, label, speech]);
       this.worldLayer.sort("depth");
+      // A slow bob, so a room of idle agents still breathes. Applied as an
+      // OFFSET in `update`, so it can never argue with where the agent is.
+      this.tweens.add({
+        targets: s, bob: -1.5, duration: 1100 + Math.random() * 500,
+        yoyo: true, repeat: -1, ease: "Sine.easeInOut",
+      });
     }
 
-    const moved = Math.abs(s.body.x - wx) > 1 || Math.abs(s.body.y - wy) > 1;
+    const moved = Math.abs(s.px - wx) > 1 || Math.abs(s.py - wy) > 1;
     if (moved) {
       // Walking is a real event in this world — an agent only crosses the
       // floor to reach the bench it is about to work at — so it gets the
       // stride, a longer tween, and dust where it started.
       s.body.play(s.anims.walk, true);
-      s.body.setFlipX(wx < s.body.x);
-      this.puff(s.body.x, s.body.y + 10);
+      s.body.setFlipX(wx < s.px);
+      this.puff(s.px, s.py + 10);
       this.time.delayedCall(340, () => {
         if (!s?.body.active) return;
         s.body.play(s.state.busy ? s.anims.work : s.anims.idle, true);
@@ -484,10 +505,11 @@ export class World extends Phaser.Scene {
     }
     s.state = a;
     const dur = moved ? 340 : 120;
-    this.tweens.add({ targets: s.body, x: wx, y: wy, duration: dur, ease: "Sine.easeInOut" });
-    this.tweens.add({ targets: s.shadow, x: wx, y: wy + 12, duration: dur, ease: "Sine.easeInOut" });
-    this.tweens.add({ targets: s.label, x: wx, y: wy - 22, duration: dur });
-    this.tweens.add({ targets: s.speech, x: wx, y: wy - 38, duration: dur });
+    // One tween, on the record. Everything that hangs off an agent is placed
+    // from it every frame, so the sprite and its name cannot end up in
+    // different rooms.
+    this.tweens.add({ targets: s, px: wx, py: wy, duration: dur,
+                      ease: "Sine.easeInOut" });
 
     // Busy reads at a glance: a working agent is lit and has its hands moving,
     // an idle one stands. Not while walking — the stride owns the sprite until
@@ -498,7 +520,7 @@ export class World extends Phaser.Scene {
       if (s.body.anims.getName() !== want) s.body.play(want, true);
     }
     if (a.busy && !s.busyGlow) {
-      s.busyGlow = this.add.circle(wx, wy, 15, hex(a.color), 0.16);
+      s.busyGlow = this.add.circle(s.px, s.py, 15, hex(a.color), 0.16);
       this.worldLayer.add(s.busyGlow);
       this.worldLayer.sendToBack(s.busyGlow);
       this.tweens.add({
@@ -510,12 +532,24 @@ export class World extends Phaser.Scene {
       s.busyGlow.destroy();
       s.busyGlow = undefined;
     }
-    if (s.busyGlow) {
-      this.tweens.add({ targets: s.busyGlow, x: wx, y: wy, duration: dur });
-    }
-
     s.speech.setText(a.say || "");
     s.speech.setVisible(Boolean(a.say));
+  }
+
+  /**
+   * Put every agent's parts where the agent is.
+   *
+   * The body carries the bob; nothing else does, because a name plate that
+   * breathes reads as a wobble rather than as life.
+   */
+  private placeAgents() {
+    for (const s of this.sprites.values()) {
+      s.body.setPosition(s.px, s.py + s.bob);
+      s.shadow.setPosition(s.px, s.py + 12);
+      s.label.setPosition(s.px, s.py - 22);
+      s.speech.setPosition(s.px, s.py - 38);
+      s.busyGlow?.setPosition(s.px, s.py);
+    }
   }
 
   /** A little dust where a character pushed off. */
