@@ -639,6 +639,59 @@ pass (has a treatment been chosen or is this the default, is the type set or
 just sized, is there enough air). Nothing used to fail a build for being dull,
 which meant dullness was free.
 
+### Responsive images are generated, not asked for
+
+A page referenced `photos/room.jpg` and every visitor got the same file at the
+same size. Measured on a real harvested photograph: 129 KB at 1400px, where
+the phone receiving it can display 800px and would take 25 KB for the same
+picture in WebP. Everybody paid 5x for a worse result, because the browser
+downscales it anyway.
+
+None of that needs judgement, so none of it is in a prompt. Forge writes a
+plain `<img src>`; `images.responsive` emits the WebP variants and rewrites the
+tag afterwards. On a finished build that took the first screen from 216 KB to
+**88 KB** without touching a design decision — and it works retroactively,
+because it runs against the directory rather than at deploy time, so staging
+and QA see exactly what the customer will.
+
+Two decisions worth recording. It writes `<img srcset>` rather than
+`<picture>`: the wrapper generates a box, Forge's CSS targets `img`, and WebP
+has been universal since Safari 14 — a browser too old for WebP is too old for
+`srcset` and takes the `src` fallback. And variants are only ever added, so a
+second run, or a revision that touches one image, cannot corrupt the rest.
+
+### The weight budget is split, because it was measuring the wrong thing
+
+`sitecheck.weigh` reports two numbers. **Critical path** — markup, styles,
+preloaded fonts and the one image above the fold — is capped at 150 KB and is
+the number that decides whether someone on a pavement gets their answer.
+**Total** is capped at 1.5 MB and matters far less: below the fold it arrives
+while they are already reading, and `loading="lazy"` means much of it never
+arrives.
+
+A single budget got the strictness backwards. It was 18 KB of HTML and CSS,
+which a build met at 17 KB while shipping 633 KB, and then 220 KB of everything
+— which could only be met by cutting a photograph. What makes a page fast is
+serving the right SIZE of photograph, not fewer of them.
+
+Two of the reasons originally given for the budget do not survive scrutiny, and
+saying so is the point: French mobile data is cheap and plentiful, and
+Cloudflare Pages bandwidth is free. What survives is latency to the first
+screen, the variance (a basement, a village, data-saver mode) rather than the
+average, and the fact that the rule began life as a proxy for Forge's OUTPUT
+TOKEN cost — 63,319 tokens for a 6,500-token site — which is a real concern
+about our bill, not about the visitor. Conflating the two made a cost lever
+look like a quality rule, and it suppressed the photographs that make these
+pages worth buying.
+
+### A little inline JavaScript is allowed
+
+Banned outright before, which cost a lightbox, a menu filter and a nav toggle
+for nothing: the actual requirement is self-containment — renders from disk, no
+external hosts — and forty lines in a `<script>` tag at the end of the body
+does not break it. The page must still work without it, and the hours, phone
+number and address may never be behind a script.
+
 ### What a site may weigh, and what that revealed
 
 The budget was 18 KB of HTML and CSS. A real build satisfied it at 9.4 KB of

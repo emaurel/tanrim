@@ -13,7 +13,7 @@ import shutil
 import time
 from typing import Any
 
-from .. import assets, fonts, skills, state
+from .. import assets, fonts, images, skills, state
 from ..agent_helpers import (
     AgentBusy,
     format_escalations,
@@ -375,10 +375,26 @@ async def run_build(world: World, lead_id: str, instruction: str = "") -> dict[s
                         outcome="failed", details={"lead_id": lead_id})
         return {"ok": False, "error": "no index.html produced", "files": written}
 
+    # Responsive images, generated rather than asked for. Forge writes a plain
+    # `<img src>`; this emits the WebP variants and adds the srcset, which took
+    # a real build's first-screen weight from 216 KB to 88 KB without touching
+    # a single design decision. In code because it is mechanical, and applied
+    # to the DIRECTORY so staging and QA see what the customer will.
+    srcset = images.responsive(site_dir)
+    if srcset["images_rewritten"]:
+        state.log_event(
+            "site_optimised", from_=result.worker_id or AGENT_ID,
+            summary=f"{srcset['images_rewritten']} image(s) made responsive: "
+                    f"{srcset['variants_written']} variants, "
+                    f"~{srcset['bytes_saved_estimate'] // 1024} KB smaller",
+            details={"lead_id": lead_id, **srcset})
+        written = sorted(q.name for q in site_dir.glob("*") if q.is_file())
+
     site = {
         **(result.data or {}),
         "dir": str(site_dir),
         "files_on_disk": written,
+        "responsive_images": srcset,
         # Site payload only — the QA screenshots live here too but aren't the site.
         "bytes": sum(
             (site_dir / f).stat().st_size

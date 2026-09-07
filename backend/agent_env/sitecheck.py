@@ -280,27 +280,80 @@ def check_css(css: str) -> tuple[list[Problem], float]:
     return out, best
 
 
-def weigh(site_dir: Path) -> dict[str, Any]:
-    """What the visitor actually downloads, and what it is made of.
+def weigh(site_dir: Path, page: str = "index.html") -> dict[str, Any]:
+    """Two numbers, because they answer different questions.
 
-    Measured through `hosting.collect`, which is the function that decides what
-    reaches the host — so this counts exactly the files that will be served and
-    nothing else. Weighing the directory instead would count the whole photo
-    harvest, most of which is deliberately left behind; weighing only the HTML
-    and CSS, which is what the old budget did, let a build come in "under
-    18 KB" while shipping 56 KB of webfont and a 300 KB hero photograph. The
-    visitor pays for all of it.
+    `critical` is what a phone must download before the visitor can read the
+    answer they came for: the markup, the stylesheets, the fonts that are
+    preloaded, and the one image above the fold. This is the number that
+    decides whether someone standing on a pavement gets what they wanted, and
+    it is the one worth being strict about.
+
+    `total` is everything the page will eventually pull. It matters, and it
+    matters far less: below the fold it arrives while they are already reading,
+    and with `loading="lazy"` much of it never arrives at all.
+
+    The old single budget conflated them, and got the strictness backwards. It
+    was 18 KB of HTML and CSS — which a build met while shipping 633 KB — and
+    the fix for being over was to cut a photograph, which is the opposite of
+    what makes these pages good. What actually makes them fast is serving the
+    right SIZE of photograph, and `images.responsive` does that in code.
     """
     from . import hosting
 
-    kinds: dict[str, int] = {}
-    total = 0
     try:
         shipped = hosting.collect(site_dir)
     except Exception:                       # noqa: BLE001 — never block QA on this
-        return {"bytes_by_kind": {}, "bytes_total": 0, "measured": False}
+        return {"measured": False, "critical_bytes": 0, "total_bytes": 0,
+                "bytes_by_kind": {}}
+
+    kinds: dict[str, int] = {}
     for path, content in shipped.items():
-        suffix = path.rsplit(".", 1)[-1].lower() if "." in path else "other"
-        kinds[suffix] = kinds.get(suffix, 0) + len(content)
-        total += len(content)
-    return {"bytes_by_kind": kinds, "bytes_total": total, "measured": True}
+        kind = path.rsplit(".", 1)[-1].lower() if "." in path else "other"
+        kinds[kind] = kinds.get(kind, 0) + len(content)
+    total = sum(len(c) for c in shipped.values())
+
+    html = (site_dir / page)
+    markup = html.read_text(errors="replace") if html.is_file() else ""
+    critical = len(markup.encode())
+    for path, content in shipped.items():
+        if path.endswith(".css"):
+            critical += len(content)
+    # Fonts: the preloaded ones are on the critical path by definition. If
+    # nothing is preloaded every font blocks the first paint, so count them all
+    # — which is the honest answer and also the incentive to preload one.
+    preloaded = set(re.findall(r'rel=["\']preload["\'][^>]*href=["\']([^"\']+)',
+                               markup, re.I))
+    for path, content in shipped.items():
+        if not path.endswith((".woff2", ".woff", ".ttf")):
+            continue
+        if not preloaded or any(path.lstrip("/") in p for p in preloaded):
+            critical += len(content)
+
+    # The hero: the first <img> that is not lazy. Counted at the size a phone
+    # would actually pick from its srcset, not at the size of the fallback.
+    for tag in _IMG_RE.findall(markup):
+        if (_attr(tag, "loading") or "").lower() == "lazy":
+            continue
+        src = (_attr(tag, "src") or "").lstrip("./")
+        if not src or src.endswith(".svg"):
+            continue
+        best = None
+        for entry in (_attr(tag, "srcset") or "").split(","):
+            bits = entry.strip().split()
+            if len(bits) == 2 and bits[1].endswith("w"):
+                try:
+                    width = int(bits[1][:-1])
+                except ValueError:
+                    continue
+                if width <= 800 and (best is None or width > best[0]):
+                    best = (width, bits[0].lstrip("./"))
+        wanted = best[1] if best else src
+        for path, content in shipped.items():
+            if path.lstrip("/") == wanted:
+                critical += len(content)
+                break
+        break
+
+    return {"measured": True, "critical_bytes": critical, "total_bytes": total,
+            "bytes_by_kind": kinds}
