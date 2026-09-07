@@ -30,6 +30,8 @@ from typing import Any
 
 import httpx
 
+from . import assets
+
 V4 = "https://api.cloudflare.com/client/v4"
 
 CONTENT_TYPES = {
@@ -128,7 +130,11 @@ def collect(site_dir: Path) -> dict[str, bytes]:
     for name in sorted(photos_wanted):
         f = photo_dir / name
         if f.is_file() and not f.is_symlink() and name != "manifest.json":
-            out[f"/photos/{name}"] = f.read_bytes()
+            # Re-encoded for the wire. Harvested photographs are stored at
+            # whatever size they were published at — one was 571 KB — and
+            # nothing between the harvest and the visitor used to make them
+            # smaller.
+            out[f"/photos/{name}"] = assets.for_web(f.read_bytes(), name)
     for path in sorted(site_dir.iterdir()):
         if path.is_symlink() or path.name in SKIP_NAMES:
             continue
@@ -138,7 +144,8 @@ def collect(site_dir: Path) -> dict[str, bytes]:
             for child in sorted(path.iterdir()):
                 if (child.is_file() and not child.is_symlink()
                         and child.name not in SKIP_IN_SHIP_DIRS):
-                    out[f"/{path.name}/{child.name}"] = child.read_bytes()
+                    out[f"/{path.name}/{child.name}"] = assets.for_web(
+                        child.read_bytes(), child.name)
             continue
         if not path.is_file() or path.name.startswith(SKIP_PREFIXES):
             continue

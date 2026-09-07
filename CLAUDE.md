@@ -606,6 +606,80 @@ into `qa.problems` as a critical**, because that is where Forge reads its
 rebuild instructions from. A rejection whose reason went only into a history
 note would produce a rebuild identical to the one you rejected.
 
+### The quality bar is half code, half prompt
+
+Two kinds of rule govern a build, and they want opposite homes. "Is this page
+dull" is judgement and belongs in Lens's prompt, where it can look at the
+render and say so. "Does it have an `og:image`" is a fact, and asking a model
+to remember twenty facts on every build is how a rule quietly stops being
+applied — it will pass a page missing three of them and be confident about it.
+
+So `agent_env/sitecheck.py` holds everything checkable and `site_inspect` runs
+it on **every page**: the social preview tags, a directions link, image
+dimensions and lazy-loading, `<html lang>`, JSON-LD field completeness,
+`font-display`, a `prefers-reduced-motion` rule wherever the page animates,
+print styles, the weight budget, a nav on every page of a multi-page site, and
+a list of template filler ("Welcome to…", "Why choose us", "Contact us today")
+that means a section was filled rather than written.
+
+It lives in the tracked source tree rather than beside the tool that calls it,
+because `state/tools/` is gitignored and the quality gate is not something to
+keep on one laptop.
+
+`screenshot_site` renders every page at 390px and 1280px and measures the three
+things static analysis cannot see, **in the rendered page**: horizontal
+overflow, tap targets under 44px, and text whose contrast against the
+background actually behind it fails AA. Reading hex pairs out of the CSS can
+only prove the palette *contains* a usable combination, not that the page uses
+it — a real build had a 1.66:1 caption that the CSS-level check passed.
+
+Lens's QA then makes **two** judgements rather than one: the customer questions
+(can they tell what this is, is it open, can they call) and a separate craft
+pass (has a treatment been chosen or is this the default, is the type set or
+just sized, is there enough air). Nothing used to fail a build for being dull,
+which meant dullness was free.
+
+### What a site may weigh, and what that revealed
+
+The budget was 18 KB of HTML and CSS. A real build satisfied it at 9.4 KB of
+markup and 8 KB of styles — and shipped **633 KB**, because nothing counted the
+56 KB of webfont or the 571 KB harvested JPEG. `sitecheck.weigh` now measures
+through `hosting.collect`, so it counts exactly the bytes that reach the wire,
+against a 220 KB budget for the whole site.
+
+Measuring it turned up a straightforward bug: `assets.ingest` downscales owner
+photographs to 1600px, but harvested ones were saved at whatever size they were
+published at and served raw. `assets.for_web` re-encodes at deploy time —
+1400px, quality 78 — which took that same build from 633 KB to 350 KB with no
+rebuild. It is applied on the way OUT rather than at rest, because the stored
+file has to stay big enough for Lens to read a chalkboard off.
+
+### Forge builds more than one page now
+
+Nothing in the plumbing ever required a single page: `hosting.collect` ships
+every top-level file and Courier's preview banner and `noindex` go into every
+`.html`. Only the prompt forbade it. A second page now has to be earned by
+content that does not belong on the home page — a long menu, a gallery, the
+`mentions-legales.html` a French commercial site is required to carry.
+
+And the prompt's own contradiction is resolved: it forbade external fonts while
+the typography block handed over a `fonts.googleapis.com` link to paste. Fonts
+are self-hosted, subset, with `font-display: swap` and a preload for the face
+above the fold.
+
+### Showing Forge what good looks like
+
+`prompts/forge/REFERENCES.md` describes three design treatments read off real
+award-winning sites for businesses of this kind, with the CSS each needs, and
+requires Forge to pick ONE and name it — a page that takes a little of each is
+the one failure mode that survives every other rule.
+
+Described rather than linked, because Forge has no browsing tools and a URL is
+useless to it. The sheet also carries the caveat that matters: those sites run
+to 8,000-24,000 pixels tall with hundreds of images, video and canvas. The
+composition is worth copying; the payload is the opposite of what a local
+business's customers can afford.
+
 ### Judging what is on the page
 
 Whoever checks a page for invented facts must hold the same evidence the builder

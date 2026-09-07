@@ -40,6 +40,14 @@ from .config import SITES_DIR
 MAX_EDGE = 1600
 JPEG_QUALITY = 82
 
+# What a photograph is re-encoded to on its way to the HOST, which is a
+# different question from what it is stored at. 1600px is right for a file
+# Lens has to read a chalkboard off; it is roughly three times what a visitor's
+# phone can display, and a build measured at "18 KB" was shipping a single
+# 571 KB JPEG because nothing re-encoded it between the harvest and the wire.
+WEB_MAX_EDGE = 1400
+WEB_JPEG_QUALITY = 78
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif"}
 DOC_SUFFIXES = {".pdf", ".txt", ".md", ".csv"}
 MAX_BYTES = 25 * 1024 * 1024
@@ -138,6 +146,42 @@ def _shrink(data: bytes, suffix: str) -> tuple[bytes, str, dict[str, Any]]:
             }
     except Exception as e:  # noqa: BLE001
         return data, suffix, {"processed": False, "why": f"{type(e).__name__}: {e}"}
+
+
+def for_web(data: bytes, name: str) -> bytes:
+    """A photograph re-encoded for delivery, or the original if it cannot be.
+
+    Applied at deploy time rather than at rest: the stored file stays big
+    enough for an agent to read detail out of, and the visitor gets a file
+    sized for a phone. A failure here returns the input unchanged — shipping a
+    heavy image is a performance problem, and refusing to ship it is a broken
+    page.
+    """
+    if not name.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+        return data
+    try:
+        import io
+
+        from PIL import Image, ImageOps
+    except ImportError:
+        return data
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            img = ImageOps.exif_transpose(img)
+            if max(img.width, img.height) <= WEB_MAX_EDGE and len(data) < 180_000:
+                return data                 # already small enough to leave alone
+            img.thumbnail((WEB_MAX_EDGE, WEB_MAX_EDGE), Image.LANCZOS)
+            out = io.BytesIO()
+            if img.mode in ("RGBA", "LA", "P"):
+                img.convert("RGBA").save(out, format="PNG", optimize=True)
+            else:
+                img.convert("RGB").save(out, format="JPEG",
+                                        quality=WEB_JPEG_QUALITY, optimize=True,
+                                        progressive=True)
+            shrunk = out.getvalue()
+            return shrunk if len(shrunk) < len(data) else data
+    except Exception:                       # noqa: BLE001
+        return data
 
 
 def ingest(

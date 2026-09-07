@@ -39,6 +39,9 @@ AGENT_ID = "forge"
 ROOM_ID = "factory"
 
 ROLE = _P("ROLE")
+#: Described references — Forge cannot browse, so award-winning work for
+#: businesses like these is written down rather than linked.
+REFERENCES = _P("REFERENCES")
 
 SCHEMA = _P("SCHEMA")
 
@@ -54,7 +57,7 @@ def _room_skills() -> list[str]:
 
 
 def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
-    sections = [ROLE.strip()]
+    sections = [ROLE.strip(), REFERENCES.strip()]
     sk = skills.describe(_room_skills())
     if sk:
         sections.append(sk)
@@ -316,7 +319,12 @@ async def run_build(world: World, lead_id: str, instruction: str = "") -> dict[s
             # 60 was too many (the tail was full-file rewrites); 32 was too few and
             # runs hit the cap mid-build. The real lever is the write-once rule
             # above, not the ceiling — this is a backstop, not a budget.
-            max_turns=45,
+            # Raised from 45 when a site became allowed more than one page
+            # and gained a social image, an imprint and print styles. The
+            # dollar ceiling below is the real guard; running out of TURNS
+            # mid-build leaves a half-written page, which is worse than an
+            # expensive one.
+            max_turns=58,
             # A runaway build must not be able to spend without bound.
             # Sized for Opus. At 2.50 — the Sonnet-era ceiling — a revision
             # with 28 Edit passes hit the budget mid-build and the run died as
