@@ -351,24 +351,7 @@ export class World extends Phaser.Scene {
         lip.setDepth(3);
         foot.setDepth(3);
         edge.setDepth(3);
-        // The furniture itself: a throne in the Throne, an anvil in the Armory,
-        // a drafting table at the Craft Bench. Which piece a bench gets is
-        // keyed off its manifest id, so a new bench gets a sensible desk
-        // without anyone drawing anything.
-        const kind = art.furnitureKindFor(bench.id);
-        const furnKey = art.furnitureTexture(this, kind, hex(room.color));
-        const furn = this.add.image(bx + bw / 2, by + bh - 1, furnKey)
-          .setOrigin(0.5, 1)
-          .setDepth(3);
-        // Fitted to the bench, preserving aspect. The source texture is drawn
-        // oversized, so this scales DOWN — which keeps the detail and means a
-        // narrow piece like a throne is never stretched to a wide bench's
-        // width. Height leads, because benches are wide and shallow and it is
-        // the height that says how big the object is.
-        const fit = Math.min((bh - 2) / furn.height, (bw - 6) / furn.width);
-        furn.setScale(fit);
-
-        this.worldLayer.add([plate, lip, foot, edge, furn, label]);
+        this.worldLayer.add([plate, lip, foot, edge, label]);
       }
     }
     // A Container renders in insertion order unless it is sorted, so the room
