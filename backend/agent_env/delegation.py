@@ -137,17 +137,26 @@ async def run_specialist(
     return out
 
 
-async def _rasterise_svgs(cwd: Path, files: list[str]) -> list[str]:
-    """Render any reviewed SVG to a PNG the reviewer can actually open.
+async def render_marks(cwd: Path, files: list[str]) -> list[str]:
+    """Render an SVG so somebody can judge it by eye, at the sizes that matter.
 
-    `Read` on an .svg returns XML, so a reviewer asked to judge a logo was
-    reading its source. A mark is judged by eye or not at all — and the whole
-    point of routing it past Lens is that somebody looks. So we rasterise here,
-    deterministically, rather than granting the reviewer Write and hoping it
-    builds itself a harness.
+    `Read` on an .svg returns XML, so anyone asked to judge a logo was reading
+    its source. A mark is judged by eye or not at all.
 
-    Each mark is shown on a light and a dark ground side by side: a logo that
-    only works on one of them is a real defect, and invisible otherwise.
+    Three sizes on two grounds, and each of the five panels catches a different
+    real defect:
+
+      - 180px on white and on near-black — a mark that only works on one of
+        them is broken and invisible in the source
+      - 48px — where a wordmark's descenders collide and hairlines vanish
+      - 16px — the browser tab. A mark that is a grey smudge here needs
+        simplifying to initials or one shape, not scaling down, and this is
+        the single most common thing wrong with a generated logo
+
+    Deterministic on purpose: rendered here rather than by granting an agent a
+    harness to build for itself. The 16px panel in particular is not something
+    a drawer will produce voluntarily, and it is the one that settles arguments
+    — "it looks fine to me" does not survive seeing it as eight grey pixels.
 
     Named `shot-*` so `hosting.SKIP_PREFIXES` keeps these out of the deploy.
     """
@@ -164,20 +173,31 @@ async def _rasterise_svgs(cwd: Path, files: list[str]) -> list[str]:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch()
             page = await browser.new_page(
-                viewport={"width": 560, "height": 300}, device_scale_factor=2)
+                viewport={"width": 700, "height": 260}, device_scale_factor=2)
             for name in svgs:
                 src = cwd / name
                 if not src.is_file():
                     continue
                 wrapper = cwd / f".review-{src.stem}.html"
                 wrapper.write_text(
-                    "<style>body{margin:0;display:flex;font:12px system-ui}"
-                    "div{width:280px;height:300px;display:flex;align-items:center;"
-                    "justify-content:center}"
-                    ".l{background:#fff}.d{background:#111}"
-                    "img{width:180px;height:180px}</style>"
-                    f'<div class="l"><img src="{src.name}"></div>'
-                    f'<div class="d"><img src="{src.name}"></div>'
+                    "<style>"
+                    "body{margin:0;display:flex;align-items:stretch;"
+                    "font:11px/1.6 system-ui}"
+                    "figure{margin:0;flex:1;display:flex;flex-direction:column;"
+                    "align-items:center;justify-content:center;gap:8px}"
+                    ".l{background:#fff;color:#555}.d{background:#111;color:#aaa}"
+                    "figcaption{letter-spacing:.06em;text-transform:uppercase}"
+                    "</style>"
+                    f'<figure class="l"><img src="{src.name}" width="180" '
+                    'height="180"><figcaption>180 on white</figcaption></figure>'
+                    f'<figure class="d"><img src="{src.name}" width="180" '
+                    'height="180"><figcaption>180 on dark</figcaption></figure>'
+                    f'<figure class="l"><img src="{src.name}" width="48" '
+                    'height="48"><figcaption>48</figcaption></figure>'
+                    f'<figure class="l"><img src="{src.name}" width="16" '
+                    'height="16"><figcaption>16 — the tab</figcaption></figure>'
+                    f'<figure class="d"><img src="{src.name}" width="16" '
+                    'height="16"><figcaption>16 on dark</figcaption></figure>'
                 )
                 try:
                     await page.goto(wrapper.as_uri(), wait_until="load")
@@ -191,6 +211,10 @@ async def _rasterise_svgs(cwd: Path, files: list[str]) -> list[str]:
         return made
     return made
 
+
+#: Kept under the old name because `run_review` calls it and the behaviour is
+#: the same, only better: the reviewer now gets the small sizes too.
+_rasterise_svgs = render_marks
 
 
 async def run_review(

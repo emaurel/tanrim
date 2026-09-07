@@ -285,6 +285,55 @@ def make_meta_server(
         return {"content": [{"type": "text", "text": json.dumps(out, ensure_ascii=False, indent=2)}]}
 
     @tool(
+        "preview_svg",
+        _P("preview_svg"),
+        {"files": str},
+    )
+    async def preview_svg_fn(args: dict[str, Any]) -> dict[str, Any]:
+        """Look at your own mark, at the sizes where it fails.
+
+        Routing every logo past Lens was buying two things and paying for
+        three. It bought EYES — nobody could see an SVG, because `Read` on one
+        returns XML — and it bought fresh eyes, which is a real effect: a
+        drawer reads its own intent into a picture and forgives what a stranger
+        would not. It paid a whole extra agent run, up to $2 and sixteen turns,
+        for both.
+
+        The first of those is worth a rasteriser, not a reviewer. This is that:
+        deterministic, two turns, pennies. The second is worth a reviewer, and
+        is now reserved for the case where it cannot be substituted — matching
+        a mark against a photograph of their actual sign, which Lens has
+        already looked at.
+
+        The 16px panel does most of the work. "It looks fine to me" does not
+        survive seeing the mark as eight grey pixels.
+        """
+        from pathlib import Path
+
+        from .delegation import render_marks
+
+        cwd = ctx.get("cwd")
+        if not cwd:
+            return _refuse("You have no working directory, so there is nothing "
+                           "to preview.")
+        names = [f.strip() for f in re.split(r"[,\n]+", args.get("files") or "")
+                 if f.strip()]
+        if not names:
+            return _refuse("Name the SVG file or files to preview.")
+        made = await render_marks(Path(cwd), names)
+        if not made:
+            return _refuse(
+                "Could not render those — check the filenames, and that they "
+                "are .svg files that exist. If a browser is unavailable here, "
+                "say in your notes that the mark was not seen.")
+        return _refuse(
+            "Rendered: " + ", ".join(made) + ". NOW OPEN THEM WITH `Read` AND "
+            "LOOK. Each shows the mark at 180px on white and on dark, at 48px, "
+            "and at 16px — the browser tab — on both grounds. Judge the 16px "
+            "panel hardest: a mark that is a smudge there needs simplifying to "
+            "initials or one shape, not scaling down.")
+
+    @tool(
         "request_review",
         _P("request_review"),
         {"reviewer": str, "question": str, "files": str},
@@ -331,8 +380,10 @@ def make_meta_server(
         # build directory, and a task cancelled mid-write leaves a broken file
         # in a site that is about to be inspected.
         ctx["drain_subtasks"] = pending
-    # Anyone with a directory may ask for a review — a specialist most of all.
+    # Anyone with a directory may look at their own work, and ask for a
+    # review — a specialist most of all.
     if ctx.get("cwd"):
+        tools.append(preview_svg_fn)
         tools.append(request_review_fn)
 
     return create_sdk_mcp_server(
