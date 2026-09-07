@@ -16,6 +16,20 @@ What each source can actually give, measured rather than assumed:
 - **Facebook pages** serve Open Graph tags and their photo grid to a plain
   browser with no login. `og:image` is 720x720, which is usually enough to
   read a shopfront sign.
+- **Facebook is currently broken.** A plain fetch of a real page URL from a
+  lead's own dossier answers HTTP 400, and the browser fallback recovers no
+  usable image. Tested against
+  facebook.com/p/Maison-clerc-et-banette-100087080543147/ — it returns
+  "no usable image was recovered". Left in place because it costs one failed
+  fetch and may start working again; do not count on it as a source.
+- **Instagram gives thumbnails only, and that is the ceiling.** The grid
+  renders at 150x150 to 360x640 and the full-size image cannot be reached
+  without logging in: post shortcodes are no longer in the profile's anchors
+  or its HTML, and the CDN URLs are signed, so editing `stp=dst-jpg_s150x150`
+  to ask for 1080 returns HTTP 403. Verified all three routes. It is a
+  research source — palette, chalkboards, signage, atmosphere — not a source
+  of publishable pictures. For those, Google listing photographs come back
+  around 1200px, and the outreach email asks the owner for originals.
 - **Instagram** shows a cookie dialog and a login banner, but a real browser
   still loads the bio text (often including the phone number) and the post
   grid at 640x640 before any wall. The 1080px profile picture is behind a
