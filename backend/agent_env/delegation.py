@@ -102,7 +102,13 @@ async def run_specialist(
         builtin_tools=["Write", "Read", "Edit", "Glob", "Bash"],
         cwd=cwd,
         permission_mode="acceptEdits",
-        max_turns=30,
+        # Raised from 30 after three consecutive wordmark subtasks died on the
+        # ceiling, the third of them producing nothing at all: "the specialist
+        # hit its 30-turn cap and wrote no file; the mark was revised by hand
+        # instead". Turns are the wrong guard here — the money ceiling below is
+        # the real one, and it was nowhere near being hit. Dying on turns wastes
+        # everything already spent and hands the parent nothing.
+        max_turns=48,
         max_budget_usd=3.00,   # a specialist runs on the parent's model
 
         schema='{"ok":bool,"files":[],"summary":"","how_to_use":"","reviewed_by":null,'
