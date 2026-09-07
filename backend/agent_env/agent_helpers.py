@@ -497,7 +497,24 @@ def terminate_sdk_children(grace: float = 3.0) -> list[int]:
 
 
 def all_in_flight() -> dict[str, dict[str, Any]]:
+    """Every run in flight, keyed by worker id. See `every_in_flight` for the
+    shape a room panel wants."""
     return dict(_IN_FLIGHT)
+
+
+def every_in_flight() -> list[dict[str, Any]]:
+    """Every run in flight, as records — the same shape `in_flight_for_role`
+    returns.
+
+    The Throne reports on the whole pipeline rather than one role, and was
+    handing `all_in_flight()` straight out under the same `in_flight` key every
+    other room uses for a LIST. So the field had two shapes depending on which
+    room you asked, and anything that iterated it got worker-id strings from
+    the Throne and run records from everywhere else. A watcher counting runs
+    read the Throne's two keys as two extra runs and never saw the pipeline
+    go idle.
+    """
+    return [{"worker_id": wid, **info} for wid, info in _IN_FLIGHT.items()]
 
 
 @dataclass

@@ -17,7 +17,7 @@ from typing import Any, TYPE_CHECKING
 from . import secrets as secrets_store
 from . import config
 from . import invoices, state, usage
-from .agent_helpers import AgentBusy, all_in_flight, in_flight_for_role
+from .agent_helpers import AgentBusy, every_in_flight, in_flight_for_role
 from .agents import courier, echo, forge, lens, nova, probe, scribe, ultron
 from .runners import AGENT_RUNNERS
 from .workers import RoomAtCapacity, crew_status, max_workers
@@ -590,7 +590,7 @@ class ThroneHandler(RoomHandler):
             "last_dispatch": self._last_dispatch,
             # Ultron's own view: who is actually busy right now, whoever
             # started them, plus how each room is staffed.
-            "in_flight": all_in_flight(),
+            "in_flight": every_in_flight(),
             "crew": crew_status(self.world),
             "model": ultron.MODEL,
             "available_agents": sorted(AGENT_RUNNERS.keys()),
