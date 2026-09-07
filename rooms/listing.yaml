@@ -10,7 +10,7 @@ agents:
     role: Writer. Site copy, meta tags, and the pitch email + price quote.
     color: "#e5989b"
 tools: []
-max_workers: 5
+max_workers: 10
 workbenches:
   - id: copy
     name: Copy Bench

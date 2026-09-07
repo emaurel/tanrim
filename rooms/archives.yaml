@@ -4,6 +4,7 @@ purpose: Sage keeps the ledger — your feedback, the activity log, and every le
 position: { x: 36, y: 12 }
 size: { w: 12, h: 8 }
 color: "#4a3a2b"
+max_workers: 10
 agents:
   - id: sage
     name: Sage

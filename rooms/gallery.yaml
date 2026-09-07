@@ -10,7 +10,7 @@ agents:
     role: Inspector. Renders sites in a real browser and judges them by eye.
     color: "#7ad7d7"
 tools: ["site_inspect", "site_audit", "image_collect", "social_look", "font_match"]
-max_workers: 5
+max_workers: 10
 workbenches:
   - id: incumbent
     name: Incumbent Wall

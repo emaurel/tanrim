@@ -37,6 +37,16 @@ let open = false;
 let steps: Step[] = [];
 let loadError = "";
 
+interface RoomCap {
+  id: string;
+  name: string;
+  max_workers: number;
+  singleton: boolean;
+  busy: number;
+}
+let caps: RoomCap[] = [];
+let capCeiling = 20;
+
 /* ---------------- data ---------------- */
 
 async function load(): Promise<void> {
@@ -44,6 +54,118 @@ async function load(): Promise<void> {
   if (!r.ok) throw new Error(`pipeline: ${r.status}`);
   const d = await r.json();
   steps = d.steps ?? [];
+
+  // Worker caps come from the manifests, read fresh — not from the `/rooms`
+  // boot snapshot, which carries whatever `max_workers` was when the server
+  // started.
+  const w = await fetch("/rooms/workers");
+  if (w.ok) {
+    const wd = await w.json();
+    caps = wd.rooms ?? [];
+    capCeiling = wd.cap ?? 20;
+  }
+}
+
+async function setCaps(body: Record<string, unknown>): Promise<string> {
+  const r = await fetch("/rooms/workers", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    return d.detail ?? `HTTP ${r.status}`;
+  }
+  return "";
+}
+
+/**
+ * How many agents each room may run at once.
+ *
+ * A room hires another worker when a lead needs it and the ones it has are
+ * busy, up to this number, and retires the extras when their leads finish. So
+ * the cap is the ceiling on CONCURRENCY, not a staffing level — raising it
+ * hires nobody and lowering it fires nobody.
+ *
+ * Worth being able to change here rather than in twelve YAML files, and worth
+ * saying what it costs: every extra worker is another model run against the
+ * same budget.
+ */
+function renderCaps(body: HTMLElement): void {
+  if (!caps.length) return;
+  const h = document.createElement("h3");
+  h.className = "st-h3";
+  h.textContent = "Agents per room";
+  body.appendChild(h);
+
+  const note = document.createElement("p");
+  note.className = "st-note";
+  note.textContent =
+    "The most that room will run at once. A room hires another when a lead "
+    + "needs it and the rest are busy, and retires it when that lead is done — "
+    + `so this is a ceiling, not a headcount. Every extra one is another model `
+    + `run against the same budget. Maximum ${capCeiling}.`;
+  body.appendChild(note);
+
+  const msg = document.createElement("div");
+  msg.className = "st-cap-msg";
+
+  const all = document.createElement("div");
+  all.className = "st-cap-all";
+  const allLbl = document.createElement("span");
+  allLbl.textContent = "set every room to";
+  const allIn = document.createElement("input");
+  allIn.type = "number";
+  allIn.min = "1";
+  allIn.max = String(capCeiling);
+  allIn.value = "10";
+  const allGo = document.createElement("button");
+  allGo.type = "button";
+  allGo.className = "st-cap-go";
+  allGo.textContent = "apply";
+  allGo.addEventListener("click", async () => {
+    allGo.disabled = true;
+    msg.textContent = "saving…";
+    const err = await setCaps({ default: Number(allIn.value) });
+    msg.textContent = err || `every room set to ${allIn.value}`;
+    allGo.disabled = false;
+    if (!err) { await load(); render(); }
+  });
+  all.append(allLbl, allIn, allGo);
+  body.append(all, msg);
+
+  const list = document.createElement("div");
+  list.className = "st-caps";
+  for (const room of caps) {
+    const row = document.createElement("label");
+    row.className = "st-cap";
+    const name = document.createElement("span");
+    name.className = "st-cap-name";
+    name.textContent = room.name;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "1";
+    input.max = String(capCeiling);
+    input.value = String(room.max_workers);
+    if (room.singleton) {
+      // Ultron dispatches against himself if there are two of him. Shown, so
+      // the room is not mysteriously missing, but not editable.
+      input.disabled = true;
+      input.title = "a singleton by design — a second overseer would dispatch "
+        + "against the first";
+      row.classList.add("st-cap--fixed");
+    } else {
+      input.addEventListener("change", async () => {
+        msg.textContent = "saving…";
+        const err = await setCaps({ rooms: { [room.id]: Number(input.value) } });
+        msg.textContent = err || `${room.name}: ${input.value}`;
+        if (!err) room.max_workers = Number(input.value);
+      });
+    }
+    row.append(name, input);
+    list.appendChild(row);
+  }
+  body.appendChild(list);
 }
 
 async function setGate(stage: string, on: boolean): Promise<string> {
@@ -211,6 +333,8 @@ function render(): void {
   for (const s of steps) flow.appendChild(buildStep(s, refreshCount));
   body.appendChild(flow);
   refreshCount();
+
+  renderCaps(body);
 }
 
 /* ---------------- shell ---------------- */

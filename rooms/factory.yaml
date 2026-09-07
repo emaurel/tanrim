@@ -11,7 +11,7 @@ agents:
     color: "#98c1d9"
 tools: []
 skills: ["ui-ux-pro-max"]
-max_workers: 5
+max_workers: 10
 workbenches:
   - id: site
     name: The Build Floor

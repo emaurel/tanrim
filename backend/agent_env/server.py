@@ -763,6 +763,73 @@ async def get_rooms():
     return [r.model_dump() for r in world.rooms]
 
 
+class WorkerCaps(BaseModel):
+    """How many agents each room may run at once.
+
+    `default` applies to every room that is not a singleton; `rooms` overrides
+    individual ones. Either may be given alone.
+    """
+    default: int | None = None
+    rooms: dict[str, int] | None = None
+
+
+@app.get("/rooms/workers")
+async def get_worker_caps() -> dict[str, Any]:
+    """Per-room worker caps, with the ceiling and which rooms cannot change."""
+    from .workers import SINGLETON_ROLES
+
+    return {
+        "cap": rooms_mod.MAX_WORKERS_CAP,
+        "rooms": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "max_workers": r.max_workers,
+                # Ultron dispatches against himself if there are two of him, so
+                # the Throne is shown but not editable rather than silently
+                # ignoring whatever is set.
+                "singleton": any(a.id in SINGLETON_ROLES for a in r.agents),
+                "busy": len([w for w in world.workers(r.agents[0].id)
+                             if w.busy]) if r.agents else 0,
+            }
+            for r in rooms_mod.load_rooms()
+        ],
+    }
+
+
+@app.put("/rooms/workers")
+async def put_worker_caps(caps: WorkerCaps) -> dict[str, Any]:
+    from .workers import SINGLETON_ROLES
+
+    wanted: dict[str, int] = {}
+    if caps.default is not None:
+        for r in rooms_mod.load_rooms():
+            if any(a.id in SINGLETON_ROLES for a in r.agents):
+                continue
+            wanted[r.id] = caps.default
+    wanted.update(caps.rooms or {})
+
+    changed, problems = [], []
+    for room_id, n in wanted.items():
+        problem = rooms_mod.set_max_workers(room_id, int(n))
+        if problem:
+            problems.append(f"{room_id}: {problem}")
+        else:
+            changed.append(room_id)
+    if problems and not changed:
+        raise HTTPException(422, "; ".join(problems))
+    # Nothing to invalidate: `workers.max_workers` reads `load_rooms`, which is
+    # cached on the manifests' own mtimes, so the new cap is in force on the
+    # next hire. (`world.rooms` is a boot snapshot and does carry a stale
+    # `max_workers` in the `/rooms` payload — nothing reads it for capacity,
+    # and the settings pane reads `/rooms/workers` instead.)
+    #
+    # Raising a cap hires nobody by itself: a worker appears when a lead needs
+    # a room whose workers are all busy. Lowering it fires nobody either; the
+    # sweep retires them as their leads finish.
+    return {"ok": True, "changed": sorted(changed), "problems": problems}
+
+
 @app.get("/rooms/{room_id}/state")
 async def get_room_state(room_id: str) -> dict[str, Any]:
     room = next((r for r in world.rooms if r.id == room_id), None)

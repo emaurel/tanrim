@@ -4,6 +4,7 @@ purpose: Where everyone gathers for the retro — what converted, what got ignor
 position: { x: 24, y: 20 }
 size: { w: 24, h: 8 }
 color: "#4a1a1a"
+max_workers: 10
 agents: []
 tools: []
 workbenches:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -199,6 +201,47 @@ def load_rooms(directory: Path = ROOMS_DIR) -> list[RoomSpec]:
         rooms.append(room)
     _ROOMS_CACHE[key] = (stamp, rooms)
     return rooms
+
+
+#: The most workers a room may be given. Not a technical limit — the per-worker
+#: lock, the sprite and the log line all scale — but every worker is another
+#: concurrent model run against the same API budget, so the ceiling exists to
+#: stop a slider producing a bill nobody meant to authorise.
+MAX_WORKERS_CAP = 20
+
+
+def set_max_workers(room_id: str, n: int) -> str | None:
+    """Change how many agents a room may run at once. Returns a message, or None.
+
+    Written into the manifest rather than kept as a runtime override, because
+    the manifest is what `load_rooms` reads and what an operator inspects when
+    asking why a room is at capacity. A second source of truth for capacity is
+    how you get a room that says five and behaves like one.
+
+    Rewritten line by line for the same reason placement is: these files carry
+    comments, agent roles and workbench jobs, and a YAML dumper would strip all
+    of it to change one integer.
+    """
+    if not 1 <= n <= MAX_WORKERS_CAP:
+        return f"{n} is outside 1..{MAX_WORKERS_CAP}"
+    path = ROOMS_DIR / f"{room_id}.yaml"
+    if not path.exists():
+        return f"no manifest for {room_id!r}"
+    text = path.read_text()
+    line = f"max_workers: {n}"
+    text, hits = re.subn(r"^max_workers: \d+$", line, text, count=1, flags=re.M)
+    if not hits:
+        # Undeclared, so the room has been running on the default of one. Goes
+        # after `color`, which every manifest has, keeping the room-level
+        # settings together.
+        text, hits = re.subn(r"^(color: .*)$", rf"\1\n{line}", text,
+                             count=1, flags=re.M)
+        if not hits:
+            text = text.rstrip("\n") + f"\n{line}\n"
+    tmp = path.with_suffix(".yaml.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+    return None
 
 
 def workbench(room: RoomSpec, bench_id: str) -> WorkbenchSpec | None:

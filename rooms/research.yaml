@@ -10,7 +10,7 @@ agents:
     role: Prospector. Sources candidate businesses and opens a lead for each one.
     color: "#a3b18a"
 tools: ["osm_business_search"]
-max_workers: 5
+max_workers: 10
 workbenches:
   - id: map
     name: The Map Table

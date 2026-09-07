@@ -4,6 +4,7 @@ purpose: Coin counts the spend — tokens per agent, and what each lead cost to 
 position: { x: 12, y: 20 }
 size: { w: 12, h: 8 }
 color: "#3a3a1a"
+max_workers: 10
 agents:
   - id: coin
     name: Coin

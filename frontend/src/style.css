@@ -2121,3 +2121,58 @@ a.lb-link:focus-visible { outline: 2px solid #7fb3d5; outline-offset: 2px; borde
   max-height: 260px;
   overflow-y: auto;
 }
+
+/* --- settings: agents per room ------------------------------------------ */
+.st-h3 {
+  margin: 26px 0 6px;
+  font-size: 12px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: #9a9384;
+}
+.st-cap-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+  font-size: 12px;
+  color: #9a9384;
+}
+.st-cap-all input, .st-cap input {
+  width: 62px;
+  padding: 4px 6px;
+  background: #1e1e26;
+  border: 1px solid #33333f;
+  border-radius: 3px;
+  color: #efe9d8;
+  font: inherit;
+}
+.st-cap-go {
+  padding: 4px 10px;
+  background: #1e1e26;
+  border: 1px solid #33333f;
+  border-radius: 3px;
+  color: #efe9d8;
+  font: inherit;
+  cursor: pointer;
+}
+.st-cap-go:hover { border-color: #9a9384; }
+.st-cap-msg { min-height: 16px; font-size: 11px; color: #7fb069; }
+.st-caps {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 6px 14px;
+  margin-top: 8px;
+}
+.st-cap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 8px;
+  background: #16161c;
+  border: 1px solid #26262f;
+  border-radius: 3px;
+}
+.st-cap-name { font-size: 12px; }
+.st-cap--fixed { opacity: .55; }
