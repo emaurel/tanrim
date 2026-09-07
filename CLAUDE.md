@@ -675,10 +675,16 @@ requires Forge to pick ONE and name it — a page that takes a little of each is
 the one failure mode that survives every other rule.
 
 Described rather than linked, because Forge has no browsing tools and a URL is
-useless to it. The sheet also carries the caveat that matters: those sites run
-to 8,000-24,000 pixels tall with hundreds of images, video and canvas. The
-composition is worth copying; the payload is the opposite of what a local
-business's customers can afford.
+useless to it.
+
+The sheet's caveat is about WEIGHT, and the number is measured rather than
+inferred: at a 390px viewport, before any scrolling, those sites transfer
+4.3-16.8 MB against our 220 KB budget — twenty to seventy-six times over. An
+earlier version of this cited their height (8,000-18,000px) as the fault, which
+was wrong: ten phone screens is an ordinary long page and scrolling is free.
+What differs is purpose. A brand experience is explored, so the scroll is the
+content; a local business page answers a five-second question, so the first
+screen has to do the work and everything after it has to earn its place.
 
 ### Judging what is on the page
 
