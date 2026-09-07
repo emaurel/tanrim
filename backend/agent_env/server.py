@@ -1324,6 +1324,10 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
         lead_id = rec["payload"].get("lead_id")
         reason = (body.reason or "").strip()
         if lead_id and body.decision == "approved":
+            # Resolved, so the send-back note stops being shown. Left in place
+            # it would keep telling every later run to go and look at their
+            # Instagram again, long after somebody did.
+            state.update_lead(lead_id, sent_back=None)
             # Explicit, because the lead does not change stage here and the
             # sweep fires on stage changes.
             asyncio.create_task(forge_mod.run_build(
@@ -1331,12 +1335,31 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
                 f"The operator approved the research and added: {reason}"
                 if reason else ""))
         elif lead_id:
-            # Back for another look. The dossier pass redoes the research, the
-            # appraisal and the photographs in turn.
+            # ONE STEP BACK, to the photo pass — not all the way to
+            # `qualified`, which is where this used to send it. From
+            # `qualified` the lead redid the research, the appraisal and the
+            # photographs in turn, so a note saying "look at their Instagram
+            # again" re-ran Probe's whole dossier and re-priced the job to get
+            # at the last of those three. `appraised` dispatches the Gallery's
+            # visual pass and nothing else.
+            #
+            # If it really is the DOSSIER that is wrong, move the lead to
+            # `qualified` by hand on the lead board; that is the rarer case and
+            # it should be the one that costs a deliberate action.
             state.advance_lead(
-                lead_id, "qualified", agent="operator",
+                lead_id, "appraised", agent="operator",
                 note=(f"sent back before building: {reason[:200]}" if reason
-                      else "sent back before building — research again"))
+                      else "sent back before building — look again"),
+                # The reason has to travel in a FIELD, not just in the history.
+                # History is not in any agent's prompt, so the note went
+                # nowhere: one lead was sent back twice with "find photos from
+                # their instagram" and the photo pass redid exactly what it
+                # had done before, because it was never told.
+                sent_back={
+                    "reason": reason[:600],
+                    "from_stage": "visualised",
+                    "at": time.time(),
+                } if reason else None)
 
     elif rec["kind"] == "thin_content":
         # The lead is parked at `qualified`, which is also the stage that

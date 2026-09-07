@@ -14,6 +14,7 @@ from .. import state
 from .. import company, config, harvest, places, usage
 from ..agent_helpers import (
     format_escalations,
+    format_sent_back,
     format_feedback,
     format_lead,
     format_secret_names,
@@ -41,6 +42,7 @@ def _build_prompt(lead: dict[str, Any], instruction: str) -> str:
         format_secret_names(),
         format_escalations(AGENT_ID),
         format_tool_history(AGENT_ID),
+        format_sent_back(lead),
     ):
         if block:
             sections.append(block)
@@ -273,6 +275,7 @@ def _build_enrich_prompt(lead: dict[str, Any], instruction: str) -> str:
         format_feedback(state.list_notes(limit=20), ROOM_ID),
         format_escalations(AGENT_ID),
         format_tool_history(AGENT_ID),
+        format_sent_back(lead),
     ):
         if block:
             sections.append(block)

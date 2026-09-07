@@ -13,6 +13,7 @@ from typing import Any
 from .. import assets, state
 from ..agent_helpers import (
     format_escalations,
+    format_sent_back,
     format_feedback,
     format_lead,
     format_tool_history,
@@ -45,6 +46,7 @@ def _build_prompt(lead: dict[str, Any], site_dir: str) -> str:
         format_feedback(state.list_notes(limit=20), ROOM_ID),
         format_escalations(AGENT_ID),
         format_tool_history(AGENT_ID),
+        format_sent_back(lead),
     ):
         if block:
             sections.append(block)
@@ -263,6 +265,7 @@ def _build_incumbent_prompt(lead: dict[str, Any], url: str, out_dir: str) -> str
         format_feedback(state.list_notes(limit=20), ROOM_ID),
         format_escalations(AGENT_ID),
         format_tool_history(AGENT_ID),
+        format_sent_back(lead),
     ):
         if block:
             sections.append(block)
@@ -454,6 +457,7 @@ def _build_visual_prompt(lead: dict[str, Any], out_dir: str) -> str:
         format_feedback(state.list_notes(limit=20), ROOM_ID),
         format_escalations(AGENT_ID),
         format_tool_history(AGENT_ID),
+        format_sent_back(lead),
     ):
         if block:
             sections.append(block)

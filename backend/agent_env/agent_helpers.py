@@ -189,6 +189,32 @@ def format_secret_names() -> str:
     )
 
 
+def format_sent_back(lead: dict[str, Any]) -> str:
+    """What the operator said when they sent this lead back for another look.
+
+    It travels in `lead["sent_back"]` rather than only in the lead's history,
+    because history is not in anybody's prompt. It used to be only in history:
+    a lead was refused twice with "find photos from their instagram" and the
+    photo pass redid precisely what it had done before, both times, because
+    nothing ever told it. A send-back that does not reach the agent is just an
+    expensive way to repeat yourself.
+    """
+    sb = lead.get("sent_back") or {}
+    reason = str(sb.get("reason") or "").strip()
+    if not reason:
+        return ""
+    return (
+        "THE OPERATOR SENT THIS LEAD BACK, AND THIS IS WHY. They saw what you "
+        "produced last time and asked for something specific. Do THAT — not "
+        "the same work again:\n\n"
+        f"  \"{reason}\"\n\n"
+        "If what they are asking for turns out not to be possible, say so "
+        "plainly in your output rather than quietly doing what you did before. "
+        "Being told the same thing twice means the first attempt did not "
+        "register."
+    )
+
+
 def format_escalations(agent_id: str, limit: int = 5) -> str:
     """Show the agent the guidance Ultron gave on prior escalations they raised
     via `ask_ultron`. Critical for the auto-rerun: the rerun must see the
