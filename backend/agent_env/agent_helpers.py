@@ -492,6 +492,12 @@ class RunResult:
     cache_read: int = 0
     cost_usd: float = 0.0
     tool_names: list[str] = field(default_factory=list)
+    # Wall clock, which nothing recorded until someone asked why a build takes
+    # so long and the honest answer was that we did not measure it. Token
+    # counts are a proxy for time and a poor one: they say nothing about how
+    # long a nested delegation blocked for, or how much of a turn was spent
+    # waiting rather than generating.
+    seconds: float = 0.0
 
 
 async def run_agent(
@@ -898,6 +904,7 @@ async def run_agent(
                 summary=f"schema retry {'recovered' if result.data else 'failed'}",
                 outcome="retry",
             )
+        result.seconds = round(time.time() - started_ts, 1)
         return result
     except Exception as e:
         await world.say(agent_id, f"failed: {type(e).__name__}", seconds=6)

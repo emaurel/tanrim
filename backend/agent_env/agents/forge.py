@@ -407,6 +407,10 @@ async def run_build(world: World, lead_id: str, instruction: str = "") -> dict[s
         # How the run was spent — the thing you need when a build takes 15
         # minutes and you want to know why.
         "run_stats": {
+            # Wall clock first, because it is the question people actually ask
+            # and token counts are a poor proxy for it: they say nothing about
+            # how long a nested delegation blocked for.
+            "seconds": result.seconds,
             "output_tokens": result.output_tokens,
             "cache_write_tokens": result.cache_write,
             "cache_read_tokens": result.cache_read,
