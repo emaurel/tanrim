@@ -79,3 +79,60 @@ def test_the_cache_is_keyed_by_kind(two_plugins):
     assert prompts.load("worker", "ROLE", "normal") == "BASE ROLE"
     assert prompts.load("worker", "ROLE", "special") == "EXTENSION ROLE"
     assert prompts.load("worker", "ROLE", "normal") == "BASE ROLE"
+
+
+# --- declared prompts, and the boot-time check -----------------------------
+
+def test_a_plugin_declares_the_prompts_it_needs(plugin_env):
+    """`prompts/` is gitignored, so there is nothing on disk to enumerate.
+
+    The declaration is what survives a fresh checkout when the text does not,
+    and it is what lets the server say at BOOT which prompts are missing rather
+    than failing on the first run that reaches one.
+    """
+    plugin_env.install({"alpha": """
+        PLUGIN = Plugin(id="alpha", name="A", lead_kinds=("k",),
+                        stages=(Stage("s"),), prompts_dir="prompts",
+                        prompts=("worker/ROLE", "worker/SCHEMA"))
+    """})
+    assert prompts.check_all() == ["alpha: worker/ROLE", "alpha: worker/SCHEMA"]
+
+    plugin_env.write("alpha/prompts/worker/ROLE.md", "role")
+    assert prompts.check_all() == ["alpha: worker/SCHEMA"]
+
+    plugin_env.write("alpha/prompts/worker/SCHEMA.md", "schema")
+    assert prompts.check_all() == []
+
+
+def test_a_plugin_may_rely_on_a_prompt_another_one_ships(plugin_env):
+    """Declaring it without shipping it is legitimate — someone else has it."""
+    plugin_env.install({
+        "base": """
+            PLUGIN = Plugin(id="base", name="B", lead_kinds=("k",),
+                            prompts_dir="prompts", prompts=("worker/ROLE",))
+        """,
+        "ext": """
+            PLUGIN = Plugin(id="ext", name="E", requires=("base",),
+                            lead_kinds=("k2",), prompts=("worker/ROLE",))
+        """,
+    })
+    plugin_env.write("base/prompts/worker/ROLE.md", "shared")
+    assert prompts.check_all() == []
+
+
+def test_a_missing_prompt_names_the_plugin_and_where_to_write_it(plugin_env):
+    plugin_env.install({"alpha": """
+        PLUGIN = Plugin(id="alpha", name="A", lead_kinds=("k",),
+                        prompts_dir="prompts", prompts=("worker/ROLE",))
+    """})
+    with pytest.raises(prompts.MissingPrompt) as got:
+        prompts.load("worker", "ROLE", "k")
+    message = str(got.value)
+    assert "alpha" in message and "worker/ROLE.md" in message
+
+
+def test_a_malformed_declaration_is_reported(plugin_env):
+    plugin_env.install({"alpha": """
+        PLUGIN = Plugin(id="alpha", name="A", prompts=("no_slash_here",))
+    """})
+    assert prompts.check_all() == ["alpha: malformed prompt name 'no_slash_here'"]

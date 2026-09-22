@@ -14,8 +14,9 @@ state/secrets.json
 state/
 
 # Agent prompts. These are the part of this project worth keeping private, so
-# the working copies stay local. `prompts.example/` is committed and documents
-# what each file is for — copy it to `prompts/` and write your own.
+# the working copies stay local. Each plugin DECLARES the prompts it needs in
+# its `plugin.py`, and the server reports the missing ones at boot — that
+# declaration is committed, the text is not.
 prompts/
 
 # Vendored third-party skill data (3.6 MB of CSVs). Re-fetch with:
@@ -37,5 +38,6 @@ prompts/
 brand/
 
 # Plugin prompts, for the same reason as `prompts/`: the text is the private
-# part. Each plugin commits `prompts.example/` and keeps `prompts/` local.
+# part. The committed half is the `prompts=(...)` declaration in plugin.py.
 plugins/*/prompts/
+plugins/*/__pycache__/

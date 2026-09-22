@@ -326,8 +326,22 @@ def set_max_workers(room_id: str, n: int) -> str | None:
     """
     if not 1 <= n <= MAX_WORKERS_CAP:
         return f"{n} is outside 1..{MAX_WORKERS_CAP}"
-    path = ROOMS_DIR / f"{room_id}.yaml"
-    if not path.exists():
+    # The manifest lives in whichever plugin declared the room, which is not
+    # the environment's own directory any more — and a room may be declared in
+    # a file whose name is not its id.
+    path = None
+    for directory in room_dirs():
+        for candidate in sorted(directory.glob("*.yaml")):
+            try:
+                data = yaml.safe_load(candidate.read_text()) or {}
+            except Exception:  # noqa: BLE001
+                continue
+            if data.get("id") == room_id and not data.get("extends"):
+                path = candidate
+                break
+        if path is not None:
+            break
+    if path is None:
         return f"no manifest for {room_id!r}"
     text = path.read_text()
     line = f"max_workers: {n}"

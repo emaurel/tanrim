@@ -2,9 +2,9 @@
 
 Every agent's role and output schema lives in `prompts/<module>/<NAME>.md`
 rather than inline in Python, so the prompts can be kept out of a public
-repository. `prompts/` is gitignored; `prompts.example/` is committed and holds
-a stub for each one, documenting what the file is for without giving away the
-text.
+repository. `prompts/` is gitignored, so each plugin DECLARES the prompts it
+needs and `check_all` reports at boot which are missing — the declaration is
+what survives a checkout when the text does not.
 
 Prompts are read once and cached. Edit a file and restart the server to pick it
 up — they are not hot-reloaded, because a prompt changing underneath a run in
@@ -16,8 +16,11 @@ from pathlib import Path
 
 from .config import ROOT
 
+#: The environment keeps no prompts of its own — every one belongs to a
+#: plugin. These remain as a LAST-RESORT search path so a bare checkout with a
+#: `prompts/` directory still works, and so the error message for a missing
+#: prompt has somewhere to point when no plugin claims it.
 PROMPTS_DIR = ROOT / "prompts"
-EXAMPLE_DIR = ROOT / "prompts.example"
 
 _cache: dict[tuple[str, str, str | None], str] = {}
 
@@ -76,12 +79,19 @@ def load(module: str, name: str, kind: str | None = None) -> str:
 
     path = path_for(module, name, kind)
     if not path.is_file():
-        example = EXAMPLE_DIR / module / f"{name}.md"
-        hint = (
-            f"\n\nA stub exists at {_shown(example)} — copy "
-            f"prompts.example/ to prompts/ and write the real text."
-            if example.is_file() else ""
-        )
+        from . import plugin
+
+        # Name the plugin that wants it, and where it should go. There is no
+        # stub tree any more: one worked example plugin explains the shape
+        # rather than 88 files repeating it.
+        wanting = [p for p in plugin.load()
+                   if f"{module}/{name}" in p.prompts]
+        hint = ""
+        if wanting:
+            owner = wanting[0]
+            where = owner.dir_for("prompts") or (owner.root or Path(".")) / "prompts"
+            hint = (f"\n\nPlugin '{owner.id}' declares it. Write it at "
+                    f"{_shown(where / module / f'{name}.md')}.")
         raise MissingPrompt(
             f"missing prompt: {_shown(path)}{hint}"
         )
@@ -119,12 +129,30 @@ def kind_loader(module: str):
 
 
 def check_all() -> list[str]:
-    """Every prompt the example tree declares but `prompts/` lacks."""
-    if not EXAMPLE_DIR.is_dir():
-        return []
-    missing = []
-    for stub in sorted(EXAMPLE_DIR.rglob("*.md")):
-        rel = stub.relative_to(EXAMPLE_DIR)
-        if not (PROMPTS_DIR / rel).is_file():
-            missing.append(str(rel))
+    """Every prompt an installed plugin declares but does not have on disk.
+
+    `prompts/` is gitignored — the text is the private part of this project —
+    so a fresh checkout has the code and none of the prompts. Each plugin
+    therefore DECLARES what it needs and this checks the declaration, which is
+    what lets the server say at boot which are missing rather than failing on
+    the first run that reaches one. An agent with no instructions does not
+    fail, it improvises, which is far worse than not starting.
+    """
+    from . import plugin
+
+    missing: list[str] = []
+    for p in plugin.load():
+        base = p.dir_for("prompts")
+        for entry in p.prompts:
+            module, _, name = entry.partition("/")
+            if not name:
+                missing.append(f"{p.id}: malformed prompt name {entry!r}")
+                continue
+            if base is not None and (base / module / f"{name}.md").is_file():
+                continue
+            # A plugin may legitimately rely on one another plugin ships.
+            try:
+                load(module, name)
+            except MissingPrompt:
+                missing.append(f"{p.id}: {entry}")
     return missing

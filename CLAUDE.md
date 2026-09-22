@@ -367,13 +367,22 @@ Forge is told to query the skill for palette, type and touch-target rules and to
 report what it got back in `design_rationale` — which is also how you check it
 actually used it rather than inventing hex codes.
 
-## Prompts live outside the source tree
+## Prompts live outside the source tree, and inside a plugin
 
 Every agent role, output schema and MCP tool description loads from
-`prompts/<module>/<NAME>.md` via `tanrim/prompts.py`. `prompts/` is
-**gitignored** — the prompts are the part of this project worth keeping
-private — and `prompts.example/` is committed with a stub per file describing
-what it is for, with no excerpt of the real text.
+`plugins/<plugin>/prompts/<module>/<NAME>.md` via `tanrim/prompts.py`. Those
+directories are **gitignored** — the prompts are the part of this project worth
+keeping private — so each plugin **declares** what it needs in its `plugin.py`
+(`prompts=("forge/ROLE", ...)`) and `check_all()` reports at boot which are
+missing. The declaration is what survives a fresh checkout when the text does
+not. There is no stub tree: one worked example plugin will explain the shape
+rather than 88 files repeating it.
+
+Resolution is by lead kind. `prompts.kind_loader` searches the plugins that
+declare that kind first, so `probe/PORT_ROLE` comes from `website_recreation`
+for a port lead and a prospect never sees that tree — with neither plugin
+knowing the other exists and no agent module branching on kind. A lead with no
+kind resolves as the base pipeline, not as whichever plugin loaded last.
 
 - `_P = prompts.loader("forge")` at the top of a module, then
   `ROLE = _P("ROLE")`. Read once and cached; restart to pick up an edit.

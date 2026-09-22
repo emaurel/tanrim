@@ -112,6 +112,13 @@ class Plugin:
     #: (role, stage) -> "module:function". Resolved lazily, see the module docstring.
     handlers: dict[tuple[str, str], str] = field(default_factory=dict)
 
+    #: Every prompt this plugin needs, as "module/NAME". Declared rather than
+    #: discovered, because `prompts/` is gitignored — the text is the private
+    #: part — so on a fresh checkout there is nothing on disk to enumerate.
+    #: This is what lets the server say at BOOT which prompts are missing
+    #: instead of failing on the first run that reaches one.
+    prompts: tuple[str, ...] = ()
+
     #: Set by the loader so relative dirs resolve against the plugin itself.
     root: Path | None = None
 
