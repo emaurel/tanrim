@@ -79,7 +79,10 @@ class WorkbenchSpec(BaseModel):
     """
 
     id: str
-    name: str
+    #: Optional so an `extends:` patch can reference a bench by id and add a
+    #: stage to it without restating what it is called. A real declaration
+    #: falls back to the id, which is ugly enough to notice.
+    name: str = ""
     # One line, shown in the panel tab and on hover.
     job: str = ""
     # Lead stages worked at this bench. Empty means it isn't stage-driven —
@@ -93,11 +96,33 @@ class WorkbenchSpec(BaseModel):
 
 
 class RoomSpec(BaseModel):
+    """A room, or — with `extends` — a patch onto one another plugin declared.
+
+    An extension should not have to restate a room it did not write. Before
+    this, adding the Port Desk meant editing `web_agency`'s own `assay.yaml`
+    and adding `surveyed` to its Light Box — the plugin layer exists precisely
+    to stop one plugin editing another's files, and the first extension broke
+    that on day one.
+
+    So a plugin ships `extends: assay` with only what it adds. Merging is
+    deliberately asymmetric:
+
+      - a workbench with a NEW id is appended;
+      - a workbench with an EXISTING id has its `stages` and `tasks` UNIONED
+        (that is the common case — "this bench also works my stage") and every
+        other field overridden if given;
+      - `tools` and `skills` are unioned, because two plugins granting a room
+        different capabilities both mean it;
+      - scalars like `color` and `max_workers` override, because two plugins
+        disagreeing about where a room sits has to resolve to one answer.
+    """
     id: str
-    name: str
-    purpose: str
-    position: Vec2
-    size: Size
+    #: The room this patches. When set, everything else is optional.
+    extends: str | None = None
+    name: str = ""
+    purpose: str = ""
+    position: Vec2 | None = None
+    size: Size | None = None
     color: str = "#222222"
     agents: list[AgentSpec] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
@@ -121,6 +146,8 @@ TITLE_STRIP = 1
 
 
 def _layout_workbenches(room: RoomSpec) -> None:
+    if room.position is None or room.size is None:
+        return
     """Fill in any missing bench geometry, so a manifest only has to name them.
 
     Benches are laid out on a grid inside the room with a margin, leaving the
@@ -148,6 +175,9 @@ def _layout_workbenches(room: RoomSpec) -> None:
     pad_x = min(0.6, cell_w * 0.12)
     pad_y = min(0.5, cell_h * 0.14)
 
+    for bench in room.workbenches:
+        if not bench.name:
+            bench.name = bench.id
     for i, bench in enumerate(room.workbenches):
         if bench.position is not None and bench.size is not None:
             continue
@@ -210,6 +240,7 @@ def load_rooms(directory: Path | None = None) -> list[RoomSpec]:
     if hit is not None and hit[0] == stamp:
         return hit[1]
     rooms: list[RoomSpec] = []
+    patches: list[RoomSpec] = []
     seen: set[str] = set()
     for path in sorted((q for d in dirs for q in d.glob("*.yaml")),
                        key=lambda q: q.name):
@@ -218,13 +249,60 @@ def load_rooms(directory: Path | None = None) -> list[RoomSpec]:
         # A later plugin may replace an earlier one's room by using its id;
         # two plugins shipping the same room by accident is a collision worth
         # noticing, so the last one loaded wins and nothing is silently merged.
+        if room.extends:
+            patches.append(room)
+            continue
         if room.id in seen:
             rooms = [r for r in rooms if r.id != room.id]
         seen.add(room.id)
-        _layout_workbenches(room)
         rooms.append(room)
+
+    for patch in patches:
+        target = next((r for r in rooms if r.id == patch.extends), None)
+        if target is None:
+            # A patch with nothing to patch is a configuration error worth
+            # seeing: the plugin that owns the room is probably not installed.
+            raise ValueError(
+                f"a plugin extends room {patch.extends!r}, which no installed "
+                f"plugin declares. Rooms available: {sorted(r.id for r in rooms)}")
+        _apply_patch(target, patch)
+
+    for room in rooms:
+        _layout_workbenches(room)
     _ROOMS_CACHE[key] = (stamp, rooms)
     return rooms
+
+
+def _apply_patch(target: RoomSpec, patch: RoomSpec) -> None:
+    """Merge an `extends:` manifest into the room it names. See RoomSpec."""
+    for bench in patch.workbenches:
+        existing = next((b for b in target.workbenches if b.id == bench.id), None)
+        if existing is None:
+            target.workbenches.append(bench)
+            continue
+        # Additive, because "this bench also works my stage" is the whole
+        # reason an extension touches a bench it did not create.
+        existing.stages = list(dict.fromkeys([*existing.stages, *bench.stages]))
+        existing.tasks = list(dict.fromkeys([*existing.tasks, *bench.tasks]))
+        if bench.name:
+            existing.name = bench.name
+        if bench.job:
+            existing.job = bench.job
+
+    target.tools = list(dict.fromkeys([*target.tools, *patch.tools]))
+    target.skills = list(dict.fromkeys([*target.skills, *patch.skills]))
+    target.mcp_servers = [*target.mcp_servers, *patch.mcp_servers]
+    for agent in patch.agents:
+        if not any(a.id == agent.id for a in target.agents):
+            target.agents.append(agent)
+    if patch.name:
+        target.name = patch.name
+    if patch.purpose:
+        target.purpose = patch.purpose
+    if patch.position is not None:
+        target.position = patch.position
+    if patch.size is not None:
+        target.size = patch.size
 
 
 #: The most workers a room may be given. Not a technical limit — the per-worker

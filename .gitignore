@@ -35,3 +35,7 @@ prompts/
 # input. Nothing in the app reads from here — assets it needs are copied
 # into frontend/public/ and committed deliberately.
 brand/
+
+# Plugin prompts, for the same reason as `prompts/`: the text is the private
+# part. Each plugin commits `prompts.example/` and keeps `prompts/` local.
+plugins/*/prompts/

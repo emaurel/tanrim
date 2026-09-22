@@ -24,7 +24,3 @@ workbenches:
     name: The Ledger
     job: What the business can bear — filed accounts, size, and the price we ask
     stages: [enriched]
-  - id: port
-    name: The Port Desk
-    job: Reading a client's existing site into a dossier — they asked, so it is the brief
-    stages: [intake]

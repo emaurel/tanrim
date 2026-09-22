@@ -254,6 +254,40 @@ def dirs(which: str) -> list[Path]:
     return out
 
 
+def owns_kind(p: Plugin, kind: str) -> bool:
+    return kind in p.lead_kinds
+
+
+def prompt_dirs_for(kind: str | None = None) -> list[Path]:
+    """Prompt trees to search, most specific first, for this kind of work.
+
+    This is what lets two plugins answer the same question differently. Probe
+    asks for `probe/ROLE`; a `port` lead gets `website_recreation`'s copy and a
+    `prospect` gets `web_agency`'s, without either plugin knowing the other
+    exists or either agent module branching on kind.
+
+    Order: plugins that DECLARE this lead kind (reverse dependency order, so an
+    extension beats what it extends), then every other plugin, then the
+    environment's own tree as the last resort. A plugin that ships no prompt
+    for something simply falls through to whoever does.
+    """
+    installed = load()
+    if kind:
+        owning = [p for p in reversed(installed) if owns_kind(p, kind)]
+        rest = [p for p in reversed(installed) if not owns_kind(p, kind)]
+    else:
+        # No kind means the base pipeline, not "whichever plugin loaded last".
+        # Module-level constants resolve this way, and letting an extension win
+        # there would silently give every agent the extension's prompt.
+        owning, rest = [], list(installed)
+    out: list[Path] = []
+    for p in owning + rest:
+        d = p.dir_for("prompts")
+        if d is not None and d not in out:
+            out.append(d)
+    return out
+
+
 _resolved: dict[str, Callable[..., Any]] = {}
 
 

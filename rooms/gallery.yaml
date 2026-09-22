@@ -19,7 +19,7 @@ workbenches:
   - id: photos
     name: The Light Box
     job: Reading their published photos — chalkboards, signage, the real palette
-    stages: [appraised, surveyed]
+    stages: [appraised]
   - id: qa
     name: Inspection Bay
     job: Rendering our own build at 390px and 1280px and judging it by eye
