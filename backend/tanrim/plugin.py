@@ -207,9 +207,15 @@ def _discover(directory: Path) -> list[Plugin]:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         plugin = getattr(module, "PLUGIN", None)
-        if not isinstance(plugin, Plugin):
+        if plugin is None:
             raise PluginError(
                 f"{manifest} does not expose a `PLUGIN = Plugin(...)`")
+        if not isinstance(plugin, Plugin):
+            # A plugin written against the NEW contract (`tanrim.contract`).
+            # The two coexist while the migration runs, and this registry is
+            # not the one that loads them — skipping is correct, and silent
+            # because it is the expected state rather than a fault.
+            continue
         found.append(Plugin(**{**plugin.__dict__, "root": entry}))
     return found
 

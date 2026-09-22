@@ -275,6 +275,20 @@ class Orchestrator:
 
         if not config.followups_enabled():
             return
+        # Resolved through the registry, like everything else here. These used
+        # to be `from .agents import echo, scribe`; converting this loop to
+        # hooks removed the import and left the calls, so the sweep raised
+        # NameError the moment a lead actually became due — and the gatekeeper
+        # swallows exceptions, so it would have been a follow-up system that
+        # silently never ran. This whole sweep is domain and belongs behind a
+        # `tick` hook; until then it at least resolves the way the rest does.
+        echo = plugin.runner_for("echo")
+        scribe = plugin.runner_for("scribe")
+        if echo is None or scribe is None:
+            return
+        import importlib
+        echo = importlib.import_module(echo.__module__)
+        scribe = importlib.import_module(scribe.__module__)
 
         pending_leads = {
             a["payload"].get("lead_id")

@@ -208,3 +208,26 @@ def test_the_core_does_not_import_the_domain(real_plugins):
                              body, re.M):
             offenders.append(f"{path.name}: {m.group(0).strip()}")
     assert not offenders, offenders
+
+
+def test_the_orchestrator_sweeps_run_without_unresolved_names(real_plugins):
+    """Every tick-loop sweep, actually executed.
+
+    `_followup_sweep` called `echo.` and `scribe.` after the import that
+    provided them was removed — a NameError that only fired when a lead
+    became due, and the gatekeeper swallows exceptions, so it would have been
+    a follow-up system that silently never ran. Importing the module proves
+    nothing; these have to be CALLED.
+    """
+    import asyncio
+
+    from tanrim.orchestrator import Orchestrator
+    from tanrim.world import World
+
+    orch = Orchestrator(World())
+
+    async def run_them():
+        for name in ("_followup_sweep", "_expire_silence", "_advance_leads"):
+            await getattr(orch, name)()
+
+    asyncio.run(run_them())
