@@ -22,7 +22,6 @@ BRIEFS_FILE = STATE_DIR / "briefs.json"
 DESIGNS_FILE = STATE_DIR / "designs.json"
 LISTINGS_FILE = STATE_DIR / "listings.json"
 LEADS_FILE = STATE_DIR / "leads.json"
-TOOL_REQUESTS_FILE = STATE_DIR / "tool_requests.json"
 ROOM_TOOL_OVERRIDES_FILE = STATE_DIR / "room_tool_overrides.json"
 EVENTS_FILE = STATE_DIR / "events.json"
 TASK_RERUNS_FILE = STATE_DIR / "task_reruns.json"
@@ -112,7 +111,6 @@ def _ensure() -> None:
         (DESIGNS_FILE, "[]"),
         (LISTINGS_FILE, "[]"),
         (LEADS_FILE, "[]"),
-        (TOOL_REQUESTS_FILE, "[]"),
         (ROOM_TOOL_OVERRIDES_FILE, "{}"),
         (EVENTS_FILE, "[]"),
         (TASK_RERUNS_FILE, "{}"),
@@ -246,68 +244,6 @@ def delete_brief(brief_id: str) -> bool:
 
 
 # ---------- Tool requests (Nova → Ultron → Tinker pipeline) ----------
-
-def add_tool_request(
-    requesting_agent: str,
-    requesting_room: str,
-    name: str,
-    description: str,
-    why: str,
-    original_task: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    _ensure()
-    rec = {
-        "id": str(uuid.uuid4()),
-        "ts": time.time(),
-        "requesting_agent": requesting_agent,
-        "requesting_room": requesting_room,
-        "name": name,
-        "description": description,
-        "why": why,
-        "status": "pending",      # pending | approved | denied | fabricating | ready | failed
-        "original_task": original_task,
-        "rerun_count": 0,
-        "ultron_decision": None,
-        "tinker_result": None,
-    }
-    with _lock:
-        items: list[dict[str, Any]] = _read(TOOL_REQUESTS_FILE)
-        items.append(rec)
-        _write(TOOL_REQUESTS_FILE, items)
-    return rec
-
-
-def list_tool_requests(status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-    _ensure()
-    items: list[dict[str, Any]] = _read(TOOL_REQUESTS_FILE)
-    if status is not None:
-        items = [r for r in items if r["status"] == status]
-    items.sort(key=lambda r: r["ts"], reverse=True)
-    return items[:limit]
-
-
-def get_tool_request(request_id: str) -> dict[str, Any] | None:
-    _ensure()
-    items: list[dict[str, Any]] = _read(TOOL_REQUESTS_FILE)
-    for r in items:
-        if r["id"] == request_id:
-            return r
-    return None
-
-
-def update_tool_request(request_id: str, **fields: Any) -> dict[str, Any] | None:
-    _ensure()
-    with _lock:
-        items: list[dict[str, Any]] = _read(TOOL_REQUESTS_FILE)
-        for r in items:
-            if r["id"] == request_id:
-                r.update(fields)
-                _write(TOOL_REQUESTS_FILE, items)
-                return r
-    return None
-
-
-# ---------- Room tool overrides (Tinker writes here when fabricating) ----------
 
 def get_room_tool_overrides() -> dict[str, list[str]]:
     _ensure()

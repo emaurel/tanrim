@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -84,6 +85,11 @@ class Approval:
     means: str
     #: Dotted path to `async def (world, approval, decision, reason)`.
     on_decision: str | None = None
+    #: Dotted path to `def (approval, decision, reason) -> str | None`, checked
+    #: BEFORE the card is resolved. Returning a string refuses the decision and
+    #: leaves the card pending — which is the point: a refusal after resolving
+    #: consumes the card and leaves the work undone.
+    validate: str | None = None
     #: True when the card only reports something and is resolved by being
     #: dismissed — `agent_crashed` says "fix the cause, then dismiss this".
     #: Dismissal short-circuits before any per-kind branch, so an
@@ -141,10 +147,36 @@ class PluginError(RuntimeError):
 _loaded: list[Plugin] | None = None
 
 
+#: Plugins are importable as `tanrim_plugins.<id>`, so a plugin can carry CODE
+#: — approval handlers, agents, schemas — and reference it by dotted path the
+#: same way handlers are. Without this a plugin could only ever be data.
+PACKAGE_ROOT = "tanrim_plugins"
+
+
+def _register_package(directory: Path) -> None:
+    """Make `plugins/` importable as a namespace package.
+
+    A synthetic parent rather than putting each plugin directory on `sys.path`:
+    two plugins are entitled to both have an `approvals.py`, and flat paths
+    would let whichever loaded first win silently.
+    """
+    import types
+
+    parent = sys.modules.get(PACKAGE_ROOT)
+    if parent is None:
+        parent = types.ModuleType(PACKAGE_ROOT)
+        parent.__path__ = []          # a namespace package
+        sys.modules[PACKAGE_ROOT] = parent
+    path = str(directory)
+    if path not in parent.__path__:
+        parent.__path__.append(path)
+
+
 def _discover(directory: Path) -> list[Plugin]:
     found: list[Plugin] = []
     if not directory.is_dir():
         return found
+    _register_package(directory)
     for entry in sorted(directory.iterdir()):
         manifest = entry / "plugin.py"
         if not manifest.is_file():
@@ -196,6 +228,13 @@ def load(force: bool = False) -> list[Plugin]:
     """Every installed plugin, in dependency order."""
     global _loaded
     if _loaded is None or force:
+        if force:
+            # Drop anything imported from a previous plugin set, or a test that
+            # swaps directories gets the old module back.
+            for name in [n for n in sys.modules
+                         if n == PACKAGE_ROOT or n.startswith(PACKAGE_ROOT + ".")]:
+                del sys.modules[name]
+            _resolved.clear()
         _loaded = _ordered(_discover(PLUGINS_DIR))
     return _loaded
 

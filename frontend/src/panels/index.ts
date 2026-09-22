@@ -9,7 +9,6 @@
  * they render what a lead carries.
  */
 import { open as openArchives } from "./archives";
-import { open as openArmory } from "./armory";
 import { open as openAssay } from "./assay";
 import { open as openComms } from "./comms";
 import { open as openFactory } from "./factory";
@@ -24,7 +23,6 @@ import { open as openTreasury } from "./treasury";
 
 const REGISTRY: Record<string, (id: string) => Promise<void>> = {
   archives: openArchives,
-  armory:   openArmory,
   assay:    openAssay,
   comms:    openComms,
   factory:  openFactory,

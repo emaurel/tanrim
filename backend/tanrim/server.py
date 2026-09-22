@@ -1233,25 +1233,16 @@ class ApprovalDecision(BaseModel):
 def _decision_problem(approval: dict[str, Any], body: "ApprovalDecision") -> str | None:
     """Why this decision cannot be carried out, or None.
 
-    Checked while the card is still pending, so refusing costs the operator
-    nothing but a message.
+    Checked while the card is still PENDING, so refusing costs the operator
+    nothing but a message. The rule itself belongs to whichever plugin raised
+    the gate — the core has no opinion about what makes a decision valid.
     """
     if body.decision != "approved":
         return None
-    if approval["kind"] == "bad_address":
-        lead = state.get_lead((approval.get("payload") or {}).get("lead_id")) or {}
-        reason = (body.reason or "")
-        # An address in the reply is the address to use. No address is not an
-        # error — it is a request to go and find one — so only refuse when the
-        # operator asked for neither.
-        if state.EMAIL_RE.search(reason) or lead.get("email"):
-            return None
-        if reason.strip():
-            return None
-        return ("Put a working address in the reply box, or say what to do "
-                "(for example \"find another address\") — approving with an "
-                "empty reply leaves the email nowhere to go.")
-    return None
+    spec = plugin_mod.approvals().get(approval["kind"])
+    if spec is None or not spec.validate:
+        return None
+    return plugin_mod.resolve(spec.validate)(approval, body.decision, body.reason)
 
 
 @app.post("/approvals/{approval_id}")
@@ -1259,11 +1250,11 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
     if body.decision not in {"approved", "rejected", "ignored"}:
         raise HTTPException(400, "decision must be approved, rejected, or ignored")
 
-    # Validate BEFORE resolving. The resolve used to come first, so a branch
-    # that then refused left the card consumed and the work undone: a
-    # `bad_address` card was approved with "probe should go fishing for another
-    # mail address", the handler found no email in that text, raised a 400, and
-    # the card was gone with nothing changed.
+    # Validate BEFORE resolving. The resolve used to come first, so a handler
+    # that then refused left the card consumed and the work undone. What counts
+    # as a valid decision is the plugin's rule, not the core's — see
+    # `Approval.validate`, and the incident that produced it, in the plugin
+    # that owns the gate.
     pending = next((a for a in state.list_user_approvals(status="pending", limit=500)
                     if a["id"] == approval_id), None)
     if pending is not None:
@@ -1288,455 +1279,24 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
         await world.publish({"type": "approvals_updated"})
         return {"ok": True, "approval": rec}
 
-    # Propagate based on what the approval was about.
-    if rec["kind"] == "tool_review":
-        request_id = rec["payload"].get("request_id")
-        if request_id:
-            new_status = "approved" if body.decision == "approved" else "denied"
-            state.update_tool_request(request_id, status=new_status)
-
-    elif rec["kind"] == "manual_outreach":
-        # The operator messaged them on Instagram or Facebook themselves.
-        # Approving records that contact, which is what stops the lead being
-        # pitched again and starts the silence timer; rejecting leaves it be.
-        lead_id = rec["payload"].get("lead_id")
-        routes = rec["payload"].get("routes") or {}
-        if lead_id and body.decision == "approved":
-            route = next(iter(routes), "social")
-            handle = routes.get(route, route)
-            asyncio.create_task(echo_mod.mark_contacted(
-                world, lead_id,
-                note=f"messaged by hand on {route} ({handle})", via=route))
-        elif lead_id:
-            state.log_event(
-                "user_approval", from_="operator", to="echo",
-                summary=f"declined to message "
-                        f"{(state.get_lead(lead_id) or {}).get('name')} by hand",
-                outcome="rejected", details={"lead_id": lead_id},
-            )
-
-    elif rec["kind"] == "stage_gate":
-        # A step the operator asked to be consulted about. Approving runs it;
-        # rejecting leaves the lead parked where it is, which is a real choice
-        # and not a failure — the gate exists to let a lead wait.
-        lead_id = rec["payload"].get("lead_id")
-        role = rec["payload"].get("role")
-        stage = rec["payload"].get("stage")
-        runner = runners.AGENT_RUNNERS.get(role) if role else None
-        if lead_id and role and body.decision == "approved" and runner is not None:
-            lead = state.get_lead(lead_id)
-            if lead is None:
-                raise HTTPException(404, "no such lead")
-            if lead.get("stage") != stage:
-                # It moved while the card was open — running the step now would
-                # be work about a state that no longer holds.
-                state.log_event(
-                    "user_approval", from_="operator", to=role,
-                    summary=f"{lead.get('name')} left '{stage}' while the gate "
-                            f"was open (now '{lead.get('stage')}') — not run",
-                    outcome="skipped", details={"lead_id": lead_id},
-                )
-            else:
-                state.log_event(
-                    "dispatch_end", from_="operator", to=role,
-                    summary=f"{lead.get('name')} at '{stage}' → {role}: "
-                            "approved at the gate",
-                    outcome="dispatched",
-                    details={"lead_id": lead_id, "stage": stage},
-                )
-                asyncio.create_task(runner(world, {
-                    "lead_id": lead_id,
-                    "prompt": f"This lead just reached '{stage}'.",
-                }))
-        elif lead_id:
-            state.log_event(
-                "user_approval", from_="operator", to=role or "?",
-                summary=f"declined to run {role} on "
-                        f"{(state.get_lead(lead_id) or {}).get('name')} — "
-                        f"the lead stays at '{stage}'",
-                outcome="rejected", details={"lead_id": lead_id},
-            )
-
-    elif rec["kind"] == "publish_site":
-        # Gate 1. Approving here is what actually puts the site on a URL.
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            # Approving is what ends a rejection. Clear the operator's note
-            # here, or it follows the lead forever and every later rebuild is
-            # still being told to fix something that was signed off.
-            lead = state.get_lead(lead_id) or {}
-            qa = dict(lead.get("qa") or {})
-            if qa.get("problems"):
-                qa["problems"] = [q for q in qa["problems"]
-                                  if q.get("where") != "operator"]
-            state.update_lead(lead_id, sent_back=None, operator_revision=None,
-                              qa=qa)
-            asyncio.create_task(courier_mod.do_publish(world, lead_id))
-        elif lead_id:
-            # Send it back to Forge WITH the reason. Forge reads
-            # `qa.problems`, so the operator's note has to land there or the
-            # rebuild repeats whatever you rejected it for.
-            reason = (body.reason or "").strip()
-            lead = state.get_lead(lead_id) or {}
-            qa = dict(lead.get("qa") or {})
-            problems = list(qa.get("problems") or [])
-            if reason:
-                problems.insert(0, {
-                    "severity": "critical",
-                    "where": "operator",
-                    "problem": f"The operator rejected this build: {reason}",
-                    "fix": reason,
-                })
-            qa["problems"] = problems
-            qa["verdict"] = "fail"
-            # `qa` alone is not enough, and that cost two leads an evening.
-            # Lens replaces the whole dict on its next pass, so a reason that
-            # lives only there survives exactly ONE rebuild: Forge fixes it,
-            # Lens re-QAs and fails the build for something unrelated, the
-            # operator's words are overwritten, and the second rebuild is
-            # working from a list that no longer mentions them.
-            #
-            # So it also goes into two fields that persist until the operator
-            # approves: `sent_back`, which Forge now reads, and
-            # `operator_revision`, which is what makes Forge treat this as a
-            # change to a page that already exists rather than a fresh build.
-            #
-            # NOT `revision` — that one means "the business asked for a
-            # change", and its `ts` is what `scribe.run_outreach` and
-            # `state.awaiting_their_answer` read to decide whether a contacted
-            # business has come back to us. An operator's rejection written
-            # there would quietly re-arm the send gate on a pitch someone is
-            # still holding.
-            extra: dict[str, Any] = {}
-            if reason:
-                prev = dict(lead.get("operator_revision") or {})
-                asked = list(prev.get("history") or [])
-                asked.append({"ts": time.time(), "request": reason[:2000]})
-                extra = {
-                    "operator_revision": {
-                        "requested_by": "operator",
-                        "request": reason[:2000],
-                        "round": int(prev.get("round") or 0) + 1,
-                        "ts": time.time(),
-                        "history": asked[-5:],
-                    },
-                    "sent_back": {
-                        "reason": reason[:600],
-                        "from_stage": "qa_passed",
-                        "at": time.time(),
-                    },
-                }
-            state.advance_lead(
-                lead_id, "qa_failed", agent="operator",
-                note=f"publish rejected: {reason[:200]}" if reason
-                     else "publish rejected",
-                qa=qa,
-                **extra,
-            )
-            # No dispatch here. Moving the lead to `qa_failed` is enough —
-            # the orchestrator's stage sweep picks it up and sends it to the
-            # Factory. Dispatching here as well put two Forge workers on the
-            # same lead, two seconds apart, writing the same directory.
-
-    elif rec["kind"] == "bad_address":
-        # The address was wrong, so nothing was delivered. Approving means the
-        # operator has put a working one on the lead; rejecting means giving up
-        # on a business we cannot reach.
-        lead_id = rec["payload"].get("lead_id")
-        lead = state.get_lead(lead_id) or {} if lead_id else {}
-        reason = (body.reason or "").strip()
-        if lead_id and body.decision == "approved":
-            # A reason that contains an address IS the address. A reason with no
-            # address is an instruction — usually "go and find one" — and that
-            # is a job for Probe, which has the web tools and whose whole
-            # purpose is finding a contact route. It used to be an error.
-            found = state.EMAIL_RE.search(reason or "")
-            if found:
-                state.update_lead(lead_id, email=found.group(0))
-                state.advance_lead(
-                    lead_id, "drafted", agent="operator",
-                    note=f"new address supplied by hand: {found.group(0)}")
-            else:
-                state.log_event(
-                    "dispatch_start", from_="operator", to="probe",
-                    summary=f"hunting a contact route for {lead.get('name')}"
-                            f" — {reason[:120]}",
-                    details={"lead_id": lead_id})
-                asyncio.create_task(
-                    probe_mod.find_contact(world, lead_id, reason))
-        elif lead_id:
-            state.advance_lead(
-                lead_id, "lost", agent="operator",
-                note=f"no reachable address. {reason}"[:300] if reason
-                     else "no reachable address")
-
-    elif rec["kind"] == "ready_to_build":
-        # The gate before the most expensive run in the pipeline.
-        lead_id = rec["payload"].get("lead_id")
-        reason = (body.reason or "").strip()
-        if lead_id and body.decision == "approved":
-            # Resolved, so the send-back note stops being shown. Left in place
-            # it would keep telling every later run to go and look at their
-            # Instagram again, long after somebody did.
-            state.update_lead(lead_id, sent_back=None)
-            # Explicit, because the lead does not change stage here and the
-            # sweep fires on stage changes.
-            asyncio.create_task(forge_mod.run_build(
-                world, lead_id,
-                f"The operator approved the research and added: {reason}"
-                if reason else ""))
-        elif lead_id:
-            # ONE STEP BACK, to the photo pass — not all the way to
-            # `qualified`, which is where this used to send it. From
-            # `qualified` the lead redid the research, the appraisal and the
-            # photographs in turn, so a note saying "look at their Instagram
-            # again" re-ran Probe's whole dossier and re-priced the job to get
-            # at the last of those three. `appraised` dispatches the Gallery's
-            # visual pass and nothing else.
-            #
-            # If it really is the DOSSIER that is wrong, move the lead to
-            # `qualified` by hand on the lead board; that is the rarer case and
-            # it should be the one that costs a deliberate action.
-            state.advance_lead(
-                lead_id, "appraised", agent="operator",
-                note=(f"sent back before building: {reason[:200]}" if reason
-                      else "sent back before building — look again"),
-                # The reason has to travel in a FIELD, not just in the history.
-                # History is not in any agent's prompt, so the note went
-                # nowhere: one lead was sent back twice with "find photos from
-                # their instagram" and the photo pass redid exactly what it
-                # had done before, because it was never told.
-                sent_back={
-                    "reason": reason[:600],
-                    "from_stage": "visualised",
-                    "at": time.time(),
-                } if reason else None)
-
-    elif rec["kind"] == "thin_content":
-        # The lead is parked at `qualified`, which is also the stage that
-        # dispatches research — so a card that resolves without moving it just
-        # hands the lead back to the loop it came from. Four of these were
-        # resolved on one lead and the pipeline re-researched a restaurant that
-        # had closed in December, every time.
-        lead_id = rec["payload"].get("lead_id")
-        reason = (body.reason or "").strip()
-        if lead_id and body.decision == "approved":
-            # "Build it anyway" — we have what we have.
-            lead = state.get_lead(lead_id) or {}
-            state.advance_lead(
-                lead_id, "enriched", agent="operator",
-                note=f"operator: build it with what we have. {reason}"[:300]
-                     if reason else "operator: build it with what we have")
-        elif lead_id:
-            state.advance_lead(
-                lead_id, "disqualified", agent="operator",
-                note=f"operator: not worth building. {reason}"[:300]
-                     if reason else "operator: not worth building")
-
-    elif rec["kind"] == "qa_loop":
-        # Forge and Lens have failed to agree on the same page three times.
-        # Approving means "Lens is wrong, ship it" — the commonest cause is a
-        # false fabrication flag, and the operator has the evidence to say so.
-        # Rejecting means "Lens is right", and the reason is what Forge lacked.
-        lead_id = rec["payload"].get("lead_id")
-        lead = state.get_lead(lead_id) or {} if lead_id else {}
-        qa = dict(lead.get("qa") or {})
-        reason = (body.reason or "").strip()
-        if lead_id and body.decision == "approved":
-            qa["verdict"] = "pass"
-            qa["rounds"] = 0
-            qa["operator_override"] = (
-                reason or "operator passed QA over Lens's objection")
-            state.advance_lead(
-                lead_id, "qa_passed", agent="operator",
-                note=f"QA overridden by operator: {reason[:200]}" if reason
-                     else "QA overridden by operator after repeated failures",
-                qa=qa,
-            )
-        elif lead_id:
-            # Back to Forge with the operator's note, and the counter cleared
-            # so the guidance gets a fair run rather than tripping the ceiling
-            # again on its first attempt.
-            problems = list(qa.get("problems") or [])
-            if reason:
-                problems.insert(0, {
-                    "severity": "critical",
-                    "where": "operator",
-                    "problem": f"Repeated QA failures, operator guidance: {reason}",
-                    "fix": reason,
-                })
-            qa["problems"] = problems
-            qa["verdict"] = "fail"
-            qa["rounds"] = 0
-            state.advance_lead(
-                lead_id, "qa_failed", agent="operator",
-                note=f"QA loop: operator guidance: {reason[:200]}" if reason
-                     else "QA loop: operator sent it back",
-                qa=qa,
-            )
-
-    elif rec["kind"] == "send_outreach":
-        # Gate 2. The only place in the pipeline that reaches a real person.
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            asyncio.create_task(echo_mod.do_send(world, lead_id))
-        elif lead_id:
-            # Rejecting a send means rewrite it. It used to mean that only when
-            # a reason was typed, and an empty box marked the lead `lost` — a
-            # destructive default hiding behind a blank field, where the
-            # obvious reading of "reject" is "not this version". Dropping a
-            # lead is now something you do deliberately: move it to `lost` with
-            # the stage control, or dismiss the card with `ignore`.
-            reason = (body.reason or "").strip()
-            lead = state.get_lead(lead_id) or {}
-            outreach = dict(lead.get("outreach") or {})
-            outreach["operator_feedback"] = reason
-            outreach["sent"] = False
-            # Back to `published`, which is the Copy Desk's stage — the stage
-            # sweep dispatches Scribe from there. No explicit dispatch: doing
-            # both put two workers on one lead two seconds apart.
-            state.advance_lead(
-                lead_id, "published", agent="operator",
-                note=(f"send rejected, rewriting: {reason[:200]}" if reason
-                      else "send rejected — rewriting the pitch"),
-                outreach=outreach,
-            )
-
-    elif rec["kind"] == "send_followup":
-        # Gate 2, second touch. Same shape as `send_outreach`: approving is the
-        # only thing that puts a message in front of a stranger.
-        lead_id = rec["payload"].get("lead_id")
-        touch = rec["payload"].get("touch")
-        if lead_id and touch and body.decision == "approved":
-            asyncio.create_task(echo_mod.do_send_followup(world, lead_id, touch))
-        elif lead_id:
-            # Rejecting means rewrite it, and unlike the pitch there is no
-            # stage to send the lead back to — it stays `contacted`, which is
-            # what it is. The draft is dropped so the sweep writes a fresh one
-            # with the operator's note as the brief.
-            reason = (body.reason or "").strip()
-            lead = state.get_lead(lead_id) or {}
-            # The draft is KEPT and flagged, not deleted. The rewrite needs to
-            # see what was refused and why — deleting it hands the redraft a
-            # blank page and the same note comes back — and `attempts` lives on
-            # this record, so dropping it also drops the ceiling that stops the
-            # pair of them looping.
-            followups = [dict(f) for f in (lead.get("followups") or [])]
-            for f in followups:
-                if f.get("touch") == touch:
-                    f["rejected"] = True
-                    f["operator_feedback"] = reason
-                    f["sent"] = False
-            state.update_lead(lead_id, followups=followups)
-            state.log_event(
-                "user_approval", from_="operator", to="echo",
-                summary=(f"follow-up {touch} rejected for {lead.get('name')}"
-                         + (f": {reason[:160]}" if reason else
-                            " — it will be redrafted")),
-                outcome="rejected",
-                details={"lead_id": lead_id, "touch": touch,
-                         "operator_feedback": reason},
-            )
-
-    elif rec["kind"] == "client_approved":
-        # A port client looked at their rebuilt site. Approving is what makes
-        # the sale; the Launch Pad picks it up from `won`.
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            state.advance_lead(
-                lead_id, "won", agent="operator",
-                note=(f"client approved the rebuild: {(body.reason or '').strip()[:200]}"
-                      if (body.reason or "").strip()
-                      else "client approved the rebuild"))
-        elif lead_id:
-            # Back to be changed, with their words as the brief — the same road
-            # a rejected publish takes, because it is the same job.
-            reason = (body.reason or "").strip()
-            lead = state.get_lead(lead_id) or {}
-            qa = dict(lead.get("qa") or {})
-            problems = list(qa.get("problems") or [])
-            if reason:
-                problems.append({"severity": "critical", "where": "operator",
-                                 "problem": reason, "fix": reason})
-            qa["problems"] = problems
-            state.advance_lead(
-                lead_id, "qa_failed", agent="operator", qa=qa,
-                note=(f"client asked for changes: {reason[:200]}" if reason
-                      else "sent back for changes"))
-
-    elif rec["kind"] == "client_account":
-        # The Launch Pad gate. Approving creates the client's account on the
-        # editor and imports the site they bought; the call itself is plain
-        # HTTP in `siteeditor.py`, never a model.
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            asyncio.create_task(porter_mod.do_create_account(world, lead_id))
-        elif lead_id:
-            state.log_event(
-                "user_approval", from_="operator", to="porter",
-                summary=f"declined to create an editor account for "
-                        f"{(state.get_lead(lead_id) or {}).get('name')}",
-                outcome="rejected", details={"lead_id": lead_id},
-            )
-
-    elif rec["kind"] == "handover_failed":
-        # Approving means "try again", and that is only offered for the one
-        # failure where another attempt can differ — a timeout against an
-        # idempotent call. Everything else on that card says so and is a
-        # dismissal.
-        lead_id = rec["payload"].get("lead_id")
-        if (lead_id and body.decision == "approved"
-                and rec["payload"].get("retryable")):
-            asyncio.create_task(porter_mod.do_create_account(world, lead_id))
-
-    elif rec["kind"] == "send_login_link":
-        # The operator sent the link by hand. Approving records that; it makes
-        # no call of its own, because the sending happened in their mail client.
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            lead = state.get_lead(lead_id) or {}
-            acct = dict(lead.get("client_account") or {})
-            acct["link_sent_by_operator_ts"] = time.time()
-            state.update_lead(lead_id, client_account=acct)
-            state.log_event(
-                "run_end", from_="operator", to="porter",
-                summary=f"{lead.get('name')}: login link sent by hand",
-                outcome="completed", details={"lead_id": lead_id},
-            )
-
-    elif rec["kind"] == "handover":
-        # The handover itself is manual — buying a domain is irreversible and
-        # spends real money. Approving this card means "I delivered it".
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            state.advance_lead(
-                lead_id, "won", agent="operator",
-                note=f"delivered: {(body.reason or '').strip()[:200]}"
-                     if body.reason else "delivered",
-            )
-
-    elif rec["kind"] == "escalation_alert":
-        # Re-fire Ultron with the operator's reply so he can update guidance
-        # and (if Edgar asked a question) respond to Edgar via a new card.
-        # The agent is auto-rerun afterwards via the gatekeeper loop.
-        esc_id = rec["payload"].get("escalation_id")
-        if esc_id and state.get_escalation(esc_id) is not None:
-            from .agents import ultron as ultron_mod
-            asyncio.create_task(ultron_mod.followup_on_escalation(
-                world, esc_id, body.decision, (body.reason or "").strip(),
-            ))
-
-    elif rec["kind"] == "ultron_message":
-        # Operator continued the conversation by typing a reply on Ultron's
-        # response card. Fire another followup on the underlying escalation
-        # so Ultron can keep the back-and-forth going.
-        op_reply = (body.reason or "").strip()
-        esc_id = rec["payload"].get("escalation_id")
-        if op_reply and esc_id and state.get_escalation(esc_id) is not None:
-            from .agents import ultron as ultron_mod
-            asyncio.create_task(ultron_mod.followup_on_escalation(
-                world, esc_id, body.decision, op_reply,
-            ))
+    # What the decision MEANS is the plugin's business, not the core's. This
+    # was a sixteen-branch if/elif carrying the web agency's whole domain
+    # vocabulary — bounced addresses, thin dossiers, QA loops — in the file
+    # that is supposed to know none of it. Each gate now declares
+    # `on_decision`, and a plugin adding one touches only its own files.
+    spec = plugin_mod.approvals().get(rec["kind"])
+    if spec is not None and spec.on_decision:
+        await plugin_mod.resolve(spec.on_decision)(
+            world, rec, body.decision, body.reason)
+    elif spec is None:
+        # An undeclared kind still resolves — the card clears and the operator
+        # is not stuck — but it is worth saying, because the usual cause is a
+        # gate raised by code whose plugin forgot to declare it.
+        state.log_event(
+            "user_approval", from_="operator", to=rec.get("requesting_agent"),
+            summary=f"no plugin declares approval kind {rec['kind']!r}; "
+                    f"recorded the decision and did nothing else",
+            outcome="undeclared", details={"approval_id": approval_id})
 
     state.log_event(
         "user_approval",

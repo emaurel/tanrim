@@ -1,6 +1,11 @@
 """Per-agent meta MCP tools — capabilities every agent has by default.
 
-Currently: `request_tool` — the agent emits a tool request that flows to
+Currently: `ask_ultron` and `report_to_ultron`. `request_tool` used to live
+here too — an agent could ask for a capability it lacked, Ultron reviewed it
+and Tinker wrote the module. It produced two tools in four weeks, both for the
+business this pivoted away from, and nothing after; every tool the web agency
+uses was written by hand. It is gone.
+
 Ultron for review and (if approved) Tinker for fabrication.
 """
 from __future__ import annotations
@@ -45,44 +50,6 @@ def make_meta_server(
     # Budget lives in this closure, so it is per-run: a fresh server is built
     # for every agent turn.
     budget = {"used": 0}
-
-    @tool(
-        "request_tool",
-        _P("request_tool"),
-        {
-            "name": str,
-            "description": str,
-            "why": str,
-        },
-    )
-    async def request_tool_fn(args: dict[str, Any]) -> dict[str, Any]:
-        req = state.add_tool_request(
-            requesting_agent=agent_id,
-            requesting_room=room_id,
-            name=args["name"],
-            description=args["description"],
-            why=args["why"],
-            original_task=original_task,
-        )
-        state.log_event(
-            "tool_request",
-            from_=agent_id, to="ultron",
-            summary=f"requested '{args['name']}': {args.get('why', '')[:160]}",
-            outcome=None,
-            details={"request_id": req["id"], "name": args["name"]},
-        )
-        if world is not None:
-            await world.talk(speaker, "ultron", seconds=6.0, label=f"requests {args['name']}")
-        return {
-            "content": [{
-                "type": "text",
-                "text": (
-                    f"Tool request submitted (id={req['id']}). "
-                    f"The Armory will review it. The tool will not be "
-                    f"available on this run — finish your task without it."
-                ),
-            }]
-        }
 
     @tool(
         "ask_ultron",
@@ -147,7 +114,7 @@ def make_meta_server(
     # only when it has a working directory for the helper to write into.
     from .delegation import MAX_DEPTH, MAX_PER_RUN
 
-    tools = [request_tool_fn, ask_ultron_fn, report_to_ultron_fn]
+    tools = [ask_ultron_fn, report_to_ultron_fn]
 
     # Subtasks started but not yet collected, by handle. Held in this closure
     # so the set is per-run, like the budget, and cannot leak between builds.

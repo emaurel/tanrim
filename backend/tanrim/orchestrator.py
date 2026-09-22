@@ -6,7 +6,7 @@ from typing import Any
 
 from . import rooms as rooms_mod
 from . import state, workers
-from .agents import tinker, ultron
+from .agents import ultron
 from .runners import AGENT_RUNNERS
 from .world import World
 
@@ -574,49 +574,15 @@ class Orchestrator:
         await asyncio.sleep(2.0)
         while True:
             try:
-                pending = state.list_tool_requests(status="pending", limit=5)
-                for req in pending:
-                    await ultron.review(self.world, req["id"])
-                    await self.world.publish({"type": "approvals_updated"})
-                approved = state.list_tool_requests(status="approved", limit=5)
-                for req in approved:
-                    await tinker.fabricate(self.world, req["id"])
-                    await self.world.publish({"type": "approvals_updated"})
-                    fresh = state.get_tool_request(req["id"])
-                    if (
-                        fresh
-                        and fresh["status"] == "ready"
-                        and fresh.get("original_task")
-                        and fresh.get("rerun_count", 0) < MAX_RERUNS
-                    ):
-                        runner = AGENT_RUNNERS.get(fresh["requesting_agent"])
-                        if runner is not None:
-                            state.update_tool_request(
-                                fresh["id"],
-                                rerun_count=fresh.get("rerun_count", 0) + 1,
-                            )
-                            asyncio.create_task(runner(self.world, fresh["original_task"]))
-
-                # Denial: re-fire the requesting agent so they can adapt with
-                # the updated tool-history context (which now includes the
-                # denial reason). Bounded by rerun_count so we don't loop.
-                denied = state.list_tool_requests(status="denied", limit=10)
-                for req in denied:
-                    if req.get("rerun_count", 0) > 0:
-                        continue
-                    task = req.get("original_task")
-                    if not task:
-                        continue
-                    runner = AGENT_RUNNERS.get(req["requesting_agent"])
-                    if runner is None:
-                        continue
-                    if not state.may_rerun_task(req["requesting_agent"], task):
-                        state.update_tool_request(req["id"], rerun_count=1)
-                        continue
-                    state.update_tool_request(req["id"], rerun_count=1)
-                    state.bump_task_rerun(req["requesting_agent"], task)
-                    asyncio.create_task(runner(self.world, task))
-
+                # The tool-request loop lived here: an agent emitted
+                # `request_tool`, Ultron reviewed it, Tinker wrote a module to
+                # `state/tools/` and hot-reloaded the registry. In four weeks it
+                # produced two tools, `etsy_search` and `etsy_trend_analyzer`,
+                # both for the print-on-demand business this pivoted away from
+                # on 2026-09-01 — and nothing since. Every tool the web agency
+                # actually uses was written by hand. A gatekeeper loop, an
+                # agent, a room, a panel and an approval kind for a capability
+                # nobody reached for is cost without return, so it is gone.
                 # Leads that changed stage → dispatch the room that works it.
                 await _timed("advance_leads", self._advance_leads())
                 await _timed("expire_silence", self._expire_silence())

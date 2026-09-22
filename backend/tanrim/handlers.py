@@ -161,48 +161,6 @@ class TreasuryHandler(RoomHandler):
         }
 
 
-class ArmoryHandler(RoomHandler):
-    """Tinker's room. Fabrication queue + currently registered tools."""
-
-    async def state(self) -> dict[str, Any]:
-        return {
-            "approved": state.list_tool_requests(status="approved", limit=20),
-            "fabricating": state.list_tool_requests(status="fabricating", limit=20),
-            "ready": state.list_tool_requests(status="ready", limit=20),
-            "failed": state.list_tool_requests(status="failed", limit=10),
-            "registered_tools": tool_registry.list_tools(),
-            "load_errors": tool_registry.list_errors(),
-            "room_overrides": state.get_room_tool_overrides(),
-        }
-
-    async def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if name == "reload_registry":
-            tool_registry.reload()
-            return {"ok": True, "tools": tool_registry.list_tools()}
-        if name == "delete_tool":
-            tool_name = payload.get("tool")
-            if not tool_name:
-                return {"ok": False, "error": "tool name required"}
-            from .tools.registry import TOOLS_DIR
-            path = TOOLS_DIR / f"{tool_name}.py"
-            if path.exists():
-                path.unlink()
-            tool_registry.reload()
-            state.remove_tool_from_all_rooms(tool_name)
-            return {"ok": True}
-        if name == "retry_request":
-            req_id = payload.get("id")
-            if not req_id:
-                return {"ok": False, "error": "id required"}
-            req = state.get_tool_request(req_id)
-            if not req:
-                return {"ok": False, "error": "request not found"}
-            # Reset to approved so the gatekeeper loop picks it up again.
-            state.update_tool_request(req_id, status="approved", tinker_result=None)
-            return {"ok": True}
-        return await super().action(name, payload)
-
-
 class LeadRoomHandler(RoomHandler):
     """Base for every room that moves a lead one stage forward.
 
@@ -598,8 +556,6 @@ class ThroneHandler(RoomHandler):
             "board": state.list_lead_rows(limit=60),
             "stages": state.STAGES,
             "dead_stages": state.DEAD_STAGES,
-            "pending": state.list_tool_requests(status="pending", limit=20),
-            "awaiting_user": state.list_tool_requests(status="awaiting_user", limit=20),
             "recent": [
                 r for r in state.list_tool_requests(limit=30)
                 if r["status"] in ("approved", "denied", "ready", "failed")
@@ -682,7 +638,6 @@ def build_handlers(world: "World") -> dict[str, RoomHandler]:
     return {
         "archives": ArchivesHandler(world),
         "treasury": TreasuryHandler(world),
-        "armory":   ArmoryHandler(world),
         "throne":   ThroneHandler(world),
         "research": ResearchHandler(world),
         "assay":    AssayHandler(world),

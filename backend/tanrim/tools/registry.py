@@ -1,11 +1,15 @@
 """Auto-discovered MCP tool registry.
 
-Tools live as Python modules under `<repo>/state/tools/<name>.py` (outside the
-source tree so uvicorn's --reload doesn't restart the server when Tinker writes
-a new file). Each module must export a top-level `mcp_server` built via
-`claude_agent_sdk.create_sdk_mcp_server`.
+A tool is a Python module exporting a top-level `mcp_server` built with
+`claude_agent_sdk.create_sdk_mcp_server`. They are discovered from every
+plugin's `tools/` directory, so a tool belongs to whichever plugin needs it
+rather than to the environment.
 
-Tinker writes new tool files here at runtime; we hot-reload via `reload()`.
+`state/tools/` is still searched, last, and is no longer where anything lives.
+It was the runtime drop for tools Tinker fabricated; Tinker is gone, and the
+seven tools that had accumulated there were all written by hand. Keeping it as
+a search path costs one `glob` and means a tool dropped in by hand while
+debugging still loads.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ from typing import Any
 
 from ..config import ROOT
 
+#: The legacy runtime drop, searched last so a plugin always wins on a clash.
 TOOLS_DIR = ROOT / "state" / "tools"
 SERVERS: dict[str, Any] = {}
 LOAD_ERRORS: dict[str, str] = {}
@@ -24,14 +29,31 @@ LOAD_ERRORS: dict[str, str] = {}
 log = logging.getLogger(__name__)
 
 
+def tool_dirs() -> list[Path]:
+    """Every plugin's `tools/`, then the legacy runtime drop."""
+    from .. import plugin
+
+    dirs = list(plugin.dirs("tools"))
+    if TOOLS_DIR not in dirs:
+        dirs.append(TOOLS_DIR)
+    return dirs
+
+
 def reload() -> None:
     SERVERS.clear()
     LOAD_ERRORS.clear()
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-    for path in sorted(TOOLS_DIR.glob("*.py")):
+    seen: set[str] = set()
+    for path in [q for d in tool_dirs() if d.is_dir()
+                 for q in sorted(d.glob("*.py"))]:
         if path.name.startswith("_"):
             continue
         name = path.stem
+        # First wins: plugin directories are searched before the legacy drop,
+        # so a stale copy left in `state/tools/` cannot shadow a plugin's.
+        if name in seen:
+            continue
+        seen.add(name)
         try:
             mod_name = f"tanrim._tools_dyn.{name}"
             spec = importlib.util.spec_from_file_location(mod_name, path)

@@ -39,15 +39,57 @@ def test_every_stage_with_an_edge_is_worked_by_someone(real_plugins):
     assert not orphans, f"stages with edges but no room: {orphans}"
 
 
-def test_every_declared_approval_kind_is_handled(real_plugins):
+def test_every_declared_approval_kind_has_a_handler(real_plugins):
     """A gate nothing resolves is a card the operator can never clear."""
-    server_src = Path("backend/tanrim/server.py").read_text()
     unhandled = [
         kind for kind, spec in plugin.approvals().items()
-        if not spec.informational
-        and f'rec["kind"] == "{kind}"' not in server_src
+        if not spec.informational and not spec.on_decision
     ]
-    assert not unhandled, f"approval kinds with no branch in server.py: {unhandled}"
+    assert not unhandled, f"approval kinds with no on_decision: {unhandled}"
+
+
+def test_every_declared_handler_actually_resolves(real_plugins):
+    """A dotted path that does not import is a gate that fails on click."""
+    broken = {}
+    for kind, spec in plugin.approvals().items():
+        if not spec.on_decision:
+            continue
+        try:
+            plugin.resolve(spec.on_decision)
+        except Exception as exc:          # noqa: BLE001
+            broken[kind] = f"{type(exc).__name__}: {exc}"
+    assert not broken, broken
+
+
+def test_every_gate_the_code_raises_is_declared(real_plugins):
+    """The other direction, and the one that was actually wrong.
+
+    Nine kinds were raised by `add_user_approval` and handled in server.py
+    while no plugin declared them, so nothing could have told you they existed.
+    """
+    import re
+    declared = set(plugin.approvals())
+    raised = set()
+    for path in Path("backend/tanrim").rglob("*.py"):
+        for m in re.finditer(r'kind=["\']([a-z_]+)["\']', path.read_text()):
+            raised.add(m.group(1))
+    for root in (Path("plugins"),):
+        for path in root.rglob("*.py"):
+            for m in re.finditer(r'kind=["\']([a-z_]+)["\']', path.read_text()):
+                raised.add(m.group(1))
+    # `add_tool_request` and friends are gone; anything left must be declared.
+    undeclared = {k for k in raised if k in _APPROVAL_LIKE} - declared
+    assert not undeclared, f"gates raised but not declared: {undeclared}"
+
+
+#: Kinds that are definitely approval gates rather than some other `kind=`.
+_APPROVAL_LIKE = {
+    "publish_site", "send_outreach", "send_followup", "handover",
+    "client_account", "client_approved", "stage_gate", "manual_outreach",
+    "bad_address", "ready_to_build", "thin_content", "qa_loop",
+    "handover_failed", "send_login_link", "escalation_alert",
+    "ultron_message", "agent_crashed", "rerun_halted", "reply_received",
+}
 
 
 def test_the_port_pipeline_walks_end_to_end(real_plugins):
