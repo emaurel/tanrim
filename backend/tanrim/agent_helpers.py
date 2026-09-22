@@ -452,6 +452,19 @@ def _continuation_prompt(*, said: str, files: list[str], ceiling: int,
     return "\n\n".join(parts)
 
 
+def _report_tool() -> str:
+    """The name of the "report what you did" meta tool, or "".
+
+    Built from the overseer the plugin declares — see `meta_tools`. It was
+    the literal string `report_to_ultron` here, which meant the transcript
+    salvage below only worked for one plugin's overseer.
+    """
+    from . import environment
+
+    boss = environment.current().overseer() if environment.booted() else ""
+    return f"report_to_{boss}" if boss else ""
+
+
 async def run_agent(
     world: Any,
     *,
@@ -777,15 +790,15 @@ async def run_agent(
                         if tool_name and tool_input is not None:
                             result.tool_names.append(str(tool_name))
                             await world.say(agent_id, f"{str(tool_name)[:28]}…", seconds=60)
-                            # A report to Ultron is often where the real conclusion
+                            # A report to the overseer is often where the real conclusion
                             # went — one appraisal put "margin EUR 650, confidence
                             # medium" there and ended its turn with a sentence that
                             # said nothing. Keep it, so a retry has the answer to
                             # convert rather than a blank to fill.
-                            if "report_to_ultron" in str(tool_name):
+                            if _report_tool() and _report_tool() in str(tool_name):
                                 try:
                                     result.transcript.append(
-                                        "[reported to Ultron] "
+                                        "[reported to the overseer] "
                                         + json.dumps(tool_input, ensure_ascii=False)[:1500])
                                 except Exception:  # noqa: BLE001
                                     result.transcript.append(f"[reported] {tool_input}"[:1500])

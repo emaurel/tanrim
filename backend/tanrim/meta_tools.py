@@ -1,6 +1,8 @@
 """Per-agent meta MCP tools — capabilities every agent has by default.
 
-Currently: `ask_ultron` and `report_to_ultron`. `request_tool` used to live
+Currently the two escalation tools — `ask_<overseer>` and
+`report_to_<overseer>`, named from the role a plugin declares as its
+overseer — plus delegation. `request_tool` used to live
 here too — an agent could ask for a capability it lacked, Ultron reviewed it
 and Tinker wrote the module. It produced two tools in four weeks, both for the
 business this pivoted away from, and nothing after; every tool the web agency
@@ -109,7 +111,8 @@ def make_meta_server(
             outcome=None,
         )
         if world is not None:
-            await world.talk(speaker, "ultron", seconds=4.0, label=f"reports: {summary[:30]}")
+            await world.talk(speaker, boss, seconds=4.0,
+                             label=f"reports: {summary[:30]}")
         return {
             "content": [{
                 "type": "text",

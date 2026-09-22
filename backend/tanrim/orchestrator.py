@@ -429,7 +429,9 @@ class Orchestrator:
                     if response.get("rerun_agent") is False:
                         state.update_escalation(esc["id"], rerun_dispatched=True)
                         state.log_event(
-                            "ask_response", from_="ultron", to=esc["agent"],
+                            "ask_response",
+                            from_=environment.current().overseer() or "system",
+                            to=esc["agent"],
                             summary=f"no rerun: guidance was to stand down — "
                                     f"{(response.get('guidance') or '')[:120]}",
                             outcome="no_rerun",

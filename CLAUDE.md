@@ -12,11 +12,25 @@ preview, and email the owner a link plus a quote. Each workflow stage is a
 ## Layout
 
 ```
-rooms/                       declarative YAML manifests, read by both sides
-backend/tanrim/              Python — Claude Agent SDK orchestrator + FastAPI WS server
+backend/tanrim/              the ENVIRONMENT. Knows nothing about websites.
+plugins/web_agency/          the web agency: rooms, agents, prompts, tools, routes
+plugins/website_recreation/  an extension of it — porting a site someone has
+plugins.example/             a worked example, deliberately not installed
 frontend/                    Vite + TS + Phaser SPA — renders the world
-state/                       JSON ledgers, generated sites, runtime-fabricated tools
+state/                       JSON ledgers, generated sites
 ```
+
+The split is the point, and it is enforced by tests: `backend/tanrim/` may
+not import a plugin, may not name a stage, a role or a field, and may not
+serve a route about the work. It is 7,900 lines of machinery — a world, a
+worker pool, a durable ledger, a state machine, an approval mechanism, an
+agent runner and an HTTP surface — and an install with no plugins has no
+stages, no rooms and nothing to do, which is the correct empty state rather
+than an error.
+
+Everything below this line describes `plugins/web_agency`, except where it
+says otherwise. See `backend/tanrim/contract.py` for what a plugin IS, and
+`plugins.example/plugin.py` for the smallest complete one.
 
 ## The Lead is the unit of work
 
@@ -43,14 +57,14 @@ send a two-line note instead of pitching again.
 `replied` means they accepted. Echo raises a `handover` card carrying the
 checklist, and approving that card is what marks the lead `won` — registering a
 domain is irreversible and spends real money, so none of the handover is
-automated. `config.NO_REPLY_DAYS` turns silence into `lost` on a timer.
+automated. `web_agency/config.NO_REPLY_DAYS` turns silence into `lost` on a timer.
 
 `needs_review` is where a lead goes when it turns out to already HAVE a
 website. Nothing may call an existing site bad until Lens has rendered it in a
 real browser and looked at it — see "Judging an existing site" below.
 
 Agents are always addressed with a `lead_id` (except Nova, which takes a
-place). `state.advance_lead()` is the only way stage changes — it appends to
+place). `state.advance_record()` is the only way stage changes — it appends to
 the lead's `history` in the same write, so who moved what and why is always
 recoverable.
 
@@ -58,16 +72,16 @@ recoverable.
 
 | Room | Agent | Function |
 |---|---|---|
-| Throne | Ultron | Reads the lead board, dispatches one lead to one room |
+| Throne | Ultron | Reads the board, supervises; the pipeline moves work itself |
 | Watchtower | Nova | Sources businesses without websites (OpenStreetMap) |
 | Assay Room | Probe | `sourced`: qualify cheaply · `qualified`: research the dossier |
 | Factory | Forge | Writes the actual site to `state/sites/<lead_id>/` |
 | Gallery | Lens | Renders and **looks**: their site, their photos, our build, plus reviews for other agents |
 | Copy Desk | Scribe | Site copy, and the outreach email + quote |
 | Shipping Bay | Courier | Publishes a preview — **gate 1** |
+| Launch Pad | Porter | Hands a sold site to its owner. No model call |
 | Communications | Echo | Sends the outreach — **gate 2** |
 | Archives | Sage | Feedback ledger + activity log, fed back into agent context |
-| Armory | Tinker | Fabricates new MCP tools at runtime |
 | Treasury | Coin | Token spend per agent; cost per lead |
 | War Room | (gathers) | Retro |
 
@@ -78,7 +92,7 @@ These are the ones that must not depend on a model behaving:
 - **Quote, never invoice.** An unsolicited invoice is a deceptive-billing
   pattern. Scribe is told this, and `run_outreach` additionally scans the draft
   for billing language and flags it; Echo's preflight blocks a flagged draft.
-- **Identifiable sender + opt-out.** `config.outreach_footer()` is appended in
+- **Identifiable sender + opt-out.** `web_agency/config.outreach_footer()` is appended in
   code so it cannot go missing, and `outreach_config_problems()` blocks sending
   entirely until `TANRIM_AGENCY_NAME` and `TANRIM_SENDER_EMAIL` are set.
 - **No contact route, no lead.** Probe's verdict is overridden to
@@ -103,7 +117,7 @@ and research are **two separate passes in the Assay Room**, split by stage:
 `sourced` → qualify (cheap, and most leads fail here), `qualified` → research
 (expensive, only for leads we've committed to).
 
-`probe.run_enrich` has `WebSearch` and `WebFetch` and produces
+`web_agency/agents/probe.run_enrich` has `WebSearch` and `WebFetch` and produces
 `lead["profile"]`: itemised offering with prices, verified hours, specialities,
 practical facts, contact routes, and a `build_readiness` of
 `ready` | `thin` | `not_enough`. `not_enough` parks the lead back at
@@ -129,7 +143,7 @@ the alternative is publishing a confident wrong fact to the owner.
 
 ## The mailbox
 
-`tanrim/mailbox.py` polls IMAP on a slow clock (`MAIL_POLL_MINUTES`, default
+`web_agency/mailbox.py` polls IMAP on a slow clock (`MAIL_POLL_MINUTES`, default
 5) from the orchestrator tick. For each unread message whose sender matches a
 lead awaiting a reply, it stores the text, pulls every attachment straight into
 that lead's asset store, and hands the text to `echo.triage_inbound`. Mail that
@@ -159,7 +173,7 @@ Three things treated as hostile, because they are:
   those markers. The real containment is architectural: publishing and sending
   are behind operator gates, so the worst an injected instruction can reach is
   a rebuild.
-- **Attachments are untrusted files.** `assets.ingest` whitelists extensions
+- **Attachments are untrusted files.** `web_agency/assets.ingest` whitelists extensions
   and re-encodes every image through Pillow, which is also what neutralises a
   malformed-image payload.
 - **A `From` header is spoofable.** Mail is only matched against an address
@@ -203,7 +217,7 @@ attachments out of the email and drops them in. Nothing reads a mailbox, so
 there is no automatic path from an attachment to disk, and inventing one would
 mean holding mail credentials to save a drag-and-drop.
 
-`hosting.SHIP_DIRS` makes `assets/` deploy with its path preserved, so a page
+`web_agency/hosting.SHIP_DIRS` makes `assets/` deploy with its path preserved, so a page
 referencing `/assets/x.jpg` finds it once live. Forge's photograph rule branches
 on which directory an image came from; with no owner assets it builds captioned
 slots instead, which is what the slots were always for.
@@ -314,12 +328,12 @@ doable in a line.
 
 ## Rooms are staffed, not single-agent
 
-A room's manifest agent is a **role**, not one worker. `rooms/<id>.yaml` sets
+A room's manifest agent is a **role**, not one worker. `plugins/<plugin>/rooms/<id>.yaml` sets
 `max_workers` (3 for every pipeline room); when a second lead needs a room whose
 workers are all busy, another is hired — `forge` → `forge-2` ("Forge II") —
 and retired once its lead finishes the pipeline. The base worker is permanent,
 so a room never looks abandoned. Ultron is a singleton by construction
-(`workers.SINGLETON_ROLES`): a second overseer would dispatch against the first.
+(`AgentSpec.singleton`): a second overseer would dispatch against the first.
 
 The split that matters, and it runs through the whole codebase:
 
@@ -337,7 +351,7 @@ stage and Ultron can dispatch it again.
 
 Retirement runs on the orchestrator's tick (`workers.sweep`) and only touches
 idle, ephemeral, unlocked workers whose lead has reached a stage in
-`workers.DONE_STAGES`. The frontend creates a sprite on first sight of an
+`Stage.releases_worker`. The frontend creates a sprite on first sight of an
 unknown agent id, so hiring needs no new wire event; retiring emits
 `agent_removed`.
 
@@ -366,6 +380,48 @@ The wiring has three non-obvious parts:
 Forge is told to query the skill for palette, type and touch-target rules and to
 report what it got back in `design_rationale` — which is also how you check it
 actually used it rather than inventing hex codes.
+
+## The plugin contract
+
+`backend/tanrim/contract.py` says what a plugin IS, and it is the file to read
+first. The shape, and the rule that produced it:
+
+**The environment never reads a plugin's files.** It asks questions and the
+plugin answers. The first version globbed `<plugin>/rooms/*.yaml`, parsed the
+YAML itself, searched `<plugin>/prompts/` and scanned `<plugin>/tools/` — so
+the contract was "put files of this kind in a directory with this name", and a
+plugin could only ever be a directory laid out the way the core expected.
+`plugin_helpers.yaml_rooms()`, `file_prompts()` and `py_tools()` are
+conveniences a plugin CALLS; they are not the mechanism.
+
+A plugin answers: `pipelines()` (its kinds of work, their stages and moves),
+`rooms()`, `agents()`, `gates()`, `step_gates()`, `tools()`, `routes()`,
+`hooks()`, `prompt()`, `room_handlers()`, `overseer()`, `summary_fields()`,
+`bulk_fields()`, `declares_prompts()`, `persist_room()`, `setup()`, `check()`.
+Every one has a default that contributes nothing, so the smallest legal plugin
+is an id and a name.
+
+**An extension patches rather than restates.** `RoomPatch` adds a bench to a
+room another plugin owns; `AgentPatch` gives an existing role a job at a stage
+the extension invented. Both exist because the obvious alternative — returning
+a whole `Room` or `AgentSpec` with the same id — boots perfectly cleanly and
+silently drops everything the original had. `website_recreation` declares two
+`AgentPatch`es, no rooms and no agents of its own.
+
+**Four kinds of hook,** because they compose differently. BROADCAST fans out
+to every listener (`tick`, `startup`, `stage_changed`, `agent_report`). VETO
+consults each in turn and the first refusal wins — `before_stage_change` is
+how "do not rebuild underneath a business that is holding our email" reaches a
+generic write. TRANSFORM chains, each output feeding the next, which is how
+`clean_email` runs on every write without the ledger knowing what an email is.
+SUPPLIER takes the last plugin to answer. Veto and transform run inside a
+durable write, so an `async def` listener is refused at boot.
+
+Boot is `discovery.find()` → `environment.boot()`: every plugin is asked
+everything ONCE, the answers are merged, and the result is validated before
+any `setup()` runs. Refusals worth knowing about: a job at a stage no bench in
+that room declares (every dispatch would be refused), a room patch with no
+target, two plugins claiming one gate or tool name, a misspelt hook.
 
 ## Prompts live outside the source tree, and inside a plugin
 
@@ -398,7 +454,7 @@ kind resolves as the base pipeline, not as whichever plugin loaded last.
 
 ## Modularity contract
 
-Adding a room = adding `rooms/<id>.yaml`. The backend serves the manifest list
+Adding a room = adding `plugins/<plugin>/rooms/<id>.yaml`. The backend serves the manifest list
 at `GET /rooms` and the frontend builds the map from it. **Do not hardcode the
 room list** in either side.
 
@@ -476,22 +532,30 @@ it, carrying the recap, since the half-finished work is on disk either way.
 `site.run_stats`: a build that needs one is a build whose ceiling is too low
 for what it was asked to make.
 
-### Tool creation (agent → Ultron → Tinker)
+### Tools are written, not fabricated
 
-Unchanged from the original design: an agent emits `request_tool`, the
-gatekeeper loop polls, `ultron.review` approves/denies (risky requests escalate
-to a `tool_review` user approval), `tinker.fabricate` writes a module to
-`state/tools/<name>.py` and hot-reloads the registry, and the name is appended
-to that room's overrides in `state/room_tool_overrides.json`.
+There was an Armory: an agent emitted `request_tool`, Ultron reviewed it, and
+Tinker wrote a module to `state/tools/` and hot-reloaded the registry. In four
+weeks it produced two tools, both for the print-on-demand business this
+pivoted away from, and nothing since — every tool the agency actually uses was
+written by hand. A gatekeeper loop, an agent, a room, a panel and an approval
+kind for a capability nobody reached for is cost without return, so it is
+gone.
 
-Static tools shipped with the pivot: `osm_business_search` (Overpass, with
-mirror fallback), `site_audit` (fetch + defect scoring), `site_inspect`
-(structural checks + Playwright screenshots at 390px/1280px).
+A tool is now a module in `plugins/<plugin>/tools/` exporting `mcp_server`,
+returned from `Plugin.tools()` via the `py_tools` helper and granted to a room
+by name in its manifest. `state/tools/` survives as a runtime drop that
+belongs to no plugin.
+
+The seven: `osm_business_search` (Overpass, with mirror fallback),
+`site_audit` (fetch + defect scoring), `site_inspect` (structural checks +
+Playwright screenshots at 390px/1280px), `image_collect`, `social_look`,
+`font_match` and `domain_check` (RDAP).
 
 ### The transition table is law now, not documentation
 
 `state.PIPELINE` was read in exactly two places, both of them rendering, and
-`advance_lead` checked only that the target was a known stage. Measured across
+`advance_record` checked only that the target was a known stage. Measured across
 the real history: **23 declared edges, 44 actually taken, 182 transitions off
 the table.** The two biggest were designed paths that were never written down —
 `qa_passed → qa_failed` (35×, a rejected publish) and `drafted → published`
@@ -499,7 +563,7 @@ the table.** The two biggest were designed paths that were never written down �
 this file. A table nothing checks drifts from the code the moment someone
 writes a new branch, which is exactly what happened.
 
-Now `advance_lead` refuses an undeclared edge and logs why, naming what WAS
+Now `advance_record` refuses an undeclared edge and logs why, naming what WAS
 allowed from there. Three things make that survivable:
 
 - **The operator can always override.** The lead board's stage control passes
@@ -527,10 +591,9 @@ prospect:  sourced → … → appraised → visualised → built → qa_passed 
 port:      intake  → surveyed ─────→ visualised → built → qa_passed → published ──────────────────────────────────→ won
 ```
 
-`lead.kind` is `prospect` (the default, and what every existing lead is) or
+`record.kind` is `prospect` (the default, and what every existing lead is) or
 `port`, and every `PIPELINE` edge declares which kinds it applies to. The
-manifests stay the router for anything a ROOM works; `state.roles_for(stage,
-kind)` adds the one thing they cannot express — a stage whose next move depends
+manifests stay the router for anything a ROOM works; `state.roles_for(stage, kind)` adds the one thing they cannot express — a stage whose next move depends
 on which pipeline the lead is on. `published` is that stage: a prospect is
 waiting for Scribe to write a pitch, a port is waiting for the operator to
 confirm the client approved the rebuild.
@@ -642,7 +705,7 @@ The decisions worth keeping:
 - **It is a different prompt, not a "write it again" flag.** Asked to follow
   up, a model restates the offer — and a second copy of the pitch is precisely
   what makes an unsolicited sequence read as a mailshot.
-  `prompts/scribe/FOLLOWUP_TEMPLATE.md` forbids the bullet list, the terms and
+  `plugins/web_agency/prompts/scribe/FOLLOWUP_TEMPLATE.md` forbids the bullet list, the terms and
   any re-description of what is included, caps the note at three or four
   sentences, and requires ONE ask. The schema makes the model assert
   `repeats_the_pitch: false` about its own output.
@@ -692,7 +755,7 @@ in `sent_log`, which is the only clock the business itself is running on.
 
 ### The outreach email is a template, not a fresh invention
 
-`prompts/scribe/OUTREACH_TEMPLATE.md` holds the canonical email: the process
+`plugins/web_agency/prompts/scribe/OUTREACH_TEMPLATE.md` holds the canonical email: the process
 facts — what the offer is, what is included, that it is unsolicited and carries
 no obligation — plus slots marked `{{ADAPT}}` that Scribe writes per business.
 `{{PREVIEW_URL}}`, `{{PRICE}}` and `{{DOMAIN}}` are substituted before the
@@ -707,14 +770,14 @@ is the one part of the email a misdescription actually matters in.
 promise or be dropped.
 
 The opt-out and sender identity are still appended in code so they cannot go
-missing — but `config.outreach_footer(language)` now writes them in the
+missing — but `web_agency/config.outreach_footer(language)` now writes them in the
 language of the email. A French business receiving a French pitch with an
 English legal notice reads as a template, which undermines the one paragraph
 that has to be believed.
 
 ### Attaching a third-party MCP server to a room
 
-`rooms/<id>.yaml` can declare remote MCP servers, so granting a room a
+`plugins/<plugin>/rooms/<id>.yaml` can declare remote MCP servers, so granting a room a
 third-party toolset is a manifest change rather than a code change:
 
 ```yaml
@@ -743,7 +806,7 @@ Three details that matter:
   than failing the run.
 
 No room currently uses one. Cloudflare's server is left commented in
-`rooms/publish.yaml` as the worked example: deploying is done deterministically
+`plugins/web_agency/rooms/publish.yaml` as the worked example: deploying is done deterministically
 by `hosting.py`, and Courier makes no model call in the publish path, so the
 tools would never be reached. Attaching an unused remote server just adds a
 handshake and two tools to every run's context.
@@ -755,7 +818,7 @@ what the Launch Pad will need.
 
 ### Hosting, and where domains come from
 
-`tanrim/hosting.py` deploys an approved build to Cloudflare Pages, giving a
+`web_agency/hosting.py` deploys an approved build to Cloudflare Pages, giving a
 public `<slug>.pages.dev` URL. Before this, the "preview link" in an outreach
 email was `127.0.0.1` — unopenable by the person it was written for, which made
 the whole outreach step a dead end.
@@ -773,7 +836,7 @@ hashes with blake3, which is not in the stdlib, but the hash is an opaque
 content key — a stable md5 works, verified against the live API. A brand-new
 project 522s for a few seconds while its certificate provisions.
 
-`domains.py` checks availability over **RDAP**, the protocol that replaced
+`web_agency/domains.py` checks availability over **RDAP**, the protocol that replaced
 WHOIS: free, keyless, answered by the registry. It reports availability only.
 Registration is irreversible and spends real money, so a human buys the domain
 at the registrar and pastes it back — the system never holds a card. Courier
@@ -792,7 +855,7 @@ a sentence in French.
 
 The contract is `../site_editor/docs/HANDOVER.md` and is deliberately **not
 copied here** — a second copy is a second version by the end of the month.
-`handover.py` builds the payload; `siteeditor.py` sends it to
+`web_agency/handover.py` builds the payload; `web_agency/siteeditor.py` sends it to
 `POST /admin/handover`, which creates the client, imports the site, mints a
 first-login link and emails it. One call, idempotent on `lead_id`.
 
@@ -861,7 +924,7 @@ render and say so. "Does it have an `og:image`" is a fact, and asking a model
 to remember twenty facts on every build is how a rule quietly stops being
 applied — it will pass a page missing three of them and be confident about it.
 
-So `tanrim/sitecheck.py` holds everything checkable and `site_inspect` runs
+So `web_agency/sitecheck.py` holds everything checkable and `site_inspect` runs
 it on **every page**: the social preview tags, a directions link, image
 dimensions and lazy-loading, `<html lang>`, JSON-LD field completeness,
 `font-display`, a `prefers-reduced-motion` rule wherever the page animates,
@@ -895,7 +958,7 @@ picture in WebP. Everybody paid 5x for a worse result, because the browser
 downscales it anyway.
 
 None of that needs judgement, so none of it is in a prompt. Forge writes a
-plain `<img src>`; `images.responsive` emits the WebP variants and rewrites the
+plain `<img src>`; `web_agency/images.responsive` emits the WebP variants and rewrites the
 tag afterwards. On a finished build that took the first screen from 216 KB to
 **88 KB** without touching a design decision — and it works retroactively,
 because it runs against the directory rather than at deploy time, so staging
@@ -909,7 +972,7 @@ second run, or a revision that touches one image, cannot corrupt the rest.
 
 ### The weight budget is split, because it was measuring the wrong thing
 
-`sitecheck.weigh` reports two numbers. **Critical path** — markup, styles,
+`web_agency/sitecheck.weigh` reports two numbers. **Critical path** — markup, styles,
 preloaded fonts and the one image above the fold — is capped at 150 KB and is
 the number that decides whether someone on a pavement gets their answer.
 **Total** is capped at 1.5 MB and matters far less: below the fold it arrives
@@ -943,11 +1006,11 @@ number and address may never be behind a script.
 
 The budget was 18 KB of HTML and CSS. A real build satisfied it at 9.4 KB of
 markup and 8 KB of styles — and shipped **633 KB**, because nothing counted the
-56 KB of webfont or the 571 KB harvested JPEG. `sitecheck.weigh` now measures
-through `hosting.collect`, so it counts exactly the bytes that reach the wire,
+56 KB of webfont or the 571 KB harvested JPEG. `web_agency/sitecheck.weigh` now measures
+through `web_agency/hosting.collect`, so it counts exactly the bytes that reach the wire,
 against a 220 KB budget for the whole site.
 
-Measuring it turned up a straightforward bug: `assets.ingest` downscales owner
+Measuring it turned up a straightforward bug: `web_agency/assets.ingest` downscales owner
 photographs to 1600px, but harvested ones were saved at whatever size they were
 published at and served raw. `assets.for_web` re-encodes at deploy time —
 1400px, quality 78 — which took that same build from 633 KB to 350 KB with no
@@ -956,7 +1019,7 @@ file has to stay big enough for Lens to read a chalkboard off.
 
 ### Forge builds more than one page now
 
-Nothing in the plumbing ever required a single page: `hosting.collect` ships
+Nothing in the plumbing ever required a single page: `web_agency/hosting.collect` ships
 every top-level file and Courier's preview banner and `noindex` go into every
 `.html`. Only the prompt forbade it. A second page now has to be earned by
 content that does not belong on the home page — a long menu, a gallery, the
@@ -969,7 +1032,7 @@ above the fold.
 
 ### Showing Forge what good looks like
 
-`prompts/forge/REFERENCES.md` describes three design treatments read off real
+`plugins/web_agency/prompts/forge/REFERENCES.md` describes three design treatments read off real
 award-winning sites for businesses of this kind, with the CSS each needs, and
 requires Forge to pick ONE and name it — a page that takes a little of each is
 the one failure mode that survives every other rule.
@@ -995,7 +1058,7 @@ writes, Lens looks, Lens or the operator fails it, Forge rebuilds. That ran at
 `ROLE.md` had referenced `inspect_site` in six places for weeks, as though it
 could call it.
 
-`rooms/factory.yaml` now grants `site_inspect`, and the closing line of the
+`plugins/web_agency/rooms/factory.yaml` now grants `site_inspect`, and the closing line of the
 build prompt — the last thing the model reads, which is where an instruction
 survives a 7,000-token brief — tells Forge to screenshot itself, open the PNGs
 with `Read`, and fix what it finds before writing its final JSON.
@@ -1043,12 +1106,12 @@ the h1 overflowed a 390px viewport under nowrap, and the hero subtitle measured
 near-1:1 contrast against the photo, so it now sits in a solid dark chip."* The
 second of those is precisely the class the old check could not see. It also
 declined to act on the oversize finding, correctly, on the grounds that
-`images.responsive` owns that — which is the judgement the prompt asks for
+`web_agency/images.responsive` owns that — which is the judgement the prompt asks for
 rather than thrashing to reach zero.
 
 ### The sandbox lead
 
-`tanrim/sandbox.py` is a fake business, `Le Banc d'Essai`, kept at a fixed id so
+`web_agency/sandbox.py` is a fake business, `Le Banc d'Essai`, kept at a fixed id so
 its staging URL is stable. Every experiment on the build used to be run against
 a real business's site — which is the wrong place to learn that a change made
 pages worse, because that directory is the one Courier ships from and a rebuild
@@ -1153,4 +1216,20 @@ cp .env.example .env                                # ANTHROPIC_API_KEY at minim
 PYTHONPATH=backend .venv/bin/python -m uvicorn tanrim.server:app --port 8765
 # in another terminal:
 cd frontend && npm install && npm run dev           # http://localhost:5173
+```
+
+Boot prints what is installed and what each plugin serves:
+
+```
+[boot] 2 plugin(s): web_agency, website_recreation
+[boot] web_agency: /invoices, /leads, /leads/{lead_id}, /preview, /staging, …
+[boot] website_recreation: /leads/port
+```
+
+Installing a plugin is putting a directory in `plugins/` and restarting.
+Removing one removes its stages, rooms, agents, gates, tools and routes with
+it — there is a test that asserts exactly that.
+
+```
+.venv/bin/python -m pytest tests/ -q
 ```

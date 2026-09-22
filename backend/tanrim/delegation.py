@@ -256,13 +256,15 @@ async def run_review(
 ) -> dict[str, Any]:
     """Have another room's agent judge an artifact, and return their verdict."""
 
-    room_by_role = {
-        "lens": "gallery", "forge": "factory", "probe": "assay",
-        "scribe": "listing", "nova": "research",
-    }
-    room_id = room_by_role.get(reviewer_role)
+    # Derived, not listed. This was a literal map of five of one plugin's
+    # roles to its rooms, in the core — so a plugin's own agent could not be
+    # asked for a review, and adding a room meant editing this file.
+    from . import rooms as rooms_mod
+
+    room_id = rooms_mod.room_for_role(reviewer_role)
     if room_id is None:
-        return {"verdict": "unavailable", "reasoning": f"no such reviewer: {reviewer_role}"}
+        return {"verdict": "unavailable",
+                "reasoning": f"no such reviewer: {reviewer_role}"}
 
     rendered = await _rasterise_svgs(cwd, files)
     listed = "\n".join(f"- {f}" for f in files) or "(everything in this directory)"
