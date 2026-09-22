@@ -3,12 +3,14 @@ import 'package:flutter/material.dart';
 import 'api/client.dart';
 import 'api/live.dart';
 import 'model/approval.dart';
+import 'model/castle.dart';
 import 'model/record.dart';
 import 'model/world.dart';
 import 'ui/approvals.dart';
 import 'ui/board.dart';
 import 'ui/map_view.dart';
 import 'ui/room_panel.dart';
+import 'ui/settings.dart';
 
 void main() => runApp(const TanrimApp());
 
@@ -66,6 +68,14 @@ class _WorldPageState extends State<WorldPage> {
   /// Which pane the right-hand column is showing.
   _Pane _pane = _Pane.board;
 
+  /// The right column folds away. The map is the thing worth looking at when
+  /// nothing needs deciding, and on a narrow window the panel takes most of it.
+  bool _panelOpen = true;
+
+  List<Castle> _castles = const [];
+  List<Map<String, dynamic>> _plugins = const [];
+  List<String> _kinds = const [];
+
   @override
   void initState() {
     super.initState();
@@ -100,6 +110,7 @@ class _WorldPageState extends State<WorldPage> {
         _state = '${rooms.length} rooms';
         _connected = true;
       });
+      await _loadPlugins();
       await _loadApprovals();
       await _loadBoard();
     } catch (e) {
@@ -149,6 +160,46 @@ class _WorldPageState extends State<WorldPage> {
     }
   }
 
+  /// Castles come from `/plugins`: a plugin that declares rooms is a castle,
+  /// an extension that only patches is not.
+  Future<void> _loadPlugins() async {
+    final api = _api;
+    if (api == null) return;
+    try {
+      final d = await api.get('/plugins') as Map<String, dynamic>;
+      final list = ((d['plugins'] ?? []) as List)
+          .map((p) => (p as Map).cast<String, dynamic>())
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _plugins = list;
+        _kinds = ((d['lead_kinds'] ?? []) as List).cast<String>();
+        _castles = Castle.group(
+          _rooms,
+          {for (final p in list)
+            p['id'] as String: ((p['rooms'] ?? []) as List).cast<String>()},
+          {for (final p in list)
+            p['id'] as String: (p['name'] ?? p['id']) as String},
+        );
+      });
+    } catch (_) {
+      // The map still works without them; it just cannot group.
+    }
+  }
+
+  /// Pending approvals per castle, for the badge you can read from far off.
+  Map<String, int> get _castleBadges {
+    final out = <String, int>{};
+    for (final c in _castles) {
+      var n = 0;
+      for (final r in c.rooms) {
+        n += _badges[r.id] ?? 0;
+      }
+      if (n > 0) out[c.pluginId] = n;
+    }
+    return out;
+  }
+
   Future<void> _loadApprovals() async {
     final api = _api;
     if (api == null) return;
@@ -181,74 +232,163 @@ class _WorldPageState extends State<WorldPage> {
         _rooms.where((r) => r.id == _selected).cast<Room?>().firstOrNull;
 
     return Scaffold(
-      body: Column(
-        children: [
-          _bar(),
-          Expanded(
-            child: !_connected
-                ? Center(
-                    child: Text(_state,
-                        style: const TextStyle(color: Colors.white54)))
-                : Row(
-                    children: [
+      body: !_connected
+          ? _disconnected()
+          // The map fills the window and the panel sits OVER it, so folding
+          // the panel away gives the map the whole screen rather than a
+          // slightly wider column.
+          : Stack(children: [
+              Positioned.fill(
+                child: MapView(
+                  rooms: _rooms,
+                  agents: agents,
+                  badges: _badges,
+                  castles: _castles,
+                  castleBadges: _castleBadges,
+                  selectedRoom: _selected,
+                  onRoomTapped: (r) => setState(() {
+                    _selected = r.id;
+                    _pane = _Pane.room;
+                    _panelOpen = true;
+                  }),
+                ),
+              ),
+              if (_panelOpen)
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  bottom: 0,
+                  width: 400,
+                  child: Material(
+                    color: const Color(0xFF161922),
+                    elevation: 8,
+                    child: Column(children: [
+                      _tabs(),
                       Expanded(
-                        child: MapView(
-                          rooms: _rooms,
-                          agents: agents,
-                          badges: _badges,
-                          selectedRoom: _selected,
-                          onRoomTapped: (r) => setState(() {
-                            _selected = r.id;
-                            _pane = _Pane.room;
-                          }),
-                        ),
-                      ),
-                      SizedBox(
-                        width: 400,
-                        child: Column(
-                          children: [
-                            _tabs(),
-                            Expanded(
-                              child: switch (_pane) {
-                                _Pane.approvals => Container(
-                                    color: const Color(0xFF161922),
-                                    child: Approvals(
-                                      api: _api!,
-                                      approvals: _approvals,
-                                      onResolved: () async {
-                                        await _loadApprovals();
-                                        await _loadBoard();
-                                      },
-                                      onOpenRecord: (id) => setState(() {
-                                        _selectedRecord = id;
-                                        _pane = _Pane.board;
-                                      }),
-                                    ),
-                                  ),
-                                _Pane.room when selected != null => RoomPanel(
-                                    api: _api!,
-                                    room: selected,
-                                    here: agents
-                                        .where((a) => a.roomId == selected.id)
-                                        .toList(),
-                                    onClose: () =>
-                                        setState(() => _pane = _Pane.board),
-                                    onChanged: () async {
-                                      await _loadBoard();
-                                      await _loadApprovals();
-                                    },
-                                  ),
-                                _ => _boardPane(),
+                        child: switch (_pane) {
+                          _Pane.approvals => Approvals(
+                              api: _api!,
+                              approvals: _approvals,
+                              onResolved: () async {
+                                await _loadApprovals();
+                                await _loadBoard();
+                              },
+                              onOpenRecord: (id) => setState(() {
+                                _selectedRecord = id;
+                                _pane = _Pane.board;
+                              }),
+                            ),
+                          _Pane.room when selected != null => RoomPanel(
+                              api: _api!,
+                              room: selected,
+                              here: agents
+                                  .where((a) => a.roomId == selected.id)
+                                  .toList(),
+                              onClose: () =>
+                                  setState(() => _pane = _Pane.board),
+                              onChanged: () async {
+                                await _loadBoard();
+                                await _loadApprovals();
                               },
                             ),
-                          ],
-                        ),
+                          _ => _boardPane(),
+                        },
                       ),
-                    ],
+                    ]),
                   ),
+                ),
+              _controls(),
+            ]),
+    );
+  }
+
+  Widget _disconnected() => Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(_state, style: const TextStyle(color: Colors.white54)),
+          const SizedBox(height: 14),
+          FilledButton.tonal(
+            onPressed: () => _settings().open(context, tab: 'connection'),
+            child: const Text('Connection settings'),
           ),
-        ],
-      ),
+        ]),
+      );
+
+  Settings _settings() => Settings(
+        server: _server,
+        onConnect: () {
+          Navigator.of(context).maybePop();
+          _connect();
+        },
+        connected: _connected,
+        status: _state,
+        rooms: _rooms.length,
+        plugins: _plugins,
+        stages: _stages,
+        kinds: _kinds,
+      );
+
+  /// The only chrome: fold the panel, and the menu. Everything that was in
+  /// the old top bar lives in Settings now — a bar across the top of a map is
+  /// a bar across the top of the thing you came to look at.
+  Widget _controls() {
+    return Positioned(
+      top: 10,
+      right: _panelOpen ? 412 : 12,
+      child: Row(children: [
+        _round(
+          icon: _panelOpen ? Icons.chevron_right : Icons.chevron_left,
+          tip: _panelOpen ? 'hide the panel' : 'show the panel',
+          onTap: () => setState(() => _panelOpen = !_panelOpen),
+          badge: _panelOpen ? 0 : _approvals.length,
+        ),
+        const SizedBox(width: 8),
+        _round(
+          icon: Icons.menu,
+          tip: 'settings',
+          onTap: () => _settings().open(context),
+        ),
+      ]),
+    );
+  }
+
+  Widget _round({
+    required IconData icon,
+    required String tip,
+    required VoidCallback onTap,
+    int badge = 0,
+  }) {
+    return Tooltip(
+      message: tip,
+      child: Stack(clipBehavior: Clip.none, children: [
+        Material(
+          color: const Color(0xCC1C2029),
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(9),
+              child: Icon(icon, size: 20, color: Colors.white70),
+            ),
+          ),
+        ),
+        if (badge > 0)
+          Positioned(
+            right: -2,
+            top: -2,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE23D3D),
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: Text('$badge',
+                  style: const TextStyle(
+                      fontSize: 10.5, fontWeight: FontWeight.w700)),
+            ),
+          ),
+      ]),
     );
   }
 
@@ -344,41 +484,7 @@ class _WorldPageState extends State<WorldPage> {
     );
   }
 
-  Widget _bar() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      color: const Color(0xFF191C24),
-      child: Row(
-        children: [
-          const Text('Tanrim',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-          const SizedBox(width: 16),
-          SizedBox(
-            width: 260,
-            child: TextField(
-              controller: _server,
-              style: const TextStyle(fontSize: 13),
-              decoration: const InputDecoration(
-                isDense: true,
-                border: OutlineInputBorder(),
-                labelText: 'server',
-              ),
-              onSubmitted: (_) => _connect(),
-            ),
-          ),
-          const SizedBox(width: 8),
-          FilledButton.tonal(
-              onPressed: _connect, child: const Text('Connect')),
-          const SizedBox(width: 16),
-          Icon(Icons.circle,
-              size: 10,
-              color: _connected ? const Color(0xFF63C77B) : Colors.orange),
-          const SizedBox(width: 6),
-          Text(_state, style: const TextStyle(color: Colors.white60)),
-        ],
-      ),
-    );
-  }
+
 }
 
 /// Which pane the right-hand column shows.

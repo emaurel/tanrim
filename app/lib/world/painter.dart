@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../model/castle.dart';
 import '../model/world.dart';
 import 'iso.dart';
 import 'palette.dart';
@@ -24,7 +25,16 @@ class WorldPainter extends CustomPainter {
     this.selectedRoom,
     this.badges = const {},
     this.fontFamily,
+    this.castles = const [],
+    this.castleBadges = const {},
+    this.hoveredCastle,
   });
+
+  /// Below this zoom a room is a few pixels across and its name does not fit,
+  /// so the map stops drawing rooms and draws one block per castle instead.
+  /// Zooming out should show you the estate, not a smaller illegible copy of
+  /// the same thing.
+  static const farZoom = 0.38;
 
   final List<Room> rooms;
   final List<AgentState> agents;
@@ -48,6 +58,18 @@ class WorldPainter extends CustomPainter {
   /// passes the theme's.
   final String? fontFamily;
 
+  /// One per installed plugin that declares rooms. Drawn INSTEAD of the rooms
+  /// when zoomed out past [farZoom].
+  final List<Castle> castles;
+
+  /// plugin id -> pending approvals across all its rooms.
+  final Map<String, int> castleBadges;
+  final String? hoveredCastle;
+
+  /// Far enough out that rooms are illegible and the estate is the useful
+  /// picture.
+  bool get far => zoom < farZoom;
+
   static const _wallHeight = 1.4;
 
   @override
@@ -55,6 +77,12 @@ class WorldPainter extends CustomPainter {
     canvas.save();
     canvas.translate(size.width / 2 + camera.dx, size.height / 3 + camera.dy);
     canvas.scale(zoom);
+
+    if (far) {
+      _estate(canvas);
+      canvas.restore();
+      return;
+    }
 
     // Painter's order. Everything on the map is sorted by depth ONCE and drawn
     // back to front — rooms and sprites together, because a sprite standing in
@@ -81,6 +109,66 @@ class WorldPainter extends CustomPainter {
     }
 
     canvas.restore();
+  }
+
+  // -- the estate, seen from far off ----------------------------------------
+
+  /// One pale block per castle, with its name and what is waiting in it.
+  ///
+  /// Deliberately plain. At this distance the question is "where is the work
+  /// and who has something waiting", and twelve coloured rooms with
+  /// unreadable labels answer neither.
+  void _estate(Canvas canvas) {
+    final sorted = [...castles]..sort((a, b) {
+        final (ax, ay, _, _) = a.bounds;
+        final (bx, by, _, _) = b.bounds;
+        return isoDepth(ax, ay).compareTo(isoDepth(bx, by));
+      });
+
+    for (final c in sorted) {
+      final (x, y, w, h) = c.bounds;
+      final hot = c.pluginId == hoveredCastle;
+      final face = iso.rectDiamond(x, y, w, h);
+
+      // A low slab rather than a flat diamond: it still reads as a place.
+      const lift = 1.2;
+      canvas.drawPath(
+          iso.wall(x, y + h, x + w, y + h, lift),
+          Paint()..color = const Color(0xFF6E7687));
+      canvas.drawPath(
+          iso.wall(x + w, y, x + w, y + h, lift),
+          Paint()..color = const Color(0xFF585F6D));
+
+      final top = face.shift(Offset(0, -lift * iso.tileH));
+      canvas.drawPath(top,
+          Paint()..color = hot ? Colors.white : const Color(0xFFE7EAF0));
+      canvas.drawPath(
+          top,
+          Paint()
+            ..color = const Color(0xFF2A2F3A)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5 / zoom);
+
+      final centre = iso.toScreen(x + w / 2, y + h / 2)
+          .translate(0, -lift * iso.tileH);
+      _text(canvas, c.name, centre.translate(0, -10 / zoom),
+          size: 15 / zoom,
+          weight: FontWeight.w700,
+          centre: true,
+          colour: const Color(0xFF12141A));
+      _text(canvas, '${c.rooms.length} rooms',
+          centre.translate(0, 8 / zoom),
+          size: 11 / zoom, centre: true, colour: const Color(0xFF5A6272));
+
+      final waiting = castleBadges[c.pluginId] ?? 0;
+      if (waiting > 0) {
+        final at = centre.translate(0, 30 / zoom);
+        canvas.drawCircle(
+            at, 12 / zoom, Paint()..color = const Color(0xFFE23D3D));
+        _text(canvas, '$waiting', at.translate(0, -9 / zoom),
+            size: 13 / zoom, weight: FontWeight.bold, centre: true);
+      }
+    }
   }
 
   // -- rooms ---------------------------------------------------------------
@@ -271,7 +359,10 @@ class WorldPainter extends CustomPainter {
       old.hoveredRoom != hoveredRoom ||
       old.selectedRoom != selectedRoom ||
       old.badges != badges ||
-      old.fontFamily != fontFamily;
+      old.fontFamily != fontFamily ||
+      old.castles != castles ||
+      old.castleBadges != castleBadges ||
+      old.hoveredCastle != hoveredCastle;
 }
 
 double _sin(double t) => math.sin(t);

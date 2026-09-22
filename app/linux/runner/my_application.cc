@@ -52,7 +52,12 @@ static void my_application_activate(GApplication* application) {
     gtk_window_set_title(window, "tanrim");
   }
 
-  gtk_window_set_default_size(window, 1280, 720);
+  // Open maximised, and keep a sensible size to fall back to when the
+  // operator un-maximises. This is a console you leave open all day next to
+  // the work, not a dialog — 1280x720 in the corner of a large screen was the
+  // wrong default for both the map and a three-pane layout.
+  gtk_window_set_default_size(window, 1600, 1000);
+  gtk_window_maximize(window);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(
