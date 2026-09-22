@@ -226,7 +226,19 @@ class Environment:
                     f"installed plugin declares. Rooms: {sorted(self._rooms)}")
             self._rooms[patch.extends] = _apply(target, patch)
 
+    #: Gates the ENVIRONMENT raises about its own machinery: a run that
+    #: crashed, a step the operator asked to be consulted about, an agent
+    #: stopped after too many reruns. They were declared by `web_agency`,
+    #: which meant the core raised three kinds nothing declared in any other
+    #: install — a card the operator could neither see nor clear.
+    def _builtin_gates(self) -> list[Gate]:
+        from . import builtin_gates
+
+        return builtin_gates.GATES
+
     def _collect_rest(self) -> None:
+        for gate in self._builtin_gates():
+            self._gates[gate.kind] = gate
         patches: list[AgentPatch] = []
         for p in self.plugins:
             for item in self._said(p, "agents"):

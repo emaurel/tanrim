@@ -349,7 +349,9 @@ def add_escalation(
         "message": message,
         "original_task": original_task,
         "status": "pending",         # pending | resolved
-        "ultron_response": None,
+        # The overseer's answer. Named `ultron_response` until now — the
+        # core's own escalation schema carrying one plugin's agent name.
+        "response": None,
         "rerun_dispatched": False,
     }
     with _lock:

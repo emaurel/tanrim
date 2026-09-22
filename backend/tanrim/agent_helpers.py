@@ -137,7 +137,7 @@ class AgentBusy(RuntimeError):
 _LEAD_CLAIMS: set[tuple[str, str]] = set()
 
 
-def lead_claims() -> set[tuple[str, str]]:
+def record_claims() -> set[tuple[str, str]]:
     return set(_LEAD_CLAIMS)
 
 

@@ -17,8 +17,11 @@ def test_an_empty_directory_yields_no_plugins(plugins):
     """The whole point: the core is empty until something fills it."""
     env = plugins.install({})
     assert env.plugins == ()
-    assert env.rooms() == [] and env.kinds() == [] and env.gates() == {}
+    assert env.rooms() == [] and env.kinds() == []
     assert list(state.STAGES) == []
+    # The environment's OWN gates survive an empty install — it raises them
+    # itself, so they cannot depend on a plugin being there.
+    assert set(env.gates()) == {"stage_gate", "agent_crashed", "rerun_halted"}
 
 
 def test_a_directory_without_a_plugin_module_is_ignored(plugins):

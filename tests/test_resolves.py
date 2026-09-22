@@ -179,3 +179,26 @@ def test_each_agents_prompt_builder_actually_runs(module, fn_name, extra, real_e
     mod = importlib.import_module(module)
     out = getattr(mod, fn_name)(records[0], *extra)
     assert isinstance(out, str) and out
+
+
+def test_nothing_uses_an_undefined_name(real_env):
+    """pyflakes over the whole tree, as a test.
+
+    An undefined bare name is invisible to the two static passes above, which
+    only follow `module.attribute`. It is also invisible to the rest of the
+    suite: deleting one import line left 32 undefined references in
+    `approvals.py` and all 152 tests stayed green, because no test calls an
+    approval handler.
+
+    Unused imports are not failed — they are untidy, not broken.
+    """
+    import subprocess
+    import sys
+
+    files = [str(p) for root in ROOTS for p in Path(root).rglob("*.py")
+             if "__pycache__" not in str(p)]
+    out = subprocess.run([sys.executable, "-m", "pyflakes", *files],
+                         capture_output=True, text=True).stdout
+    real = [l for l in out.splitlines()
+            if "undefined name" in l or "redefinition of unused" in l]
+    assert not real, "\n".join(real)

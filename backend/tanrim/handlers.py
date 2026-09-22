@@ -32,7 +32,7 @@ class RoomHandler:
         return {"ok": False, "error": f"unknown action: {name}"}
 
 
-class LeadRoomHandler(RoomHandler):
+class RecordRoomHandler(RoomHandler):
     """Base for every room that moves a record one stage forward.
 
     They all differ in only four ways — which agent, which runner, which stages

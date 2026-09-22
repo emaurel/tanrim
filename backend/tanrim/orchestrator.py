@@ -30,6 +30,25 @@ RECOVERY_QUIET_SECONDS = 4 * 60
 SLOW_STEP_SECONDS = 0.25
 
 
+def _somewhere(room_id: str | None = None) -> str:
+    """A room to file an operator card in.
+
+    The named room if it exists, otherwise ANY room, otherwise nothing. The
+    fallback was the literal `"throne"` — one plugin's room id, in the core —
+    so in any other install a crash card was filed to a room that does not
+    exist and the operator could neither see it nor clear it.
+    """
+    from . import environment
+
+    if room_id:
+        return room_id
+    if environment.booted():
+        existing = environment.current().rooms()
+        if existing:
+            return existing[0].id
+    return ""
+
+
 async def _timed(name: str, coro: Any) -> Any:
     """Await a step, and say so if it held the loop too long."""
     started = time.monotonic()
@@ -248,7 +267,7 @@ class Orchestrator:
                     and stage not in state.permanent_gates()):
                 state.add_user_approval(
                     kind="stage_gate",
-                    room_id=rooms_mod.room_for_role(role) or "throne",
+                    room_id=_somewhere(rooms_mod.room_for_role(role)),
                     requesting_agent=role,
                     summary=f"{record.get('name')} is at '{stage}' — run {role}?",
                     payload={
@@ -330,7 +349,7 @@ class Orchestrator:
         payload = gate.build(self.world, record)
         state.add_user_approval(
             kind=gate.gate,
-            room_id=gate.room or rooms_mod.room_for_role(gate.agent) or "throne",
+            room_id=_somewhere(gate.room or rooms_mod.room_for_role(gate.agent)),
             requesting_agent=gate.agent,
             summary=payload.pop("summary", None)
                     or f"{record.get('name')} is at '{stage}'",
@@ -433,7 +452,10 @@ class Orchestrator:
                     # Brake 1: Ultron's own judgement. If he told them to stand
                     # down, re-firing them contradicts the instruction he just
                     # gave and starts the loop.
-                    response = esc.get("ultron_response") or {}
+                    # `ultron_response` is the old field name; records
+                    # written before the rename still carry it.
+                    response = (esc.get("response")
+                                or esc.get("ultron_response") or {})
                     if response.get("rerun_agent") is False:
                         state.update_escalation(esc["id"], rerun_dispatched=True)
                         state.log_event(
@@ -467,7 +489,7 @@ class Orchestrator:
                         if not already:
                             state.add_user_approval(
                                 kind="rerun_halted",
-                                room_id=esc.get("room") or "throne",
+                                room_id=_somewhere(esc.get("room")),
                                 requesting_agent=esc["agent"],
                                 summary=f"{esc['agent']} is stuck in a loop on the same "
                                         f"task and has been stopped",

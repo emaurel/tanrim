@@ -38,6 +38,25 @@ def _task(task: dict[str, Any], record_id: str | None = None) -> dict[str, Any]:
     return out
 
 
+def _somewhere(room_id: str | None = None) -> str:
+    """A room to file an operator card in.
+
+    The named room if it exists, otherwise ANY room, otherwise nothing. The
+    fallback was the literal `"throne"` — one plugin's room id, in the core —
+    so in any other install a crash card was filed to a room that does not
+    exist and the operator could neither see it nor clear it.
+    """
+    from . import environment
+
+    if room_id:
+        return room_id
+    if environment.booted():
+        existing = environment.current().rooms()
+        if existing:
+            return existing[0].id
+    return ""
+
+
 def _needs_lead(name: str) -> dict[str, Any]:
     return {"ok": False, "error": f"{name} needs a record_id"}
 
@@ -175,7 +194,7 @@ def _crashed(name: str, task: dict[str, Any], exc: Exception) -> dict[str, Any]:
     if not existing:
         state.add_user_approval(
             kind="agent_crashed",
-            room_id=room_id or "throne",
+            room_id=_somewhere(room_id),
             requesting_agent=name,
             summary=f"{name} crashed on {label} at '{stage}' — {detail}"[:200],
             payload={

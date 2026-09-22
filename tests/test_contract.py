@@ -57,7 +57,10 @@ def test_the_smallest_legal_plugin_contributes_nothing():
 
     env = Environment.boot([Minimal()])
     assert env.kinds() == [] and env.rooms() == [] and env.agents() == []
-    assert env.stages() == [] and env.gates() == {}
+    assert env.stages() == []
+    # Not empty: the environment declares the gates it raises about its own
+    # machinery, so they exist whatever is installed. A plugin adds to these.
+    assert set(env.gates()) == {"stage_gate", "agent_crashed", "rerun_halted"}
 
 
 def test_an_environment_with_no_plugins_is_empty():
@@ -681,3 +684,42 @@ def test_every_declared_hook_has_somewhere_that_fires_it():
     assert not never, (
         f"declared but never fired: {never}. Either fire it or stop "
         f"declaring it — a plugin registering one of these hears nothing.")
+
+
+def test_the_environment_declares_the_gates_it_raises_itself():
+    """A crash, a ticked step, a rerun ceiling — all about a RUN.
+
+    Everything a gate normally is belongs to a plugin, because only the
+    plugin knows what the decision means. These three do not: the environment
+    raises them by name regardless of what is installed, so `web_agency`
+    declaring them meant that in any OTHER install they were undeclared
+    kinds — cards nothing could render and nothing could resolve.
+    """
+    class Minimal(Plugin):
+        id, name = "minimal", "Minimal"
+
+    env = Environment.boot([Minimal()])
+    for kind in ("stage_gate", "agent_crashed", "rerun_halted"):
+        assert kind in env.gates(), f"the core raises {kind!r} and nothing declares it"
+    assert env.gate("stage_gate").on_decision is not None
+
+
+def test_an_operator_card_is_filed_in_a_room_that_exists():
+    """The fallback was the literal `"throne"`, one plugin's room id."""
+    from tanrim import runners
+
+    class Solo(Plugin):
+        id, name = "solo", "Solo"
+        def rooms(self):
+            return [Room(id="workshop", name="Workshop")]
+
+    # `environment.boot`, not `Environment.boot`: only the module-level one
+    # installs the result as current, and `_somewhere` asks the current one.
+    env = environment.boot([Solo()])
+    try:
+        where = runners._somewhere(None)
+        assert where == "workshop"
+        assert env.room(where) is not None
+        assert runners._somewhere("named") == "named"
+    finally:
+        environment.reset()
