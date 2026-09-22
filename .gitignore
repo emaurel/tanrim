@@ -41,3 +41,9 @@ brand/
 # part. The committed half is the `prompts=(...)` declaration in plugin.py.
 plugins/*/prompts/
 plugins/*/__pycache__/
+
+# Flutter app build output
+app/build/
+app/.dart_tool/
+app/linux/flutter/ephemeral/
+app/android/.gradle/
