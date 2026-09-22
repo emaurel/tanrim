@@ -368,3 +368,42 @@ def test_an_environment_with_no_overseer_offers_no_escalation_tools(plugins):
     assert plugins.env.overseer() == ""
     server = meta_tools.make_meta_server("worker", "room")
     assert server is not None          # it still builds; it just offers less
+
+
+def test_every_action_the_frontend_posts_is_handled(real_env):
+    """Action names are WIRE FORMAT, like `lead_id` and the route paths.
+
+    The core's `lead` -> `record` rename was applied with a regex that
+    protected string literals in `backend/tanrim/` but not in the plugins —
+    so `if name == "delete_lead"` silently became `"delete_record"` while the
+    frontend kept posting `delete_lead`, and the delete button stopped
+    working with no error anywhere.
+    """
+    import re
+    from pathlib import Path
+
+    src = Path("frontend/src")
+    if not src.is_dir():
+        pytest.skip("no frontend checkout")
+
+    posted = set()
+    for path in src.rglob("*.ts"):
+        body = path.read_text()
+        for m in re.finditer(r'postRoomAction\([^,]+,\s*"([a-z_]+)"', body):
+            posted.add(m.group(1))
+
+    handled = set()
+    for path in Path("plugins").rglob("handlers.py"):
+        body = path.read_text()
+        handled |= set(re.findall(r'name == "([a-z_]+)"', body))
+        # the room's own primary action, declared rather than matched. Two
+        # forms: `action_name = "x"` and the tuple `agent_id, action_name =
+        # "probe", "run_probe"`.
+        handled |= set(re.findall(r'action_name\s*=\s*"([a-z_]+)"', body))
+        handled |= set(re.findall(
+            r'agent_id,\s*action_name(?:,\s*\w+)?\s*=\s*"[a-z_]+",\s*"([a-z_]+)"',
+            body))
+
+    assert posted, "found no actions in the frontend — the regex stopped matching"
+    missing = sorted(posted - handled)
+    assert not missing, f"the frontend posts actions nothing handles: {missing}"
