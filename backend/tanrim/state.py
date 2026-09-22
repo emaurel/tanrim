@@ -13,6 +13,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from . import plugin as _plugin
 from .config import ROOT
 
 STATE_DIR = ROOT / "state"
@@ -564,25 +565,17 @@ def update_escalation(esc_id: str, **fields: Any) -> dict[str, Any] | None:
 # stages simultaneously, so agents are always addressed with a `lead_id`;
 # nothing in this pipeline means "the latest thing".
 
-STAGES = [
-    "sourced",        # Scout found it
-    "intake",         # PORT: a client asked us to rebuild the site they have
-    "needs_review",   # it HAS a site — Lens must render and judge it first
-    "qualified",      # confirmed real, earning, and genuinely web-deficient
-    "enriched",       # deep-researched: we know enough to build something real
-    "appraised",      # sized: what this business can bear, and what we quote
-    "surveyed",       # PORT: their existing site has been read into a dossier
-    "visualised",     # their published photos have been read — palette, board, feel
-    "built",          # Forge generated a site
-    "qa_passed",      # Lens verified the UI
-    "published",      # Courier deployed a preview (gate 1 passed)
-    "drafted",        # Scribe wrote the email; it is waiting on YOUR approval
-    "contacted",      # Echo sent the outreach (gate 2 passed)
-    "replied",        # the owner answered
-    "won",
-]
-# Terminal states a lead can fall into from anywhere.
-DEAD_STAGES = ["disqualified", "qa_failed", "lost"]
+# The stages are no longer written here. Each plugin declares the states its
+# own pipeline has, and the environment is the union of them — so an empty
+# install has no stages at all, and `plugins/web_agency` is what puts the
+# original thirteen back. See `tanrim/plugin.py`.
+#
+# Read once at import, like everything else derived from a manifest: a stage
+# list changing underneath a run in flight is a debugging nightmare, and adding
+# a plugin is a restart either way.
+STAGES = _plugin.stage_ids()
+#: Terminal states a unit of work can fall into from anywhere.
+DEAD_STAGES = _plugin.terminal_ids()
 ALL_STAGES = STAGES + DEAD_STAGES
 
 
@@ -1095,79 +1088,22 @@ def list_lead_rows(
 #
 # (from_stage, to_stage, role, kind_of_edge, which lead kinds it applies to)
 
-#: Prospect — a business we found and are pitching, unasked.
-PROSPECT = "prospect"
-#: Port — a business that already has a site and asked us to rebuild it on the
-#: editor so they can maintain it themselves. They are a customer before the
-#: lead exists, so there is no qualification, no opportunity score, no
-#: appraisal and no outreach: their existing site is the specification.
+#: Every pipeline the installed plugins define. An environment with no plugins
+#: has none, which is the point.
+LEAD_KINDS = tuple(_plugin.lead_kinds())
+#: The first one declared is what a record without an explicit kind is taken to
+#: be, so leads written before kinds existed keep working.
+PROSPECT = LEAD_KINDS[0] if LEAD_KINDS else "prospect"
 PORT = "port"
-LEAD_KINDS = (PROSPECT, PORT)
 BOTH = frozenset(LEAD_KINDS)
 
-PIPELINE: tuple[tuple[str, str, str, str, frozenset[str]], ...] = (
-    # ---- prospecting: find them, judge them, decide whether to build --------
-    ("sourced",      "sourced",      "nova",     "park",    frozenset({PROSPECT})),
-    ("sourced",      "qualified",    "probe",    "forward", frozenset({PROSPECT})),
-    ("sourced",      "needs_review", "probe",    "branch",  frozenset({PROSPECT})),
-    ("sourced",      "disqualified", "probe",    "reject",  frozenset({PROSPECT})),
-
-    ("needs_review", "qualified",    "lens",     "forward", frozenset({PROSPECT})),
-    ("needs_review", "disqualified", "lens",     "reject",  frozenset({PROSPECT})),
-
-    ("qualified",    "enriched",     "probe",    "forward", frozenset({PROSPECT})),
-    ("qualified",    "qualified",    "probe",    "park",    frozenset({PROSPECT})),
-    ("qualified",    "disqualified", "probe",    "reject",  frozenset({PROSPECT})),
-
-    ("enriched",     "appraised",    "probe",    "forward", frozenset({PROSPECT})),
-    ("enriched",     "needs_review", "probe",    "branch",  frozenset({PROSPECT})),
-    ("enriched",     "qualified",    "probe",    "park",    frozenset({PROSPECT})),
-
-    ("appraised",    "visualised",   "lens",     "forward", frozenset({PROSPECT})),
-
-    # ---- porting: they asked, and their own site is the brief ---------------
-    ("intake",       "surveyed",     "probe",    "forward", frozenset({PORT})),
-    ("intake",       "disqualified", "probe",    "reject",  frozenset({PORT})),
-    ("surveyed",     "visualised",   "lens",     "forward", frozenset({PORT})),
-
-    # ---- from here the two kinds build the same way -------------------------
-    ("visualised",   "built",        "forge",    "forward", BOTH),
-
-    ("built",        "qa_passed",    "lens",     "forward", BOTH),
-    ("built",        "qa_failed",    "lens",     "reject",  BOTH),
-
-    ("qa_failed",    "built",        "forge",    "forward", BOTH),
-
-    ("qa_passed",    "published",    "courier",  "forward", BOTH),
-    # A rejected publish. Designed, documented, and taken 35 times before it
-    # was ever written down: the operator's reason is merged into `qa.problems`
-    # as a critical, which is where Forge reads its rebuild brief from.
-    ("qa_passed",    "qa_failed",    "operator", "reject",  BOTH),
-    # The operator asked for a change on a build that had already passed.
-    ("qa_passed",    "built",        "forge",    "forward", BOTH),
-
-    # ---- prospect: pitch it ------------------------------------------------
-    ("published",    "drafted",      "scribe",   "forward", frozenset({PROSPECT})),
-
-    ("drafted",      "contacted",    "echo",     "forward", frozenset({PROSPECT})),
-    # A rejected send goes back to the Copy Desk to be rewritten. Taken 18
-    # times, declared none.
-    ("drafted",      "published",    "operator", "reject",  frozenset({PROSPECT})),
-
-    ("contacted",    "replied",      "echo",     "forward", frozenset({PROSPECT})),
-    ("contacted",    "drafted",      "echo",     "bounce",  frozenset({PROSPECT})),
-    ("contacted",    "lost",         "echo",     "reject",  frozenset({PROSPECT})),
-    ("contacted",    "lost",         "system",   "reject",  frozenset({PROSPECT})),
-
-    ("replied",      "qa_failed",    "echo",     "branch",  frozenset({PROSPECT})),
-    ("replied",      "won",          "echo",     "forward", frozenset({PROSPECT})),
-
-    # ---- port: they look at it and say yes ---------------------------------
-    # No email: they are already a customer and asked for this. The operator
-    # shows them the preview however they like and ticks the card.
-    ("published",    "won",          "operator", "forward", frozenset({PORT})),
-    ("published",    "qa_failed",    "operator", "reject",  frozenset({PORT})),
-    ("published",    "lost",         "operator", "reject",  frozenset({PORT})),
+#: The transition table, assembled from every plugin's declared edges. It is
+#: LAW: `advance_lead` refuses anything not on it, and only the operator's
+#: explicit hand-move goes around it.
+#:
+#: (from_stage, to_stage, role, kind_of_edge, which lead kinds it applies to)
+PIPELINE: tuple[tuple[str, str, str, str, frozenset[str]], ...] = tuple(
+    (e.frm, e.to, e.role, e.kind, e.kinds) for e in _plugin.edges()
 )
 
 

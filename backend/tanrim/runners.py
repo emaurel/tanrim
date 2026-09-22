@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
+from . import plugin
 from .agent_helpers import AgentBusy
 from .rooms import stages_for_role
 from .workers import RoomAtCapacity
@@ -45,6 +46,25 @@ def _wrong_stage(role: str, lead: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+async def _by_stage(role: str, world: World, lead: dict[str, Any],
+                    task: dict[str, Any]) -> Any:
+    """Run whichever job this role does at the lead's current stage.
+
+    This used to be an if/elif per role, which meant a plugin adding a stage
+    had to edit a file it does not own — `intake` went into Probe's chain and
+    `surveyed` into Lens's, and the next plugin would have done the same again.
+    The pairing now lives in the plugin that declares the stage, and later
+    plugins override earlier ones for the same (role, stage).
+    """
+    stage = lead.get("stage") or ""
+    fn = plugin.handler_for(role, stage)
+    if fn is None:
+        return {"ok": False,
+                "error": f"no plugin declares what {role} does at '{stage}'. "
+                         f"Installed: {[p.id for p in plugin.load()]}"}
+    return await fn(world, lead["id"], task.get("prompt", ""))
+
+
 async def _run_probe(world: World, task: dict[str, Any]) -> Any:
     """Probe has three jobs, and the lead's stage decides which — never the
     dispatcher. `sourced` = qualify, `qualified` = research the dossier,
@@ -59,18 +79,7 @@ async def _run_probe(world: World, task: dict[str, Any]) -> Any:
     wrong = _wrong_stage("probe", lead)
     if wrong:
         return wrong
-    stage = lead.get("stage")
-    if stage == "intake":
-        # A PORT lead: the client asked for this and their existing site is the
-        # brief. No qualification, no opportunity score, no appraisal — just
-        # read what they have into a dossier.
-        return await probe.run_port_survey(world, lead_id, task.get("prompt", ""))
-    if stage == "qualified":
-        return await probe.run_enrich(world, lead_id, task.get("prompt", ""))
-    if stage == "enriched":
-        # The Ledger: size the business and set the price before anyone builds.
-        return await probe.run_appraise(world, lead_id, task.get("prompt", ""))
-    return await probe.run_probe(world, lead_id, task.get("prompt", ""))
+    return await _by_stage("probe", world, lead, task)
 
 
 async def _run_forge(world: World, task: dict[str, Any]) -> Any:
@@ -98,14 +107,7 @@ async def _run_lens(world: World, task: dict[str, Any]) -> Any:
     lead = state.get_lead(lead_id)
     if lead is None:
         return {"ok": False, "error": f"no such lead: {lead_id}"}
-    stage = lead.get("stage")
-    if stage == "needs_review":
-        return await lens.run_incumbent_review(world, lead_id, task.get("prompt", ""))
-    # `appraised` is where a PROSPECT arrives; `surveyed` is where a PORT does.
-    # Both want the same job — read their pictures — so they share the run.
-    if stage in ("appraised", "surveyed"):
-        return await lens.run_visual_research(world, lead_id, task.get("prompt", ""))
-    return await lens.run_qa(world, lead_id, task.get("prompt", ""))
+    return await _by_stage("lens", world, lead, task)
 
 
 async def _run_scribe(world: World, task: dict[str, Any]) -> Any:

@@ -187,16 +187,40 @@ def _manifest_stamp(directory: Path) -> tuple[tuple[str, int, int], ...]:
     return tuple(out)
 
 
-def load_rooms(directory: Path = ROOMS_DIR) -> list[RoomSpec]:
-    key = str(directory)
-    stamp = _manifest_stamp(directory)
+def room_dirs(directory: Path | None = None) -> list[Path]:
+    """Every directory a manifest may come from, in plugin order.
+
+    An explicit `directory` wins outright — that is the test hook. Otherwise
+    the environment has no rooms of its own and takes them from the installed
+    plugins, so an empty install shows an empty map.
+    """
+    if directory is not None:
+        return [directory]
+    from . import plugin
+
+    dirs = plugin.dirs("rooms")
+    return dirs or ([ROOMS_DIR] if ROOMS_DIR.is_dir() else [])
+
+
+def load_rooms(directory: Path | None = None) -> list[RoomSpec]:
+    dirs = room_dirs(directory)
+    key = "|".join(str(d) for d in dirs)
+    stamp = tuple(x for d in dirs for x in _manifest_stamp(d))
     hit = _ROOMS_CACHE.get(key)
     if hit is not None and hit[0] == stamp:
         return hit[1]
     rooms: list[RoomSpec] = []
-    for path in sorted(directory.glob("*.yaml")):
+    seen: set[str] = set()
+    for path in sorted((q for d in dirs for q in d.glob("*.yaml")),
+                       key=lambda q: q.name):
         data: dict[str, Any] = yaml.safe_load(path.read_text())
         room = RoomSpec.model_validate(data)
+        # A later plugin may replace an earlier one's room by using its id;
+        # two plugins shipping the same room by accident is a collision worth
+        # noticing, so the last one loaded wins and nothing is silently merged.
+        if room.id in seen:
+            rooms = [r for r in rooms if r.id != room.id]
+        seen.add(room.id)
         _layout_workbenches(room)
         rooms.append(room)
     _ROOMS_CACHE[key] = (stamp, rooms)

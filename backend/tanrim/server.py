@@ -1012,6 +1012,25 @@ class GateToggle(BaseModel):
     on: bool
 
 
+@app.get("/plugins")
+async def get_plugins() -> dict[str, Any]:
+    """What is installed, and what each one contributes.
+
+    The environment itself has no rooms, stages or prompts — they all arrive
+    from here, so this is the honest answer to "why does the map look like
+    that".
+    """
+    from . import plugin as plugin_mod
+
+    return {
+        "plugins": plugin_mod.describe(),
+        "stages": list(state.STAGES),
+        "dead_stages": list(state.DEAD_STAGES),
+        "lead_kinds": list(state.LEAD_KINDS),
+        "edges": len(state.PIPELINE),
+    }
+
+
 @app.get("/pipeline")
 async def get_pipeline() -> dict[str, Any]:
     """The stage graph, who works each step, and which steps are gated.

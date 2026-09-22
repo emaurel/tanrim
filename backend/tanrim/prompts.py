@@ -26,7 +26,26 @@ class MissingPrompt(RuntimeError):
     """A prompt file the code needs is not on disk."""
 
 
+def prompt_dirs() -> list[Path]:
+    """Every tree a prompt may live in, most specific first.
+
+    A plugin ships its own prompts and they are searched before the
+    environment's, so an extension can override a prompt belonging to the
+    plugin it extends without editing a file it does not own.
+    """
+    from . import plugin
+
+    dirs = list(reversed(plugin.dirs("prompts")))
+    if PROMPTS_DIR.is_dir() and PROMPTS_DIR not in dirs:
+        dirs.append(PROMPTS_DIR)
+    return dirs
+
+
 def path_for(module: str, name: str) -> Path:
+    for base in prompt_dirs():
+        candidate = base / module / f"{name}.md"
+        if candidate.is_file():
+            return candidate
     return PROMPTS_DIR / module / f"{name}.md"
 
 
