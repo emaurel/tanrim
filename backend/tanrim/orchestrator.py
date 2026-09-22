@@ -310,7 +310,7 @@ class Orchestrator:
             # the step rather than to one arrow. Courier and Echo are gated in
             # code and raise their own richer cards, so they are not doubled up.
             if (state.step_is_gated(stage)
-                    and stage not in state.PERMANENT_GATES):
+                    and stage not in state.permanent_gates()):
                 state.add_user_approval(
                     kind="stage_gate",
                     room_id=rooms_mod.room_for_role(role) or "throne",

@@ -226,9 +226,19 @@ def _resolve_lazy(fn) -> None:
             f"{closure['module']}.{closure['function']} does not exist"
         return
 
-    # Shape 3: a hand-written adapter. It must still reach its agents through
-    # module-level resolvers, or nothing can check it without running it.
     mod = importlib.import_module(fn.__module__)
+
+    # Shape 3: a direct reference — the function IS the thing, defined in its
+    # own module under its own name. Nothing is deferred, so there is nothing
+    # that can fail later. The veto is deliberately one of these: it runs
+    # inside a write and must not import anything the first time a record
+    # moves.
+    if getattr(mod, fn.__name__, None) is fn:
+        return
+
+    # Shape 4: a hand-written adapter in a manifest. It must still reach its
+    # agents through module-level resolvers, or nothing can check it without
+    # running it.
     found = [v for v in vars(mod).values()
              if callable(v) and getattr(v, "__name__", "").startswith("resolve_")]
     assert found, (

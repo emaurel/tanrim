@@ -41,6 +41,7 @@ so a plugin hands over real objects and real functions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import inspect
 from typing import Any, Callable, Iterable
 
 from .contract import (
@@ -335,6 +336,14 @@ class Environment:
                         f"workbench in room {agent.room!r} declares that "
                         f"stage — every dispatch would be refused. Benches "
                         f"there: {sorted(benched) or 'none'}")
+        for name in VETO_HOOKS:
+            for fn in self._hooks.get(name, ()):
+                if inspect.iscoroutinefunction(fn):
+                    problems.append(
+                        f"the veto hook {name!r} is registered with an async "
+                        f"function ({getattr(fn, '__name__', fn)!r}). A veto "
+                        f"is consulted inside a synchronous write and cannot "
+                        f"be awaited — it should read the record, not do I/O.")
         for room_id in self._room_handlers:
             if room_id not in self._rooms:
                 problems.append(
@@ -370,6 +379,17 @@ class Environment:
             return [s for s in self._stage_order if not self._stages[s].terminal]
         pipe = self._pipelines.get(kind)
         return [s.id for s in (pipe.stages if pipe else ()) if not s.terminal]
+
+    def releasing_stages(self) -> list[str]:
+        """Stages at which a worker hired for a record can go.
+
+        Declared per stage by the plugin. The worker pool held this as
+        `DONE_STAGES = {"disqualified", "contacted", "replied", "won",
+        "lost"}` — five of one plugin's stage names, in the core, with no way
+        for a second plugin to add its own.
+        """
+        return [s.id for s in self._stages.values()
+                if s.terminal or s.releases_worker]
 
     def terminal_stages(self) -> list[str]:
         return [s for s in self._stage_order if self._stages[s].terminal]
@@ -524,24 +544,26 @@ class Environment:
         if errors:
             raise ExceptionGroup(f"hook {name!r} failed", errors)  # noqa: F821
 
-    async def veto(self, name: str, *args: Any, **kw: Any) -> str | None:
+    def veto(self, name: str, *args: Any, **kw: Any) -> str | None:
         """Consult every veto listener; the first refusal wins.
 
         This is where domain law that a generic write cannot hold belongs —
-        "do not rebuild underneath a business that is holding our email" is a
-        rule about businesses and email, and `advance` knows about neither.
+        "do not rebuild underneath a business that is holding our email and
+        has not replied" is a rule about businesses and email, and `advance`
+        knows about neither.
 
-        A coroutine. The first version was sync, so a plugin supplying an
-        `async def` veto — the natural thing to write, and what any veto
-        needing a lookup must be — returned a coroutine object, which is
-        truthy, and EVERY move was refused with `<coroutine object ...>` as
-        the stated reason. A hook that fails closed on the whole machine is
-        not a hook worth having, so both forms are awaited properly here.
+        SYNCHRONOUS, and `_validate` refuses an `async def` listener at boot.
+        A veto runs inside a durable write that is itself synchronous, so
+        there is nowhere to await one; and a guard on a write should be
+        reading fields off the record, not making a network call. The first
+        version simply called the listener and took what came back, so an
+        `async def` returned a coroutine — which is truthy — and EVERY move
+        in the machine was refused with `<coroutine object ...>` as the
+        reason shown to the operator. Refusing it at boot says so once,
+        loudly, instead.
         """
         for fn in self.listeners(name):
             refusal = fn(*args, **kw)
-            if hasattr(refusal, "__await__"):
-                refusal = await refusal
             if refusal:
                 return str(refusal)
         return None

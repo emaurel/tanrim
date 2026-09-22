@@ -329,49 +329,35 @@ def test_one_failing_listener_does_not_stop_the_others():
     assert heard == ["b"], "the second plugin's listener must still have run"
 
 
-@pytest.mark.asyncio
-async def test_a_veto_hook_refuses_and_the_first_refusal_wins():
+def test_a_veto_hook_refuses_and_the_first_refusal_wins():
     class A(Base):
         def hooks(self):
             return {"before_stage_change":
                     lambda rec, frm, to: "they are holding our email" if to == "doing" else None}
 
     env = Environment.boot([A()])
-    assert await env.veto("before_stage_change", {}, "new", "doing") == "they are holding our email"
-    assert await env.veto("before_stage_change", {}, "new", "done") is None
+    assert env.veto("before_stage_change", {}, "new", "doing") == "they are holding our email"
+    assert env.veto("before_stage_change", {}, "new", "done") is None
 
 
-@pytest.mark.asyncio
-async def test_an_async_veto_listener_is_awaited_not_taken_as_a_refusal():
+def test_an_async_veto_listener_is_refused_at_boot():
     """The failure this exists for: a coroutine is truthy.
 
-    A veto that has to look anything up must be `async def`, and a sync
-    `veto()` took the returned coroutine as a refusal — so a plugin objecting
-    to NOTHING refused every move in the machine, with
-    `<coroutine object ...>` as the reason shown to the operator.
+    A sync `veto()` took the coroutine an `async def` listener returns as a
+    refusal, so a plugin objecting to NOTHING refused every move in the
+    machine, with `<coroutine object ...>` as the reason shown to the
+    operator. A veto is consulted inside a synchronous durable write, so it
+    cannot be awaited there — the answer is to say so at boot, once, rather
+    than to make every write async.
     """
-    seen = []
-
     class A(Base):
         def hooks(self):
             async def objects_to_nothing(rec, frm, to):
-                seen.append(to)
                 return None
             return {"before_stage_change": objects_to_nothing}
 
-    env = Environment.boot([A()])
-    assert await env.veto("before_stage_change", {}, "new", "doing") is None
-    assert seen == ["doing"], "the listener was never actually run"
-
-    class B(Base):
-        def hooks(self):
-            async def refuses(rec, frm, to):
-                return "not while they are reading it"
-            return {"before_stage_change": refuses}
-
-    env = Environment.boot([B()])
-    assert await env.veto("before_stage_change", {}, "new", "doing") == \
-        "not while they are reading it"
+    with pytest.raises(EnvironmentError, match="cannot be awaited"):
+        Environment.boot([A()])
 
 
 def test_a_supplier_hook_takes_the_last_plugin():

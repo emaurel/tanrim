@@ -73,6 +73,15 @@ class Stage:
     #: not, and refusing an agent the ability to give up is how work gets stuck
     #: rather than closed.
     terminal: bool = False
+    #: Nothing will be dispatched here on the pipeline's own clock — the next
+    #: move comes from outside, or never comes. A worker hired for this record
+    #: can be retired.
+    #:
+    #: Distinct from `terminal`, and both are needed: `contacted` is not an
+    #: ending (they may still reply) but nothing here will move it, while
+    #: `qa_failed` is neither — a rebuild is dispatched from it immediately.
+    #: Terminal stages release their worker without having to say so.
+    releases_worker: bool = False
 
 
 @dataclass(frozen=True)

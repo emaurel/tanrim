@@ -261,3 +261,63 @@ def test_a_permanent_refusal_is_not_dispatched_again(real_env):
 
     asyncio.run(go(refuse_temporarily()))
     assert key not in orch._dispatched, "a busy room must be retried"
+
+
+# ---------------------------------------------------------------------------
+# Domain law that used to be hardcoded in the core
+# ---------------------------------------------------------------------------
+
+def test_a_business_holding_our_email_is_not_rebuilt_underneath(real_env):
+    """The contract's only veto hook, which nothing had ever consulted.
+
+    `state.advance_lead` carried the rule as a hardcoded list of eleven of
+    this plugin's stage names. The environment asks the plugin now.
+    """
+    import time
+
+    now = time.time()
+    emailed = {"id": "x", "name": "Chez Test", "stage": "contacted",
+               "sent_log": [{"ts": now - 3600, "to": "owner@example.com"}]}
+
+    def veto(record, to):
+        return real_env.veto("before_stage_change", record, record["stage"], to)
+
+    assert veto(emailed, "qa_failed"), "a silent business was rebuilt underneath"
+    # Once they answer, everything reopens — that is what a revision IS.
+    assert veto({**emailed, "replies": [{"ts": now - 60}]}, "qa_failed") is None
+    # A permanent bounce means nobody is holding anything; the bounce handler
+    # needs exactly this move and the guard used to decline it silently.
+    assert veto({**emailed,
+                 "bounces": [{"ts": now - 30, "permanent": True}]},
+                "drafted") is None
+    # Never emailed, and moves that are not rework, are none of its business.
+    assert veto({"id": "y", "stage": "built"}, "qa_failed") is None
+    assert veto(emailed, "won") is None
+
+
+def test_the_permanent_gates_come_from_the_plugin(real_env):
+    """`state.PERMANENT_GATES` hardcoded the same two stages with the same
+    prose as `web_agency.STEP_GATES` — two copies of one policy."""
+    from tanrim import state
+
+    gates = state.permanent_gates()
+    assert set(gates) == {"qa_passed", "drafted"}
+    assert all(v for v in gates.values()), "a permanent gate with no reason"
+    assert state.step_is_gated("qa_passed") and state.step_is_gated("drafted")
+
+
+def test_worker_release_is_declared_not_hardcoded(real_env):
+    """`workers.DONE_STAGES` was five of one plugin's stage names in the core."""
+    from tanrim import workers
+
+    assert workers.done_stages() == {
+        "disqualified", "contacted", "replied", "won", "lost"}
+
+
+def test_an_ending_of_one_pipeline_is_not_an_ending_of_another(real_env):
+    from tanrim import state
+
+    assert "lost" in state.always_reachable("prospect")
+    assert "lost" in state.always_reachable("port")
+    assert "qa_failed" not in state.always_reachable("prospect"), \
+        "a rework stage is not an ending"

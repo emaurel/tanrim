@@ -483,18 +483,23 @@ async def set_lead_stage(lead_id: str, body: dict[str, Any]):
     # A business that is holding our email, and has not replied, should not be
     # quietly rebuilt underneath. Still possible — but deliberately, not by a
     # stray click, and the answer says exactly what it would mean.
-    if stage in state.REWORK_STAGES and state.awaiting_their_answer(lead):
-        if not body.get("force"):
-            sent = (lead.get("sent_log") or [{}])[-1]
-            when = time.strftime("%d/%m %H:%M", time.localtime(sent.get("ts", 0)))
-            raise HTTPException(409, (
-                f"{lead.get('name')} was emailed on {when} at {sent.get('to')} "
-                "and has not replied. Moving it back to "
-                f"'{stage}' would redo the work behind a page they are looking "
-                "at right now, and the price and link in their inbox would stop "
-                "matching. If they have answered, record the reply instead — "
-                "that reopens everything properly. To do it anyway, resend with "
-                "force: true."))
+    #
+    # Asked of the plugins rather than tested here: the rule and the stage
+    # names it turns on belong to whoever declared those stages. This is the
+    # operator's own hand-move, so the veto ADVISES — it is what the 409
+    # explains, and `force: true` is what goes past it.
+    refusal = environment.current().veto("before_stage_change", lead,
+                                         lead.get("stage") or "", stage)
+    if refusal and not body.get("force"):
+        sent = (lead.get("sent_log") or [{}])[-1]
+        when = time.strftime("%d/%m %H:%M", time.localtime(sent.get("ts", 0)))
+        raise HTTPException(409, (
+            f"{lead.get('name')}: {refusal}. It was emailed on {when} at "
+            f"{sent.get('to')}. Moving it to '{stage}' would redo the work "
+            "behind a page they are looking at right now, and the price and "
+            "link in their inbox would stop matching. If they have answered, "
+            "record the reply instead — that reopens everything properly. To "
+            "do it anyway, resend with force: true."))
 
     # Record the decision BEFORE stopping anything, so a run that finishes in
     # the same instant is still recognised as overtaken and its write refused.
@@ -1049,6 +1054,7 @@ async def get_pipeline() -> dict[str, Any]:
     uses is what names the room here.
     """
     gates = state.stage_gates()
+    _permanent = state.permanent_gates()
     counts = state.lead_counts_by_stage()
     steps = []
     for step in state.pipeline_steps():
@@ -1064,8 +1070,8 @@ async def get_pipeline() -> dict[str, Any]:
             "room_name": getattr(room, "name", room_id),
             "outcomes": step["outcomes"],
             "gated": stage in gates,
-            "permanent": stage in state.PERMANENT_GATES,
-            "permanent_reason": state.PERMANENT_GATES.get(stage),
+            "permanent": stage in _permanent,
+            "permanent_reason": _permanent.get(stage),
             "waiting": counts.get(stage, 0),
         })
     return {
@@ -1079,10 +1085,10 @@ async def get_pipeline() -> dict[str, Any]:
 
 @app.post("/pipeline/gate")
 async def set_pipeline_gate(body: GateToggle) -> dict[str, Any]:
-    if body.stage in state.PERMANENT_GATES:
+    if body.stage in state.permanent_gates():
         raise HTTPException(
             400, f"'{body.stage}' is always gated: "
-                 f"{state.PERMANENT_GATES[body.stage]}")
+                 f"{state.permanent_gates()[body.stage]}")
     try:
         gates = state.set_stage_gate(body.stage, body.on)
     except ValueError as e:

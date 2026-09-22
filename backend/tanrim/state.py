@@ -575,45 +575,6 @@ def superseded(lead_id: str) -> bool:
     moved = _OPERATOR_MOVES.get(lead_id)
     return bool(moved and moved > float(ctx.get("started_ts") or 0))
 
-# Stages that cause work to be redone. Moving a lead back into one of these
-# after we have emailed the business means rebuilding, re-researching or
-# re-drafting for someone who is currently holding our pitch.
-REWORK_STAGES = frozenset({
-    "sourced", "needs_review", "qualified", "enriched", "appraised",
-    "visualised", "built", "qa_passed", "published", "drafted", "qa_failed",
-})
-
-
-def awaiting_their_answer(lead: dict[str, Any]) -> bool:
-    """We have emailed them and they have not said anything since.
-
-    The line that matters. Before the send, a lead is ours to work on freely;
-    after it, the business is holding a specific page at a specific price, and
-    quietly rebuilding underneath them is how the link in their inbox stops
-    matching what we described. Once they reply, everything reopens — that is
-    what a revision IS.
-    """
-    sent_log = lead.get("sent_log") or []
-    if not sent_log:
-        return False
-    last_sent = max(float(r.get("ts") or 0) for r in sent_log)
-
-    # A permanent bounce AFTER the last send means nobody is holding anything:
-    # the message reached no inbox. Treating it as "awaiting their answer"
-    # refused the very move the bounce handler needs to make — En Tête à Tête's
-    # address did not exist, the bounce was detected and a card was raised, and
-    # the lead then stayed at `contacted` with the dead address still on it,
-    # because this guard silently declined to return it to `drafted`.
-    for b in (lead.get("bounces") or []):
-        if b.get("permanent") and float(b.get("ts") or 0) >= last_sent:
-            return False
-
-    replies = lead.get("replies") or []
-    last_reply = max((float(r.get("ts") or 0) for r in replies), default=0.0)
-    revision = lead.get("revision") or {}
-    asked = max(last_reply, float(revision.get("ts") or 0))
-    return asked <= last_sent
-
 
 def add_lead(
     name: str,
@@ -720,7 +681,7 @@ def advance_lead(
     _kind = lead_kind(_current)
     _off_table = bool(
         _current and _from != stage
-        and stage not in ALWAYS_REACHABLE
+        and stage not in always_reachable(_kind)
         and not edge_allowed(_from, stage, _kind))
     if _off_table and not by_hand:
         log_event(
@@ -734,19 +695,23 @@ def advance_lead(
                      "lead_kind": _kind, "agent": agent},
         )
         return None
-    if (stage in REWORK_STAGES and awaiting_their_answer(_current)
-            and not fields.pop("force_rework", False)):
-        # They have our email and have not answered. Redoing the work now
-        # changes what they are looking at, and — twice in one evening — it
-        # was a test that did it, on a business that had really been emailed.
-        sent_to = (_current.get("sent_log") or [{}])[-1].get("to")
-        log_event(
-            "run_end", from_=agent or "?", to="operator",
-            summary=f"refused to move {_current.get('name')} back to '{stage}': "
-                    f"it was emailed to {sent_to} and they have not replied",
-            outcome="refused", details={"lead_id": lead_id, "stage": stage},
-        )
-        return None
+    # Domain law a generic write cannot hold. "Do not redo the work
+    # underneath a business that is holding our email and has not replied" is
+    # a rule about businesses and email, and this function knows about
+    # neither — it used to carry a hardcoded list of one plugin's stage names
+    # to enforce it. The plugin that owns those stages owns the rule.
+    forced = bool(fields.pop("force_rework", False))
+    if not forced and not by_hand:
+        refusal = _veto(_current, _from, stage)
+        if refusal:
+            log_event(
+                "run_end", from_=agent or "?", to="operator",
+                summary=f"refused to move {_current.get('name')} to "
+                        f"'{stage}': {refusal}"[:240],
+                outcome="refused",
+                details={"lead_id": lead_id, "stage": stage, "why": refusal},
+            )
+            return None
 
     if agent != "operator" and superseded(lead_id):
         # The operator moved this lead while this run was working. Their
@@ -1127,6 +1092,18 @@ def reload_machine() -> None:
     _machine()
 
 
+def _veto(record: dict[str, Any], frm: str, to: str) -> str | None:
+    """Ask the installed plugins whether this legal move is allowed anyway.
+
+    Silent when nothing is booted: a store with no plugins has no domain law.
+    """
+    from . import environment
+
+    if not environment.booted():
+        return None
+    return environment.current().veto("before_stage_change", record, frm, to)
+
+
 def lead_kind(lead: dict[str, Any] | None) -> str:
     """Which pipeline a lead runs on. Absent means the original one."""
     m = _machine()
@@ -1153,7 +1130,28 @@ def edge_allowed(from_stage: str, to_stage: str, kind: str = "") -> bool:
 #: concluded the lead is dead. Enumerating 13 x 3 edges would say nothing the
 #: stage names do not, and refusing an agent the ability to give up is how a
 #: lead gets stuck rather than closed.
-ALWAYS_REACHABLE = frozenset({"disqualified", "lost"})
+def always_reachable(kind: str | None = None) -> frozenset[str]:
+    """Endings a record may be moved to from anywhere.
+
+    A pipeline's OWN terminal stages, asked of the environment rather than the
+    two names this module used to hold — which were one plugin's, and meant a
+    second plugin's ending was either unreachable or, worse, reachable from
+    every other pipeline.
+
+    Enumerating 15x2 edges would say nothing the stage names do not, and
+    refusing an agent the ability to give up is how a lead gets stuck rather
+    than closed.
+    """
+    from . import environment
+
+    if kind is not None and environment.booted():
+        env = environment.current()
+        pipe = env._pipelines.get(kind)
+        if pipe is not None:
+            return frozenset(st.id for st in pipe.stages if st.terminal)
+    # Every terminal stage there is. Also the answer when nothing is booted,
+    # so the pre-contract path keeps working.
+    return frozenset(_machine()["DEAD_STAGES"])
 
 
 def roles_for(stage: str, kind: str = "") -> set[str]:
@@ -1206,11 +1204,28 @@ def pipeline_steps(only_kind: str | None = None) -> list[dict[str, Any]]:
 
 # Always gated, whatever the settings say. Listed so the UI can show them as
 # fixed rather than pretending they are choices.
-PERMANENT_GATES = {
-    "qa_passed": "publishing a preview puts a page about a real business on a "
-                 "public URL",
-    "drafted": "sending reaches a stranger's inbox and cannot be taken back",
-}
+def permanent_gates(kind: str | None = None) -> dict[str, str]:
+    """Steps that are always gated, whatever the settings say.
+
+    Declared by the plugin as `StepGate(permanent=True, reason=...)` and read
+    here. This module held the same two stages with the same prose, which was
+    a second copy of one plugin's policy — guaranteed to drift the moment
+    either was edited.
+    """
+    from . import environment
+
+    if not environment.booted():
+        return {}
+    env = environment.current()
+    kinds = [kind] if kind else env.kinds()
+    out: dict[str, str] = {}
+    for sg in env.step_gates():
+        if not sg.permanent:
+            continue
+        if sg.kinds and not any(k in sg.kinds for k in kinds):
+            continue
+        out.setdefault(sg.stage, sg.reason)
+    return out
 
 
 def stage_gates() -> dict[str, bool]:
@@ -1234,7 +1249,7 @@ def set_stage_gate(stage: str, on: bool) -> dict[str, bool]:
 
 def step_is_gated(stage: str) -> bool:
     """Should the pipeline ask before running the room that works `stage`?"""
-    return stage in PERMANENT_GATES or bool(stage_gates().get(stage))
+    return stage in permanent_gates() or bool(stage_gates().get(stage))
 
 
 # ---------------------------------------------------------------------------

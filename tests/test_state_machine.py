@@ -86,9 +86,11 @@ def test_lead_kind_defaults_to_the_first_declared(machine):
 
 def test_terminal_states_are_reachable_from_anywhere(machine):
     """Refusing an agent the ability to give up is how work gets stuck."""
-    assert "dropped" in state.ALWAYS_REACHABLE or True
-    # ALWAYS_REACHABLE is by name, and the guard in advance_lead uses it
-    assert state.ALWAYS_REACHABLE == frozenset({"disqualified", "lost"})
+    # The endings a record can always be moved to are the PIPELINE'S OWN
+    # terminal stages, not two names this module used to hold. Those were one
+    # plugin's, so a second plugin's ending was either unreachable or
+    # reachable from every other pipeline.
+    assert state.always_reachable() == frozenset(state.DEAD_STAGES)
 
 
 def test_an_empty_environment_has_no_machine_at_all(plugin_env):

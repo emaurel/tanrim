@@ -35,8 +35,19 @@ def is_singleton(role: str) -> bool:
 
     return environment.booted() and environment.current().is_singleton(role)
 
-# Stages at which a lead's journey is over, so any worker hired for it can go.
-DONE_STAGES = {"disqualified", "contacted", "replied", "won", "lost"}
+def done_stages() -> set[str]:
+    """Stages at which a record's journey through the rooms is over.
+
+    Declared by the plugin, on the stage. This was a hardcoded set of one
+    plugin's five stage names — the twin of `SINGLETON_ROLES`, and wrong for
+    the same reason: a second plugin had no way to say which of ITS stages
+    release a worker.
+    """
+    from . import environment
+
+    if not environment.booted():
+        return set()
+    return set(environment.current().releasing_stages())
 
 
 class RoomAtCapacity(RuntimeError):
@@ -129,7 +140,7 @@ async def sweep(world: "World") -> list[str]:
                 removed.append(agent.id)
             continue
         lead = state.get_lead(lead_id)
-        if lead is None or lead.get("stage") in DONE_STAGES:
+        if lead is None or lead.get("stage") in done_stages():
             if await world.despawn_worker(agent.id):
                 removed.append(agent.id)
     return removed
