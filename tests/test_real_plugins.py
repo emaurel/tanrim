@@ -163,3 +163,48 @@ def test_no_agent_transition_in_the_real_history_is_newly_refused(real_plugins):
                 continue
             refused.add((frm, to, who))
     assert refused <= grandfathered, f"newly outlawed live paths: {refused - grandfathered}"
+
+
+def test_every_declared_hook_actually_resolves(real_plugins):
+    """A hook naming a function that does not exist fails at the worst moment.
+
+    `subtask_review` pointed at `lens:review_for`, which was invented — it
+    resolved only when a specialist asked for a review, deep inside a build.
+    """
+    broken = {}
+    for p in plugin.load():
+        for name, dotted in p.hooks.items():
+            try:
+                plugin.resolve(dotted)
+            except Exception as exc:          # noqa: BLE001
+                broken[f"{p.id}:{name}"] = f"{type(exc).__name__}: {exc}"
+    assert not broken, broken
+
+
+def test_every_declared_role_actually_resolves(real_plugins):
+    broken = {}
+    for role, dotted in ((r, d) for p in plugin.load() for r, d in p.runners.items()):
+        try:
+            plugin.resolve(dotted)
+        except Exception as exc:              # noqa: BLE001
+            broken[role] = f"{type(exc).__name__}: {exc}"
+    assert not broken, broken
+
+
+def test_the_core_does_not_import_the_domain(real_plugins):
+    """The point of the whole exercise, as an assertion.
+
+    `tanrim/` may not import an agent, a plugin module, or anything under
+    `tanrim_plugins`. The one exemption is `plugin.py` itself, which owns the
+    package name.
+    """
+    import re
+    offenders = []
+    for path in Path("backend/tanrim").rglob("*.py"):
+        if path.name == "plugin.py":
+            continue
+        body = path.read_text()
+        for m in re.finditer(r"^\s*from (tanrim_plugins[\w.]*|\.agents[\w.]*) import",
+                             body, re.M):
+            offenders.append(f"{path.name}: {m.group(0).strip()}")
+    assert not offenders, offenders

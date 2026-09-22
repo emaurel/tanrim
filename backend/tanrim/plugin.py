@@ -118,6 +118,25 @@ class Plugin:
     #: (role, stage) -> "module:function". Resolved lazily, see the module docstring.
     handlers: dict[tuple[str, str], str] = field(default_factory=dict)
 
+    #: role -> "module:function", the coroutine that runs a whole role. Where
+    #: `handlers` answers "what does this role do at THIS stage", this answers
+    #: "who is this role at all" — the two are separate because most roles do
+    #: one job and should not have to enumerate their stages to say so.
+    runners: dict[str, str] = field(default_factory=dict)
+
+    #: room id -> "module:Class", a `handlers.RoomHandler` subclass. The base
+    #: classes are machinery; which room gets which is domain.
+    room_handlers: dict[str, str] = field(default_factory=dict)
+
+    #: Named extension points the core calls when something happens. The core
+    #: knows the NAME and the signature; the plugin supplies the behaviour:
+    #:
+    #:   inbound_mail   (world, lead_id)          a reply arrived
+    #:   inbound_bounce (world, lead_id, addr, permanent, detail)
+    #:   agent_report   (world, event)            an agent reported
+    #:   subtask_review (world, ...)              who reviews a specialist's work
+    hooks: dict[str, str] = field(default_factory=dict)
+
     #: Every prompt this plugin needs, as "module/NAME". Declared rather than
     #: discovered, because `prompts/` is gitignored — the text is the private
     #: part — so on a fresh checkout there is nothing on disk to enumerate.
@@ -355,6 +374,49 @@ def resolve(dotted: str) -> Callable[..., Any]:
         raise PluginError(f"{mod_name} has no attribute {fn_name!r}")
     _resolved[dotted] = fn
     return fn
+
+
+def runner_for(role: str) -> Callable[..., Any] | None:
+    """The coroutine that runs a whole role. Later plugins override."""
+    dotted = None
+    for p in load():
+        dotted = p.runners.get(role, dotted)
+    return resolve(dotted) if dotted else None
+
+
+def all_runners() -> dict[str, Callable[..., Any]]:
+    """Every role any plugin declares, resolved."""
+    names: dict[str, str] = {}
+    for p in load():
+        names.update(p.runners)
+    return {role: resolve(path) for role, path in names.items()}
+
+
+def room_handler_for(room_id: str) -> Any | None:
+    dotted = None
+    for p in load():
+        dotted = p.room_handlers.get(room_id, dotted)
+    return resolve(dotted) if dotted else None
+
+
+def all_room_handlers() -> dict[str, Any]:
+    names: dict[str, str] = {}
+    for p in load():
+        names.update(p.room_handlers)
+    return {room: resolve(path) for room, path in names.items()}
+
+
+def hook(name: str) -> Callable[..., Any] | None:
+    """A named extension point, or None when nothing supplies it.
+
+    Returning None rather than raising: a core that calls a hook no plugin
+    implements should do nothing, not crash. An environment with no mail
+    plugin simply has no mail behaviour.
+    """
+    dotted = None
+    for p in load():
+        dotted = p.hooks.get(name, dotted)
+    return resolve(dotted) if dotted else None
 
 
 def handler_for(role: str, stage: str) -> Callable[..., Any] | None:

@@ -35,7 +35,26 @@ from pathlib import Path
 from typing import Any
 
 from . import prompts as _prompts
-from . import state
+from . import plugin, state
+
+
+def _reviewer():
+    """The module that supplies reviews, or None when nothing does."""
+    fn = plugin.hook("subtask_review")
+    if fn is None:
+        return None
+    import importlib
+    return importlib.import_module(fn.__module__)
+
+
+#: When no plugin supplies a reviewer. A specialist can still be reviewed;
+#: it just runs on the default rather than on whatever the domain prefers.
+DEFAULT_REVIEW_MODEL = "claude-sonnet-4-6"
+
+
+def reviewer_model() -> str:
+    """The model a review runs on, from the module that supplies reviews."""
+    return getattr(_reviewer(), "MODEL", DEFAULT_REVIEW_MODEL)
 from .agent_helpers import RunResult, run_agent
 
 _P = _prompts.loader("delegation")
@@ -234,7 +253,6 @@ async def run_review(
     requested_by: str,
 ) -> dict[str, Any]:
     """Have another room's agent judge an artifact, and return their verdict."""
-    from .agents import lens as lens_mod
 
     room_by_role = {
         "lens": "gallery", "forge": "factory", "probe": "assay",
@@ -263,7 +281,7 @@ async def run_review(
         world,
         role=reviewer_role,
         room_id=room_id,
-        model=lens_mod.MODEL,
+        model=reviewer_model(),
         prompt=prompt,
         summary=f"review for {requested_by}: {question[:80]}",
         say=f"reviewing for {requested_by[:14]}…",

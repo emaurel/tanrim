@@ -15,10 +15,21 @@ from . import plugin
 from .agent_helpers import AgentBusy
 from .rooms import stages_for_role
 from .workers import RoomAtCapacity
-from .agents import courier, echo, forge, lens, nova, porter, probe, scribe
 from .world import World
 
 Runner = Callable[[World, dict[str, Any]], Awaitable[Any]]
+
+
+def _role(role: str, fn_name: str):
+    """One of a role's entry points, from whichever plugin supplies the role.
+
+    The runners used to import every agent module. That is the core importing
+    the domain, and it is the last of it: a role is now a dotted path a plugin
+    declares, resolved when it is actually called.
+    """
+    runner = plugin.runner_for(role)
+    module = __import__(runner.__module__, fromlist=[fn_name])
+    return getattr(module, fn_name)
 
 
 def _needs_lead(name: str) -> dict[str, Any]:
@@ -93,7 +104,7 @@ async def _run_forge(world: World, task: dict[str, Any]) -> Any:
     wrong = _wrong_stage("forge", lead)
     if wrong:
         return wrong
-    return await forge.run_build(world, lead_id, task.get("prompt", ""))
+    return await _role("forge", "run_build")(world, lead_id, task.get("prompt", ""))
 
 
 async def _run_lens(world: World, task: dict[str, Any]) -> Any:
@@ -122,8 +133,8 @@ async def _run_scribe(world: World, task: dict[str, Any]) -> Any:
     if wrong:
         return wrong
     if task.get("mode") == "copy":
-        return await scribe.run_copy(world, lead_id, task.get("prompt", ""))
-    return await scribe.run_outreach(world, lead_id, task.get("prompt", ""))
+        return await _role("scribe", "run_copy")(world, lead_id, task.get("prompt", ""))
+    return await _role("scribe", "run_outreach")(world, lead_id, task.get("prompt", ""))
 
 
 async def _run_courier(world: World, task: dict[str, Any]) -> Any:
@@ -138,7 +149,7 @@ async def _run_courier(world: World, task: dict[str, Any]) -> Any:
     if wrong:
         return wrong
     # Courier never publishes on an agent's say-so — it raises the gate.
-    return await courier.request_publish(world, lead_id)
+    return await _role("courier", "request_publish")(world, lead_id)
 
 
 async def _run_echo(world: World, task: dict[str, Any]) -> Any:
@@ -166,7 +177,7 @@ async def _run_echo(world: World, task: dict[str, Any]) -> Any:
         return {"ok": True, "skipped": f"nothing to send at '{stage}' — "
                                        "the Inbox waits on the mailbox poll"}
     # Echo raises the send gate, the operator passes it.
-    return await echo.request_send(world, lead_id)
+    return await _role("echo", "request_send")(world, lead_id)
 
 
 async def _run_porter(world: World, task: dict[str, Any]) -> Any:
@@ -187,11 +198,11 @@ async def _run_porter(world: World, task: dict[str, Any]) -> Any:
     wrong = _wrong_stage("porter", lead)
     if wrong:
         return wrong
-    return await porter.request_account(world, lead_id)
+    return await _role("porter", "request_account")(world, lead_id)
 
 
 async def _run_nova(world: World, task: dict[str, Any]) -> Any:
-    return await nova.run_scout(world, task["prompt"])
+    return await _role("nova", "run_scout")(world, task["prompt"])
 
 
 def _skip_if_busy(name: str, runner: Runner) -> Runner:
@@ -274,16 +285,47 @@ def _crashed(name: str, task: dict[str, Any], exc: Exception) -> dict[str, Any]:
     return {"ok": False, "error": detail, "crashed": True}
 
 
-AGENT_RUNNERS: dict[str, Runner] = {
-    name: _skip_if_busy(name, runner)
-    for name, runner in {
-        "nova":    _run_nova,
+def _build() -> dict[str, "Runner"]:
+    """Every role any plugin declares, wrapped in the busy/crash guards."""
+    local = {
         "probe":   _run_probe,
-        "forge":   _run_forge,
         "lens":    _run_lens,
         "scribe":  _run_scribe,
         "courier": _run_courier,
         "echo":    _run_echo,
+        "forge":   _run_forge,
+        "nova":    _run_nova,
         "porter":  _run_porter,
-    }.items()
-}
+    }
+    return {
+        role: _skip_if_busy(role, local.get(role, _generic(role)))
+        for role in plugin.all_runners()
+    }
+
+
+def _generic(role: str) -> Runner:
+    """A role with no special dispatch: hand it the task and let it run."""
+    async def wrapped(world: World, task: dict[str, Any]) -> Any:
+        fn = plugin.runner_for(role)
+        if fn is None:
+            return {"ok": False, "error": f"no plugin supplies role {role!r}"}
+        return await fn(world, task)
+    return wrapped
+
+
+#: Built on first access, not at import, so importing this module imports no
+#: agent. PEP 562 module `__getattr__` keeps `runners.AGENT_RUNNERS` working
+#: for every existing caller while making it lazy.
+_CACHE: dict[str, "Runner"] = {}
+
+
+def agent_runners() -> dict[str, "Runner"]:
+    if not _CACHE:
+        _CACHE.update(_build())
+    return _CACHE
+
+
+def __getattr__(name: str):
+    if name == "AGENT_RUNNERS":
+        return agent_runners()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

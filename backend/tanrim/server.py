@@ -27,11 +27,6 @@ from . import rooms as rooms_mod
 from . import runners
 from . import state
 from . import usage as usage_mod
-from .agents import courier as courier_mod
-from .agents import echo as echo_mod
-from .agents import porter as porter_mod
-from .agents import forge as forge_mod
-from .agents import probe as probe_mod
 from .config import SITES_DIR
 from .handlers import build_handlers
 from .orchestrator import Orchestrator
@@ -440,7 +435,7 @@ async def report_bounce(lead_id: str, body: dict[str, Any] | None = None):
     address = str(body.get("address") or lead.get("email") or "").strip()
     if not address:
         raise HTTPException(400, "no address to record as bounced")
-    return await echo_mod.record_bounce(
+    return await _role("echo", "record_bounce")(
         world, lead_id, address,
         permanent=bool(body.get("permanent", True)),
         detail=str(body.get("detail") or "reported by the operator"))
@@ -1166,6 +1161,26 @@ async def health_domain_pricing(domain: str = "example-test-name.fr"):
             "GET /order/cart/* and POST /order/cart/*, then set "
             "OVH_APPLICATION_KEY, OVH_APPLICATION_SECRET and OVH_CONSUMER_KEY."),
     }
+
+
+def _role(role: str, fn_name: str):
+    """A role's entry point, from the plugin that supplies it.
+
+    The last of the core importing the domain. `server.py` called five agent
+    modules directly; it now knows only role names, and which plugin answers
+    to one is the registry's business.
+    """
+    runner = plugin_mod.runner_for(role)
+    if runner is None:
+        raise HTTPException(503, f"no plugin supplies role {role!r}")
+    return getattr(__import__(runner.__module__, fromlist=[fn_name]), fn_name)
+
+
+def _attr(role: str, name: str, default=None):
+    runner = plugin_mod.runner_for(role)
+    if runner is None:
+        return default
+    return getattr(__import__(runner.__module__, fromlist=[name]), name, default)
 
 
 @app.get("/health")

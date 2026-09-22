@@ -4,9 +4,9 @@ import asyncio
 import time
 from typing import Any
 
+from . import plugin
 from . import rooms as rooms_mod
 from . import state, workers
-from .agents import ultron
 from .runners import AGENT_RUNNERS
 from .world import World
 
@@ -159,8 +159,7 @@ class Orchestrator:
         unreachable must never take the loop down — outreach is the one part of
         this that depends on someone else's server.
         """
-        from . import config, mailbox
-        from .agents import echo
+        from . import config, mailbox, plugin
 
         if not mailbox.configured():
             return
@@ -194,13 +193,21 @@ class Orchestrator:
             try:
                 # A delivery failure is a fact, not a message to interpret —
                 # it goes nowhere near the model.
+                # What a reply MEANS is the domain's business. The core knows
+                # only that mail arrived and which hook to call; an
+                # environment with no mail plugin simply has no mail
+                # behaviour rather than crashing.
                 if record.get("kind") == "bounce":
-                    await echo.record_bounce(
-                        self.world, record["lead_id"], record["recipient"],
-                        bool(record.get("permanent")),
-                        str(record.get("detail") or ""))
+                    on_bounce = plugin.hook("inbound_bounce")
+                    if on_bounce is not None:
+                        await on_bounce(
+                            self.world, record["lead_id"], record["recipient"],
+                            bool(record.get("permanent")),
+                            str(record.get("detail") or ""))
                     continue
-                await echo.triage_inbound(self.world, record["lead_id"])
+                on_mail = plugin.hook("inbound_mail")
+                if on_mail is not None:
+                    await on_mail(self.world, record["lead_id"])
             except Exception as e:  # noqa: BLE001
                 # The message and its attachments are already stored; only the
                 # reading failed, and the operator can still see it.
@@ -264,8 +271,7 @@ class Orchestrator:
         thing being bounded is a model call that costs money. A counter that
         forgets itself on reboot is not a ceiling.
         """
-        from . import config
-        from .agents import echo, scribe
+        from . import config, plugin
 
         if not config.followups_enabled():
             return
@@ -603,7 +609,10 @@ class Orchestrator:
                 # Pending agent escalations → Ultron responds.
                 pending_esc = state.list_escalations(status="pending", limit=10)
                 for esc in pending_esc:
-                    await _timed("ultron.respond_to_escalation", ultron.respond_to_escalation(self.world, esc["id"]))
+                    on_escalation = plugin.hook("escalation")
+                    if on_escalation is None:
+                        break
+                    await _timed("escalation", on_escalation(self.world, esc["id"]))
                     await self.world.publish({"type": "approvals_updated"})
 
                 # Resolved escalations → re-fire the agent so the rerun sees
@@ -689,7 +698,10 @@ class Orchestrator:
                 # Process oldest first so chains form in the right order.
                 for report in reversed(new_reports):
                     self._processed_reports.add(report["id"])
-                    await _timed("ultron.react_to_report", ultron.react_to_report(self.world, report))
+                    on_report = plugin.hook("agent_report")
+                    if on_report is not None:
+                        await _timed("agent_report",
+                                     on_report(self.world, report))
             except Exception as e:  # never let this loop die silently
                 print(f"[gatekeeper] {type(e).__name__}: {e}")
             await asyncio.sleep(3.0)
