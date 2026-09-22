@@ -198,7 +198,7 @@ def test_removing_a_plugin_removes_everything_it_contributed(plugins):
     env = plugins.boot()
 
     assert "x" not in state.STAGES
-    assert state.LEAD_KINDS == ("normal",)
+    assert state.KINDS == ("normal",)
     assert "extra_gate" not in env.gates()
     assert rooms.stages_for_role("w") == {"s"}
     assert len(rooms.load_rooms()) == 1

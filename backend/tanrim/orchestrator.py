@@ -16,9 +16,9 @@ MAX_RERUNS = 2  # safety cap so a request_tool loop can't run forever
 # A rejected draft is redrafted with the operator's note as the brief, and that
 # is the loop this bounds: three attempts at one nudge is already generous for
 # a message whose whole job is to be four sentences long.
-# How settled a lead must look before the sweep recovers it. Long enough to
+# How settled a record must look before the sweep recovers it. Long enough to
 # outlast a server restart and the tail of a killed run; short enough that a
-# genuinely stuck lead is picked up while the operator is still watching.
+# genuinely stuck record is picked up while the operator is still watching.
 RECOVERY_QUIET_SECONDS = 4 * 60
 
 
@@ -62,14 +62,14 @@ class Orchestrator:
     def __init__(self, world: World) -> None:
         self.world = world
         self._tasks: list[asyncio.Task] = []
-        # Last stage we saw each lead at. Seeded from the board on boot so
+        # Last stage we saw each record at. Seeded from the board on boot so
         # nothing fires retroactively for work that is already settled; after
         # that, a CHANGE is what triggers the next room.
         self._lead_stages: dict[str, str] = {
-            lead["id"]: lead.get("stage", "") for lead in state.list_leads(limit=10_000)
+            record["id"]: record.get("stage", "") for record in state.list_records(limit=10_000)
         }
-        # (lead_id, stage) pairs already dispatched, so recovery of a stalled
-        # lead happens once rather than every tick.
+        # (record_id, stage) pairs already dispatched, so recovery of a stalled
+        # record happens once rather than every tick.
         self._dispatched: set[tuple[str, str]] = set()
         # Mark all current reports as already processed so we don't replay
         # history on every restart. Only NEW reports trigger a Sonnet reaction.
@@ -105,7 +105,7 @@ class Orchestrator:
         """Whatever the installed plugins do on a clock.
 
         `_expire_silence` and `_followup_sweep` used to live here, which put
-        the web agency's follow-up policy — quiet leads, the silence timer,
+        the web agency's follow-up policy — quiet records, the silence timer,
         the redraft brief — inside the core's tick loop. They moved to
         `web_agency/sweeps.py` behind the `tick` hook, which the contract had
         declared and nothing had ever fired.
@@ -148,14 +148,14 @@ class Orchestrator:
         return len(orphans)
 
     async def _advance_leads(self) -> None:
-        """Move a lead to the next room the moment its stage changes.
+        """Move a record to the next room the moment its stage changes.
 
         This is the pipeline's transport, and it is deliberately deterministic.
         It used to run through Ultron reacting to `report_to_ultron`, which
         meant an LLM had to read an event log and infer what happened next —
         and it got it wrong: Forge finished a rebuild, Ultron saw the PREVIOUS
         cycle's QA pass and courier dispatch still in its memory, decided the
-        lead was already handled, and the build sat at `built` with nobody
+        record was already handled, and the build sat at `built` with nobody
         looking at it.
 
         Stage → room is already declared by the workbenches, so no inference is
@@ -167,52 +167,52 @@ class Orchestrator:
         from .agent_helpers import in_flight_for_role
 
         recovered = 0
-        for lead in state.list_leads(limit=500):
-            lead_id = lead["id"]
-            stage = lead.get("stage") or ""
-            changed = self._lead_stages.get(lead_id) != stage
-            self._lead_stages[lead_id] = stage
+        for record in state.list_records(limit=500):
+            record_id = record["id"]
+            stage = record.get("stage") or ""
+            changed = self._lead_stages.get(record_id) != stage
+            self._lead_stages[record_id] = stage
 
             role = role_for_stage(stage)
             if role is None:
                 continue
 
-            # Which room works a stage can depend on WHICH PIPELINE the lead is
+            # Which room works a stage can depend on WHICH PIPELINE the record is
             # on, and the manifests cannot express that: a `prospect` at
             # `published` is waiting for Scribe to write a pitch, a `port` at
             # the same stage is waiting for the operator to say the client
             # approved the rebuild. The manifests stay the router for every
             # room; the table decides whether that room is the right one here.
-            kind = state.lead_kind(lead)
+            kind = state.record_kind(record)
             allowed_roles = state.roles_for(stage, kind)
             if not allowed_roles:
-                continue  # terminal for this kind of lead
+                continue  # terminal for this kind of record
             if role not in allowed_roles:
                 if allowed_roles == {"operator"}:
-                    await self._raise_client_approval(lead)
+                    await self._raise_client_approval(record)
                 continue
 
             if not changed:
-                # Recovery for a lead that is sitting at a workable stage with
+                # Recovery for a record that is sitting at a workable stage with
                 # nobody on it — a restart, or a run that died. Bounded to one
-                # per tick and once per (lead, stage), so a boot with a full
+                # per tick and once per (record, stage), so a boot with a full
                 # board doesn't fire every agent at once.
-                if (lead_id, stage) in self._dispatched or recovered >= 1:
+                if (record_id, stage) in self._dispatched or recovered >= 1:
                     continue
-                if any(w.get("lead_id") == lead_id for w in in_flight_for_role(role)):
+                if any(w.get("lead_id") == record_id for w in in_flight_for_role(role)):
                     continue
                 # A restart is the one thing that empties `_dispatched`, so
                 # every restart hands the recovery branch a fresh allowance.
                 # Restarting four times while a build was running therefore
                 # re-dispatched the same build three times — each new process
-                # correctly seeing a lead with nobody on it, because the run
-                # it had just killed left no trace. A recently touched lead is
+                # correctly seeing a record with nobody on it, because the run
+                # it had just killed left no trace. A recently touched record is
                 # left alone: either something is about to pick it up, or a run
                 # died seconds ago and its files are still settling.
-                if time.time() - float(lead.get("updated_ts") or 0) < RECOVERY_QUIET_SECONDS:
+                if time.time() - float(record.get("updated_ts") or 0) < RECOVERY_QUIET_SECONDS:
                     continue
-                # Old leads that were parked deliberately stay parked.
-                if time.time() - float(lead.get("updated_ts") or 0) > 6 * 3600:
+                # Old records that were parked deliberately stay parked.
+                if time.time() - float(record.get("updated_ts") or 0) > 6 * 3600:
                     continue
                 recovered += 1
 
@@ -221,13 +221,13 @@ class Orchestrator:
             runner = _runners.agent_runners().get(role)
             if runner is None:
                 continue
-            self._dispatched.add((lead_id, stage))
+            self._dispatched.add((record_id, stage))
             # Gates are the operator's. Courier and Echo raise an approval card
-            # rather than acting, so dispatching them here is safe — but a lead
+            # rather than acting, so dispatching them here is safe — but a record
             # already carrying a pending card for this room needs nothing.
             pending = [
                 a for a in state.list_user_approvals(status="pending", limit=200)
-                if a["payload"].get("lead_id") == lead_id
+                if a["payload"].get("lead_id") == record_id
             ]
             if pending:
                 continue
@@ -242,71 +242,71 @@ class Orchestrator:
                     kind="stage_gate",
                     room_id=rooms_mod.room_for_role(role) or "throne",
                     requesting_agent=role,
-                    summary=f"{lead.get('name')} is at '{stage}' — run {role}?",
+                    summary=f"{record.get('name')} is at '{stage}' — run {role}?",
                     payload={
-                        "lead_id": lead_id,
-                        "business": lead.get("name"),
+                        "lead_id": record_id,
+                        "business": record.get("name"),
                         "stage": stage,
                         "role": role,
                         "outcomes": [
                             {"to": to, "kind": kind}
                             for f, to, r, kind, kinds in state.PIPELINE
                             if f == stage and r == role
-                            and state.lead_kind(lead) in kinds
+                            and state.record_kind(record) in kinds
                         ],
                         "what_this_means":
                             f"You asked to be consulted before {role} works a "
-                            f"lead at '{stage}'. Approve to run it now; reject "
-                            f"to leave the lead parked here. Untick this step "
+                            f"record at '{stage}'. Approve to run it now; reject "
+                            f"to leave the record parked here. Untick this step "
                             f"in Settings to stop being asked.",
                     },
                 )
                 state.log_event(
                     "dispatch_end", from_="system", to=role,
-                    summary=f"{lead.get('name')} at '{stage}' → {role}: "
+                    summary=f"{record.get('name')} at '{stage}' → {role}: "
                             "asking first, this step is gated",
                     outcome="gated",
-                    details={"lead_id": lead_id, "stage": stage},
+                    details={"lead_id": record_id, "stage": stage},
                 )
                 await self.world.publish({"type": "approvals_updated"})
                 continue
 
             state.log_event(
                 "dispatch_end", from_="system", to=role,
-                summary=f"{lead.get('name')} "
+                summary=f"{record.get('name')} "
                         + (f"reached '{stage}'" if changed
                            else f"was stalled at '{stage}'")
                         + f" → {role}",
                 outcome="dispatched",
-                details={"lead_id": lead_id, "stage": stage},
+                details={"lead_id": record_id, "stage": stage},
             )
             task = asyncio.create_task(runner(self.world, {
-                "lead_id": lead_id,
-                "prompt": f"This lead just reached '{stage}'.",
+                "lead_id": record_id,
+                "prompt": f"This record just reached '{stage}'.",
             }))
-            # The mark above says "this (lead, stage) has been dispatched", and
+            # The mark above says "this (record, stage) has been dispatched", and
             # the recovery branch trusts it forever. But a room at capacity
             # refuses the work and the run never happens — so with five workers
-            # and nineteen leads arriving at once, five would run and fourteen
+            # and nineteen records arriving at once, five would run and fourteen
             # would sit at their stage untouched until a restart.
             #
             # A refusal is a normal outcome, not a dispatch, so the mark comes
-            # back off and the sweep picks the lead up on a later tick.
+            # back off and the sweep picks the record up on a later tick.
             task.add_done_callback(
-                lambda t, key=(lead_id, stage): self._unmark_if_refused(t, key))
+                lambda t, key=(record_id, stage): self._unmark_if_refused(t, key))
 
-    async def _raise_client_approval(self, lead: dict[str, Any]) -> None:
+    async def _raise_client_approval(self, record: dict[str, Any]) -> None:
         """A port client's rebuild is published — did they say yes?
 
         No email. They asked for this and are already a customer, so the
         operator shows them the preview however they like and ticks the card.
-        Approving is what moves the lead to `won`, which is what the Launch Pad
+        Approving is what moves the record to `won`, which is what the Launch Pad
         works.
         """
-        lead_id = lead["id"]
+        record_id = record["id"]
         already = [
             a for a in state.list_user_approvals(status="pending", limit=200)
-            if a["payload"].get("lead_id") == lead_id
+            if a["payload"].get("lead_id") == record_id
             and a["kind"] == "client_approved"
         ]
         if already:
@@ -315,30 +315,30 @@ class Orchestrator:
             kind="client_approved",
             room_id="launch",
             requesting_agent="porter",
-            summary=f"Did {lead.get('name')} approve their rebuilt site?",
+            summary=f"Did {record.get('name')} approve their rebuilt site?",
             payload={
-                "lead_id": lead_id,
-                "business": lead.get("name"),
-                "preview_url": lead.get("preview_url"),
-                "old_site": ((lead.get("profile") or {}).get("existing_site")
-                             or {}).get("url") or lead.get("website"),
-                "must_not_lose": ((lead.get("profile") or {})
+                "lead_id": record_id,
+                "business": record.get("name"),
+                "preview_url": record.get("preview_url"),
+                "old_site": ((record.get("profile") or {}).get("existing_site")
+                             or {}).get("url") or record.get("website"),
+                "must_not_lose": ((record.get("profile") or {})
                                   .get("must_not_lose") or [])[:20],
                 "what_this_means":
                     "This is a port: the client asked us to rebuild the site "
                     "they already had, and the new one is now on a preview URL. "
                     "Nothing has been sent to them — show them the preview "
                     "however you like. Approve once they have said yes, which "
-                    "moves the lead to 'won' and lets the Launch Pad create "
+                    "moves the record to 'won' and lets the Launch Pad create "
                     "their account. Reject to send it back to be changed, with "
                     "whatever you type below as the brief.",
             },
         )
         state.log_event(
             "user_approval", from_="porter", to="operator",
-            summary=f"{lead.get('name')}: rebuilt site published — waiting on "
+            summary=f"{record.get('name')}: rebuilt site published — waiting on "
                     f"the client's approval",
-            details={"lead_id": lead_id},
+            details={"lead_id": record_id},
         )
         await self.world.publish({"type": "approvals_updated"})
 
@@ -355,7 +355,7 @@ class Orchestrator:
             err = str(result.get("error") or "").lower()
             # A PERMANENT refusal keeps the mark. The same input reaches the
             # same refusal, so unmarking re-dispatches on the very next tick
-            # and for ever: the sandbox lead, which Courier will never
+            # and for ever: the sandbox record, which Courier will never
             # publish, was being dispatched and refused every three seconds —
             # about 29,000 log events a day saying the same thing.
             if result.get("permanent"):
@@ -383,7 +383,7 @@ class Orchestrator:
                 await _timed("advance_leads", self._advance_leads())
                 await _timed("plugin_sweeps", self._plugin_sweeps())
 
-                # Retire ephemeral workers whose lead has finished its run
+                # Retire ephemeral workers whose record has finished its run
                 # through the pipeline. Rooms keep their base agent, so a room
                 # never looks abandoned; only the extra hires go.
                 retired = await _timed("workers.sweep", workers.sweep(self.world))

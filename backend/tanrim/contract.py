@@ -3,7 +3,7 @@
 The environment is empty. It owns machinery — a world of rooms and sprites, a
 pool of workers, a way to run an agent turn, a durable ledger, a state machine,
 an approval mechanism, an HTTP surface. It knows nothing about websites,
-businesses, leads or email, and it must be able to run something with nothing
+businesses, records or email, and it must be able to run something with nothing
 to do with any of them.
 
 A plugin supplies all of that. This module says what a plugin IS.
@@ -30,7 +30,7 @@ plugin that could invent its own idea of a room would need its own frontend,
 and then the environment is a library rather than an environment.
 
 What the environment does NOT define is what any of it MEANS. It knows a record
-has a stage and a history; it does not know what a `lead` is, that businesses
+has a stage and a history; it does not know what a `record` is, that businesses
 have opening hours, or that an email can bounce. The record's shape is the
 plugin's — see `Plugin.record_model`.
 
@@ -473,6 +473,20 @@ class Plugin(ABC):
         """
         return ()
 
+    def overseer(self) -> str:
+        """The role an agent escalates to, and reports to. Empty for none.
+
+        Every run is given two meta tools — ask the overseer a question, and
+        report what was done — and the core BUILT THEIR NAMES from one
+        plugin's agent: `ask_ultron` and `report_to_ultron`, hardcoded. A
+        plugin whose overseer is called something else could not have them.
+
+        The names are derived as `ask_<role>` and `report_to_<role>`, and the
+        prompt describing each is looked up under that same name, so naming
+        the role here is the whole change.
+        """
+        return ""
+
     def bulk_fields(self) -> tuple[str, ...]:
         """Fields of this plugin's record that are LARGE.
 
@@ -548,8 +562,8 @@ class Plugin(ABC):
 
         The environment serves the machinery: rooms, the board, approvals,
         workers, the plugin listing. Everything ABOUT the work is the
-        plugin's, and there was no way to say so — `/leads`, `/invoices` and
-        `/leads/{id}/dossier` all lived in the core's `server.py`, so adding
+        plugin's, and there was no way to say so — `/records`, `/invoices` and
+        `/records/{id}/dossier` all lived in the core's `server.py`, so adding
         a plugin with its own records meant editing a file the plugin does
         not own.
 

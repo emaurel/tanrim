@@ -29,10 +29,10 @@ class AgentState:
     # individual ("forge", "forge-2"). Memory and context belong to the role;
     # locks, sprites and status belong to the worker.
     role: str = ""
-    # Workers beyond the first are spawned on demand and retired when the lead
+    # Workers beyond the first are spawned on demand and retired when the record
     # they were hired for finishes its run through the pipeline.
     ephemeral: bool = False
-    lead_id: str | None = None
+    record_id: str | None = None
     # Which station in the room this worker is at, if any. Set for the duration
     # of a job so the map shows what kind of work is happening where.
     workbench: str | None = None
@@ -101,7 +101,7 @@ class World:
 
     ROMAN = ["", "II", "III", "IV", "V", "VI"]
 
-    async def spawn_worker(self, role: str, lead_id: str | None = None) -> AgentState:
+    async def spawn_worker(self, role: str, record_id: str | None = None) -> AgentState:
         """Hire another agent for a role that's already busy. The new sprite
         appears in the same room — the frontend creates it on first sight."""
         base = self.agents.get(role)
@@ -123,7 +123,7 @@ class World:
             x=x, y=y, target_x=x, target_y=y,
             role=role,
             ephemeral=True,
-            lead_id=lead_id,
+            record_id=record_id,
             station=base.station,
             workbench=base.station,
         )

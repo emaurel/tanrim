@@ -23,7 +23,7 @@ Runner = Callable[[World, dict[str, Any]], Awaitable[Any]]
 def _task(task: dict[str, Any], record_id: str | None = None) -> dict[str, Any]:
     """The task dict in the shape the contract's `Job` documents.
 
-    Callers across the codebase write `lead_id` and `prompt`; the contract
+    Callers across the codebase write `record_id` and `prompt`; the contract
     says `record_id` and `instruction`. Translating in one place is what stops
     a job silently receiving an empty string for the thing it was dispatched
     to do.
@@ -39,24 +39,24 @@ def _task(task: dict[str, Any], record_id: str | None = None) -> dict[str, Any]:
 
 
 def _needs_lead(name: str) -> dict[str, Any]:
-    return {"ok": False, "error": f"{name} needs a lead_id"}
+    return {"ok": False, "error": f"{name} needs a record_id"}
 
 
-def _wrong_stage(role: str, lead: dict[str, Any]) -> dict[str, Any] | None:
-    """Refuse a lead that isn't at a stage this room works.
+def _wrong_stage(role: str, record: dict[str, Any]) -> dict[str, Any] | None:
+    """Refuse a record that isn't at a stage this room works.
 
     Ultron chains the next agent off an agent's `report_to_ultron`, which fires
     mid-run — before the reporting agent has persisted its output. Without this
     guard a chained dispatch can arrive early and build from stale data: it
-    happened, and Forge built a site from a lead that Lens had not yet finished
+    happened, and Forge built a site from a record that Lens had not yet finished
     writing its photo report to.
     """
     accepted = stages_for_role(role)
-    stage = lead.get("stage")
+    stage = record.get("stage")
     if accepted and stage not in accepted:
         return {
             "ok": False,
-            "error": f"{role} works leads at {sorted(accepted)}; this one is at "
+            "error": f"{role} works records at {sorted(accepted)}; this one is at "
                      f"'{stage}'. Skipped — most likely dispatched before the "
                      f"previous room finished writing its output.",
         }
@@ -92,9 +92,9 @@ async def _dispatch(role: str, world: World, task: dict[str, Any]) -> Any:
     record_id = task.get("record_id") or task.get("lead_id")
     if not record_id:
         return _needs_lead(role)
-    record = state.get_lead(record_id)
+    record = state.get_record(record_id)
     if record is None:
-        return {"ok": False, "error": f"no such lead: {record_id}"}
+        return {"ok": False, "error": f"no such record: {record_id}"}
 
     wrong = _wrong_stage(role, record)
     if wrong:
@@ -106,7 +106,7 @@ async def _dispatch(role: str, world: World, task: dict[str, Any]) -> Any:
         # Not an error. A room whose benches cover a stage it has no job at is
         # ordinary: the Inbox works `contacted` and `replied`, where there is
         # nothing to dispatch because replies arrive on the mailbox poll.
-        # Calling the send path for all three asked every contacted lead to be
+        # Calling the send path for all three asked every contacted record to be
         # sent again, was refused, and logged a failure on every restart.
         return {"ok": True,
                 "skipped": f"{role} has no job at '{stage}'"}
@@ -125,20 +125,20 @@ def _skip_if_busy(name: str, runner: Runner) -> Runner:
         except AgentBusy:
             return {"ok": False, "error": f"{name} was already running; skipped"}
         except RoomAtCapacity as e:
-            # Every worker in that room is busy. Ultron will see the lead still
+            # Every worker in that room is busy. Ultron will see the record still
             # sitting at its stage on the board and can dispatch it again.
             return {"ok": False, "error": str(e)}
         except Exception as e:  # noqa: BLE001
             # A bug, not a busy room. Dispatched runs are detached tasks, so
             # without this the traceback goes to stdout, the event log says
-            # only "failed", and the lead is parked at its stage with nobody
+            # only "failed", and the record is parked at its stage with nobody
             # looking at it — a NameError on a rarely-taken path silently
             # ended a whole pipeline this way.
             #
             # A crash is never retried automatically: the same input crashes
             # the same code, so a rerun burns a run to reach the same place.
             # It raises a card instead, which also suppresses dispatch on that
-            # lead until the operator has seen it.
+            # record until the operator has seen it.
             return _crashed(name, task, e)
     return wrapped
 
@@ -149,18 +149,18 @@ def _crashed(name: str, task: dict[str, Any], exc: Exception) -> dict[str, Any]:
 
     from . import rooms, state
 
-    lead_id = task.get("lead_id")
+    record_id = task.get("lead_id")
     detail = f"{type(exc).__name__}: {exc}"
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    lead = state.get_lead(lead_id) if lead_id else None
-    label = (lead or {}).get("name") or lead_id or "(no lead)"
-    stage = (lead or {}).get("stage")
+    record = state.get_record(record_id) if record_id else None
+    label = (record or {}).get("name") or record_id or "(no record)"
+    stage = (record or {}).get("stage")
 
     state.log_event(
         "run_end", from_=name, to="operator",
         summary=f"{name} CRASHED on {label}: {detail}"[:240],
         outcome="crashed",
-        details={"lead_id": lead_id, "stage": stage, "error": detail,
+        details={"lead_id": record_id, "stage": stage, "error": detail,
                  "traceback": tb[-4000:]},
     )
 
@@ -169,7 +169,7 @@ def _crashed(name: str, task: dict[str, Any], exc: Exception) -> dict[str, Any]:
         a for a in state.list_user_approvals(status="pending")
         if a["kind"] == "agent_crashed"
         and a["payload"].get("agent") == name
-        and a["payload"].get("lead_id") == lead_id
+        and a["payload"].get("lead_id") == record_id
         and a["payload"].get("stage") == stage
     ]
     if not existing:
@@ -179,16 +179,16 @@ def _crashed(name: str, task: dict[str, Any], exc: Exception) -> dict[str, Any]:
             requesting_agent=name,
             summary=f"{name} crashed on {label} at '{stage}' — {detail}"[:200],
             payload={
-                "lead_id": lead_id, "agent": name, "stage": stage,
-                "business": (lead or {}).get("name"),
+                "lead_id": record_id, "agent": name, "stage": stage,
+                "business": (record or {}).get("name"),
                 "error": detail,
                 "traceback": tb[-4000:],
                 "what_this_means":
-                    "This is a bug in the code, not a busy room or a bad lead. "
-                    f"The lead is still at '{stage}' and nothing will retry it "
+                    "This is a bug in the code, not a busy room or a bad record. "
+                    f"The record is still at '{stage}' and nothing will retry it "
                     "automatically, because the same input would crash the same "
                     "way. Fix the cause, then dismiss this card to let the "
-                    "pipeline pick the lead up again.",
+                    "pipeline pick the record up again.",
             },
         )
     return {"ok": False, "error": detail, "crashed": True}

@@ -110,7 +110,7 @@ def test_a_role_without_a_record_is_given_what_it_was_dispatched_with(real_env,
 def test_a_record_at_the_wrong_stage_is_refused(real_env, monkeypatch):
     from tanrim import runners, state
 
-    monkeypatch.setattr(state, "get_lead",
+    monkeypatch.setattr(state, "get_record",
                         lambda _id: {"id": "x", "stage": "contacted"})
     out = asyncio.run(runners._dispatch("probe", None, {"lead_id": "x"}))
     assert out["ok"] is False
@@ -123,7 +123,7 @@ def test_a_stage_the_room_works_but_has_no_job_for_is_a_skip(real_env, monkeypat
     failure on every restart."""
     from tanrim import runners, state
 
-    monkeypatch.setattr(state, "get_lead",
+    monkeypatch.setattr(state, "get_record",
                         lambda _id: {"id": "x", "stage": "contacted"})
     out = asyncio.run(runners._dispatch("echo", None, {"lead_id": "x"}))
     assert out["ok"] is True and "no job" in out["skipped"]
@@ -198,7 +198,7 @@ def test_the_crew_size_can_be_changed_and_is_written_back(real_env, tmp_path):
 def test_the_stage_tables_are_not_cached_from_before_the_boot(real_env):
     """`_MACHINE` caches for the life of the process. Anything that read a
     stage table before `environment.boot()` cached the empty fallback, and
-    `advance_lead` then refused every stage in the system."""
+    `advance_record` then refused every stage in the system."""
     from tanrim import discovery, environment, state
 
     environment.reset()
@@ -270,7 +270,7 @@ def test_a_permanent_refusal_is_not_dispatched_again(real_env):
 def test_a_business_holding_our_email_is_not_rebuilt_underneath(real_env):
     """The contract's only veto hook, which nothing had ever consulted.
 
-    `state.advance_lead` carried the rule as a hardcoded list of eleven of
+    `state.advance_record` carried the rule as a hardcoded list of eleven of
     this plugin's stage names. The environment asks the plugin now.
     """
     import time
@@ -321,3 +321,50 @@ def test_an_ending_of_one_pipeline_is_not_an_ending_of_another(real_env):
     assert "lost" in state.always_reachable("port")
     assert "qa_failed" not in state.always_reachable("prospect"), \
         "a rework stage is not an ending"
+
+
+def test_the_escalation_tools_are_named_after_the_declared_overseer(real_env):
+    """`ask_ultron` and `report_to_ultron` were built into the core.
+
+    Every agent run gets these two, and their names — and the prompts
+    describing them — came from one plugin's agent, hardcoded in
+    `meta_tools`. A plugin whose overseer is called something else could not
+    have them at all.
+
+    The names must not drift: they are written into a dozen role prompts that
+    tell agents which tool to call.
+    """
+    from tanrim import prompts
+
+    boss = real_env.overseer()
+    assert boss == "ultron"
+    assert f"ask_{boss}" == "ask_ultron"
+    assert f"report_to_{boss}" == "report_to_ultron"
+    # and the prompt for each is found under that same name
+    assert prompts.load("meta_tools", f"ask_{boss}")
+    assert prompts.load("meta_tools", f"report_to_{boss}")
+
+
+def test_an_environment_with_no_overseer_offers_no_escalation_tools(plugins):
+    """Nobody to ask, so no tool that reaches nobody.
+
+    The plugin supplies `delegation/*` because the core's delegation
+    machinery names those prompts and a plugin owns the text — which is the
+    contract working as intended, not a leak: the core says WHICH prompt it
+    needs and never says what is in it.
+    """
+    from tanrim import meta_tools
+
+    plugins.install({"alpha": """
+        class A(Plugin):
+            id, name = "alpha", "A"
+            def pipelines(self):
+                return [Pipeline("k", stages=(Stage("s"),))]
+            def prompt(self, module, name, kind=None):
+                return f"({module}/{name})"
+
+        PLUGIN = A()
+    """})
+    assert plugins.env.overseer() == ""
+    server = meta_tools.make_meta_server("worker", "room")
+    assert server is not None          # it still builds; it just offers less

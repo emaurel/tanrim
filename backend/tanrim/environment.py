@@ -29,7 +29,7 @@ so a plugin hands over real objects and real functions.
 - **Stages de-duplicate by id.** Two pipelines sharing a build half is the
   normal case; the stage exists once and both pipelines' transitions refer to
   it.
-- **Transitions are per-kind.** The same stage can lead somewhere different
+- **Transitions are per-kind.** The same stage can record somewhere different
   depending on which pipeline the record is on — a stage whose only outgoing
   role is `operator` is a gate rather than a dispatch.
 - **Rooms merge last-one-wins on id; patches apply after every room exists**,
@@ -185,6 +185,7 @@ class Environment:
                 "room_handlers": dict(p.room_handlers()),
                 "summary_fields": list(p.summary_fields()),
                 "bulk_fields": tuple(p.bulk_fields()),
+                "overseer": p.overseer(),
                 "declares_prompts": tuple(p.declares_prompts()),
                 "routes": p.routes(),
             }
@@ -515,7 +516,7 @@ class Environment:
         """Every plugin's HTTP surface, in load order, with whose it is.
 
         The plugin id travels alongside so a startup log can say which plugin
-        put a path there — with several installed, "why is /leads 404" is
+        put a path there — with several installed, "why is /records 404" is
         otherwise a question nothing can answer.
         """
         return [(p.id, self._said(p, "routes"))
@@ -620,6 +621,17 @@ class Environment:
     def room_handlers(self) -> dict[str, type]:
         return dict(self._room_handlers)
 
+    def overseer(self) -> str:
+        """Who agents escalate to. The last plugin to name one wins.
+
+        Empty when nothing declares one, and the meta server then offers no
+        escalation tools at all — which is right: an environment with no
+        overseer has nobody to ask.
+        """
+        found = [self._answers[p.id]["overseer"] for p in self.plugins
+                 if self._answers[p.id]["overseer"]]
+        return found[-1] if found else ""
+
     def bulk_fields(self) -> frozenset[str]:
         """Every plugin's large sections. See `Plugin.bulk_fields`."""
         return frozenset(f for p in self.plugins
@@ -709,7 +721,7 @@ def _invalidate_derived() -> None:
     `state` caches its stage tables and `rooms` caches its room list, both
     for the life of the process. Anything that read one BEFORE the boot — an
     entrypoint that is not `server.py`, a new import-time read — cached the
-    empty fallback permanently, and `advance_lead` then refused every stage
+    empty fallback permanently, and `advance_record` then refused every stage
     in the system. Booting is the one moment at which those answers change.
     """
     from . import prompts, rooms, state

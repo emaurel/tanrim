@@ -37,7 +37,7 @@ class RoomHandler:
 
 
 class LeadRoomHandler(RoomHandler):
-    """Base for every room that moves a lead one stage forward.
+    """Base for every room that moves a record one stage forward.
 
     They all differ in only four ways — which agent, which runner, which stages
     they accept work from, and what the run is called — so the queue, the
@@ -95,10 +95,10 @@ class LeadRoomHandler(RoomHandler):
             "action_name": self.action_name,
             "accepts_stages": list(self.accepts_stages),
             # The work waiting for THIS room, so the panel is a to-do list.
-            "queue": state.list_lead_rows(stages=list(self.accepts_stages), limit=40),
+            "queue": state.list_record_rows(stages=list(self.accepts_stages), limit=40),
             "recent": [
-                lead for lead in state.list_lead_rows(limit=40)
-                if any(h.get("agent") == self.agent_id for h in (lead.get("history") or []))
+                record for record in state.list_record_rows(limit=40)
+                if any(h.get("agent") == self.agent_id for h in (record.get("history") or []))
             ][:12],
             "last_error": self._last_error,
             "last_result": self._last_result,

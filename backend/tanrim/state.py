@@ -17,7 +17,9 @@ from .config import ROOT
 
 STATE_DIR = ROOT / "state"
 NOTES_FILE = STATE_DIR / "notes.json"
-LEADS_FILE = STATE_DIR / "leads.json"
+#: The ledger. Still `records.json` on disk: the file holds real records
+#: and renaming it would be a migration with nothing to gain.
+RECORDS_FILE = STATE_DIR / "leads.json"
 ROOM_TOOL_OVERRIDES_FILE = STATE_DIR / "room_tool_overrides.json"
 EVENTS_FILE = STATE_DIR / "events.json"
 TASK_RERUNS_FILE = STATE_DIR / "task_reruns.json"
@@ -35,7 +37,7 @@ MAX_DECIDED_APPROVALS = 60
 # `log_event()` was 12.7 ms of blocking I/O (read 387 KB, rewrite 387 KB) and
 # every agent tool call makes one.
 #
-# Two changes, both measured on the real 584 KB leads.json:
+# Two changes, both measured on the real 584 KB records.json:
 #
 #   read   22.19 ms  ->  10.50 ms   cached bytes + orjson, no disk hit
 #   write  52.70 ms  ->   3.72 ms   orjson instead of json.dumps(indent=2)
@@ -103,7 +105,7 @@ def _ensure() -> None:
     STATE_DIR.mkdir(exist_ok=True)
     for f, default in [
         (NOTES_FILE, "[]"),
-        (LEADS_FILE, "[]"),
+        (RECORDS_FILE, "[]"),
         (ROOM_TOOL_OVERRIDES_FILE, "{}"),
         (EVENTS_FILE, "[]"),
         (TASK_RERUNS_FILE, "{}"),
@@ -398,9 +400,9 @@ def update_escalation(esc_id: str, **fields: Any) -> dict[str, Any] | None:
 # ---------- Leads (the core record of the agency pipeline) ----------
 #
 # Unlike the old Etsy ledgers — where each agent wrote its own file and
-# downstream agents read "the most recent upstream artifact" — a Lead is ONE
-# record that every agent enriches in place. Many leads sit at different
-# stages simultaneously, so agents are always addressed with a `lead_id`;
+# downstream agents read "the most recent upstream artifact" — a Record is ONE
+# record that every agent enriches in place. Many records sit at different
+# stages simultaneously, so agents are always addressed with a `record_id`;
 # nothing in this pipeline means "the latest thing".
 
 # The stages are no longer written here. Each plugin declares the states its
@@ -420,17 +422,17 @@ def update_escalation(esc_id: str, **fields: Any) -> dict[str, Any] | None:
 # a run in flight is a debugging nightmare, and installing a plugin is a
 # restart either way. `reload_machine()` is the deliberate exception.
 #
-# `STAGES`, `DEAD_STAGES`, `ALL_STAGES`, `LEAD_KINDS`, `PROSPECT`, `BOTH` and
+# `STAGES`, `DEAD_STAGES`, `ALL_STAGES`, `KINDS`, `DEFAULT_KIND` and
 # `PIPELINE` are all served by `__getattr__` at the foot of this module.
 
 
 # ---------------------------------------------------------------------------
 # Operator overrides beat work already in flight.
 #
-# An agent run takes minutes. If the operator moves a lead during one, the run
+# An agent run takes minutes. If the operator moves a record during one, the run
 # finishes afterwards and writes its result over the decision — the stage flips
 # back and the override looks like it never happened. So every run declares
-# which lead it is working and when it started, and `advance_lead` refuses a
+# which record it is working and when it started, and `advance_record` refuses a
 # write from a run the operator has since overtaken.
 #
 # A ContextVar rather than an argument, because the check has to hold for every
@@ -444,23 +446,23 @@ RUN_CONTEXT: "ContextVar[dict[str, Any] | None]" = ContextVar(
 _OPERATOR_MOVES: dict[str, float] = {}
 
 
-def mark_operator_move(lead_id: str) -> float:
-    """Record that a person just moved this lead. Returns the instant."""
+def mark_operator_move(record_id: str) -> float:
+    """Record that a person just moved this record. Returns the instant."""
     ts = time.time()
-    _OPERATOR_MOVES[lead_id] = ts
+    _OPERATOR_MOVES[record_id] = ts
     return ts
 
 
-def superseded(lead_id: str) -> bool:
-    """True if the operator moved this lead after the current run started."""
+def superseded(record_id: str) -> bool:
+    """True if the operator moved this record after the current run started."""
     ctx = RUN_CONTEXT.get()
-    if not ctx or ctx.get("lead_id") != lead_id:
+    if not ctx or ctx.get("lead_id") != record_id:
         return False
-    moved = _OPERATOR_MOVES.get(lead_id)
+    moved = _OPERATOR_MOVES.get(record_id)
     return bool(moved and moved > float(ctx.get("started_ts") or 0))
 
 
-def add_lead(
+def add_record(
     name: str,
     *,
     source: dict[str, Any] | None = None,
@@ -476,8 +478,8 @@ def add_lead(
     """
     _ensure()
     m = _machine()
-    kind = fields.pop("kind", m["PROSPECT"])
-    if kind not in m["LEAD_KINDS"]:
+    kind = fields.pop("kind", m["DEFAULT_KIND"])
+    if kind not in m["KINDS"]:
         raise ValueError(f"unknown kind: {kind}")
     from . import environment
 
@@ -500,19 +502,19 @@ def add_lead(
     }
     rec = _normalise(kind, rec)
     with _lock:
-        items: list[dict[str, Any]] = _read(LEADS_FILE)
+        items: list[dict[str, Any]] = _read(RECORDS_FILE)
         items.append(rec)
-        _write(LEADS_FILE, items)
+        _write(RECORDS_FILE, items)
     return rec
 
 
-def list_leads(
+def list_records(
     stage: str | None = None,
     stages: list[str] | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     _ensure()
-    items: list[dict[str, Any]] = _read(LEADS_FILE)
+    items: list[dict[str, Any]] = _read(RECORDS_FILE)
     if stage is not None:
         items = [r for r in items if r.get("stage") == stage]
     if stages is not None:
@@ -521,32 +523,32 @@ def list_leads(
     return items[:limit]
 
 
-def get_lead(lead_id: str) -> dict[str, Any] | None:
+def get_record(record_id: str) -> dict[str, Any] | None:
     _ensure()
-    items: list[dict[str, Any]] = _read(LEADS_FILE)
+    items: list[dict[str, Any]] = _read(RECORDS_FILE)
     for r in items:
-        if r["id"] == lead_id:
+        if r["id"] == record_id:
             return r
     return None
 
 
-def update_lead(lead_id: str, **fields: Any) -> dict[str, Any] | None:
-    """Patch a lead without touching its stage."""
-    fields = _normalise(lead_kind(get_lead(lead_id)), fields)
+def update_record(record_id: str, **fields: Any) -> dict[str, Any] | None:
+    """Patch a record without touching its stage."""
+    fields = _normalise(record_kind(get_record(record_id)), fields)
     _ensure()
     with _lock:
-        items: list[dict[str, Any]] = _read(LEADS_FILE)
+        items: list[dict[str, Any]] = _read(RECORDS_FILE)
         for r in items:
-            if r["id"] == lead_id:
+            if r["id"] == record_id:
                 r.update(fields)
                 r["updated_ts"] = time.time()
-                _write(LEADS_FILE, items)
+                _write(RECORDS_FILE, items)
                 return r
     return None
 
 
-def advance_lead(
-    lead_id: str,
+def advance_record(
+    record_id: str,
     stage: str,
     *,
     agent: str | None = None,
@@ -554,20 +556,20 @@ def advance_lead(
     by_hand: bool = False,
     **fields: Any,
 ) -> dict[str, Any] | None:
-    """Move a lead to a new stage, append to its history, and patch fields in
+    """Move a record to a new stage, append to its history, and patch fields in
     the same write. This is the ONLY way stage should change, so the history
-    is always a complete record of who moved the lead and why."""
+    is always a complete record of who moved the record and why."""
     if stage not in _machine()["ALL_STAGES"]:
         raise ValueError(f"unknown stage: {stage}")
-    _current = get_lead(lead_id) or {}
+    _current = get_record(record_id) or {}
 
     # The transition table is law for agents. `by_hand` is the operator's
-    # override and the only way off it — the lead board's stage control is a
+    # override and the only way off it — the record board's stage control is a
     # deliberate human decision and has been used as one ("i accidently said
     # approved instead of disapproved"), so it is permitted and RECORDED as
     # off-table rather than refused.
     _from = _current.get("stage")
-    _kind = lead_kind(_current)
+    _kind = record_kind(_current)
     _off_table = bool(
         _current and _from != stage
         and stage not in always_reachable(_kind)
@@ -577,11 +579,11 @@ def advance_lead(
             "run_end", from_=agent or "?", to="operator",
             summary=(f"refused an undeclared transition for "
                      f"{_current.get('name')}: {_from} -> {stage} is not an "
-                     f"edge a {_kind} lead has. Allowed from here: "
+                     f"edge a {_kind} record has. Allowed from here: "
                      f"{sorted(allowed_targets(_from, _kind)) or 'nothing'}")[:240],
             outcome="refused",
-            details={"lead_id": lead_id, "from": _from, "to": stage,
-                     "lead_kind": _kind, "agent": agent},
+            details={"lead_id": record_id, "from": _from, "to": stage,
+                     "record_kind": _kind, "agent": agent},
         )
         return None
     # Domain law a generic write cannot hold. "Do not redo the work
@@ -598,27 +600,27 @@ def advance_lead(
                 summary=f"refused to move {_current.get('name')} to "
                         f"'{stage}': {refusal}"[:240],
                 outcome="refused",
-                details={"lead_id": lead_id, "stage": stage, "why": refusal},
+                details={"lead_id": record_id, "stage": stage, "why": refusal},
             )
             return None
 
-    if agent != "operator" and superseded(lead_id):
-        # The operator moved this lead while this run was working. Their
-        # decision stands; the run's conclusion is about a lead that no longer
+    if agent != "operator" and superseded(record_id):
+        # The operator moved this record while this run was working. Their
+        # decision stands; the run's conclusion is about a record that no longer
         # exists in that state.
         log_event(
             "run_end", from_=agent, to="operator",
             summary=f"ignored a stage change to '{stage}' from {agent}: the "
-                    "operator moved this lead while the run was in flight",
-            outcome="superseded", details={"lead_id": lead_id, "stage": stage},
+                    "operator moved this record while the run was in flight",
+            outcome="superseded", details={"lead_id": record_id, "stage": stage},
         )
         return None
-    fields = _normalise(lead_kind(get_lead(lead_id)), fields)
+    fields = _normalise(record_kind(get_record(record_id)), fields)
     _ensure()
     with _lock:
-        items: list[dict[str, Any]] = _read(LEADS_FILE)
+        items: list[dict[str, Any]] = _read(RECORDS_FILE)
         for r in items:
-            if r["id"] == lead_id:
+            if r["id"] == record_id:
                 r.update(fields)
                 r["history"] = list(r.get("history") or [])
                 r["history"].append({
@@ -631,26 +633,26 @@ def advance_lead(
                 })
                 r["stage"] = stage
                 r["updated_ts"] = time.time()
-                _write(LEADS_FILE, items)
+                _write(RECORDS_FILE, items)
                 return r
     return None
 
 
-def delete_lead(lead_id: str) -> bool:
+def delete_record(record_id: str) -> bool:
     """Remove a record entirely. The operator's, never an agent's."""
     _ensure()
     with _lock:
-        items: list[dict[str, Any]] = _read(LEADS_FILE)
-        kept = [r for r in items if r.get("id") != lead_id]
+        items: list[dict[str, Any]] = _read(RECORDS_FILE)
+        kept = [r for r in items if r.get("id") != record_id]
         if len(kept) == len(items):
             return False
-        _write(LEADS_FILE, kept)
+        _write(RECORDS_FILE, kept)
         return True
 
 
-def lead_counts_by_stage() -> dict[str, int]:
+def counts_by_stage() -> dict[str, int]:
     counts: dict[str, int] = {}
-    for r in list_leads(limit=10_000):
+    for r in list_records(limit=10_000):
         counts[r.get("stage", "?")] = counts.get(r.get("stage", "?"), 0) + 1
     return counts
 
@@ -702,13 +704,13 @@ def clear_task_reruns() -> None:
         TASK_RERUNS_FILE.write_text("{}")
 
 # ---------------------------------------------------------------------------
-# Small facts about the system rather than about a lead: the last time the
+# Small facts about the system rather than about a record: the last time the
 # mailbox was read, and anything else that is a heartbeat rather than an
 # event. Kept out of the event log because a heartbeat every five minutes
 # would bury the events worth reading.
 # ---------------------------------------------------------------------------
 
-META_FILE = STATE_DIR / "meta.json" if "STATE_DIR" in dir() else LEADS_FILE.parent / "meta.json"
+META_FILE = STATE_DIR / "meta.json" if "STATE_DIR" in dir() else RECORDS_FILE.parent / "meta.json"
 
 
 def set_meta(key: str, value: Any) -> None:
@@ -728,10 +730,10 @@ def get_meta(key: str, default: Any = None) -> Any:
         return default
 
 # ---------------------------------------------------------------------------
-# List views want a row per lead, not each lead's dossier. Measured on
-# 2026-09-03: the Gallery's panel state was 950 KB because it ships five lead
+# List views want a row per record, not each record's dossier. Measured on
+# 2026-09-03: the Gallery's panel state was 950 KB because it ships five record
 # lists, and the Throne's 530 KB; the fields a row actually renders came to
-# 5.0 KB across all 23 leads — 1% of what was sent. On a single event loop
+# 5.0 KB across all 23 records — 1% of what was sent. On a single event loop
 # shared with the agent runs, the other 99% is UI latency.
 #
 # A denylist was tried first (`_LEAD_BULK` in server.py) and is the wrong
@@ -765,15 +767,15 @@ def _row_fields() -> tuple[frozenset[str], frozenset[str]]:
 ROW_MAX_FIELD_BYTES = 400
 
 
-def lead_summary(lead: dict[str, Any]) -> dict[str, Any]:
-    """One lead as a list row: the named fields, plus small extras.
+def record_summary(record: dict[str, Any]) -> dict[str, Any]:
+    """One record as a list row: the named fields, plus small extras.
 
     `history` is replaced by its length and its tail, because a row shows
     "what happened last" and the full history is 60 KB across the board.
     """
     keep, bulk = _row_fields()
     out: dict[str, Any] = {}
-    for k, v in lead.items():
+    for k, v in record.items():
         if k == "history":
             continue
         if k in keep:
@@ -797,7 +799,7 @@ def lead_summary(lead: dict[str, Any]) -> dict[str, Any]:
                 out[k] = v
         except (TypeError, orjson.JSONEncodeError):
             pass
-    hist = lead.get("history") or []
+    hist = record.get("history") or []
     out["history_len"] = len(hist)
     last = hist[-1] if hist else None
     out["last"] = {
@@ -811,28 +813,28 @@ def lead_summary(lead: dict[str, Any]) -> dict[str, Any]:
 _ROWS_CACHE: dict[str, tuple[int, list[dict[str, Any]]]] = {}
 
 
-def list_lead_rows(
+def list_record_rows(
     stage: str | None = None,
     stages: list[str] | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    """`list_leads`, projected to rows. What every list view should call.
+    """`list_records`, projected to rows. What every list view should call.
 
     Memoised on the ledger's mtime: several panels ask for overlapping slices
-    every few seconds, and the leads file changes far less often than they
+    every few seconds, and the records file changes far less often than they
     poll. Serialised out as bytes and parsed back per call so a caller cannot
     mutate the next caller's rows — the same isolation rule as `_read`.
     """
     _ensure()
     try:
-        stamp = LEADS_FILE.stat().st_mtime_ns
+        stamp = RECORDS_FILE.stat().st_mtime_ns
     except OSError:
         stamp = 0
     key = f"{stage}|{stages}|{limit}"
     hit = _ROWS_CACHE.get(key)
     if hit is not None and hit[0] == stamp:
         return orjson.loads(hit[1])
-    rows = [lead_summary(l) for l in list_leads(stage=stage, stages=stages,
+    rows = [record_summary(l) for l in list_records(stage=stage, stages=stages,
                                                 limit=limit)]
     raw = orjson.dumps(rows)
     if len(_ROWS_CACHE) > 64:          # bounded: a handful of slices per room
@@ -844,10 +846,10 @@ def list_lead_rows(
 # ---------------------------------------------------------------------------
 # The pipeline, declared.
 #
-# Until now the stage graph existed only in agents' `advance_lead` calls and in
+# Until now the stage graph existed only in agents' `advance_record` calls and in
 # CLAUDE.md's prose, so nothing could draw it or reason about it. These are the
 # transitions agents actually make, cross-checked against every transition in
-# every lead's history on 2026-09-03 — the operator can move a lead anywhere by
+# every record's history on 2026-09-03 — the operator can move a record anywhere by
 # hand and those moves are deliberately NOT listed here, because they are not
 # pipeline steps.
 #
@@ -858,7 +860,7 @@ def list_lead_rows(
 # ---------------------------------------------------------------------------
 # The transition table, and it is now LAW rather than documentation.
 #
-# It was neither read nor enforced: `advance_lead` checked only that the target
+# It was neither read nor enforced: `advance_record` checked only that the target
 # was a known stage, and `PIPELINE` was consulted in exactly two places, both of
 # them rendering. Measured across the real history: 23 declared edges, 44
 # distinct edges actually taken, **182 transitions off the table**.
@@ -870,23 +872,23 @@ def list_lead_rows(
 # code the moment someone writes a new branch, which is exactly what happened.
 #
 # So: agents may only take declared edges. The OPERATOR may take any, because
-# the lead board's stage control is a deliberate human override and has been
+# the record board's stage control is a deliberate human override and has been
 # used as one — but it passes `by_hand=True`, and the history records that the
 # move was off-table, so "who moved this and was it a normal path" stays
 # answerable.
 #
-# (from_stage, to_stage, role, kind_of_edge, which lead kinds it applies to)
+# (from_stage, to_stage, role, kind_of_edge, which record kinds it applies to)
 
 #: Every pipeline the installed plugins define. An environment with no plugins
 #: has none, which is the point.
 #: The first kind declared is what a record without an explicit kind is taken
-#: to be, so leads written before kinds existed keep working.
+#: to be, so records written before kinds existed keep working.
 
 #: The transition table, assembled from every plugin's declared edges. It is
-#: LAW: `advance_lead` refuses anything not on it, and only the operator's
+#: LAW: `advance_record` refuses anything not on it, and only the operator's
 #: explicit hand-move goes around it.
 #:
-#: (from_stage, to_stage, role, kind_of_edge, which lead kinds it applies to)
+#: (from_stage, to_stage, role, kind_of_edge, which record kinds it applies to)
 #: Filled by `_machine()` on first access. Empty means "not yet asked".
 _MACHINE: dict[str, Any] = {}
 
@@ -908,7 +910,7 @@ def _machine() -> dict[str, Any]:
             # nothing installed genuinely has no stages, and saying so
             # honestly is better than inventing a default nobody declared.
             _MACHINE.update(STAGES=(), DEAD_STAGES=(), ALL_STAGES=(),
-                            LEAD_KINDS=(), PROSPECT="", BOTH=frozenset(),
+                            KINDS=(), DEFAULT_KIND="",
                             PIPELINE=())
     return _MACHINE
 
@@ -933,20 +935,19 @@ def _from_environment(env: Any) -> dict[str, Any]:
         "STAGES": stages,
         "DEAD_STAGES": dead,
         "ALL_STAGES": stages + dead,
-        "LEAD_KINDS": kinds,
+        "KINDS": kinds,
         # The first pipeline declared. `web_agency` loads before the
         # extensions that require it, so records written before kinds existed
         # still resolve to `prospect`.
-        "PROSPECT": kinds[0] if kinds else "prospect",
-        "BOTH": frozenset(kinds),
+        "DEFAULT_KIND": kinds[0] if kinds else "prospect",
         "PIPELINE": rows,
     }
 
 
 def __getattr__(name: str) -> Any:
     """Serve the stage tables lazily. See the note beside `STAGES` above."""
-    if name in ("STAGES", "DEAD_STAGES", "ALL_STAGES", "LEAD_KINDS",
-                "PROSPECT", "BOTH", "PIPELINE"):
+    if name in ("STAGES", "DEAD_STAGES", "ALL_STAGES", "KINDS",
+                "DEFAULT_KIND", "PIPELINE"):
         return _machine()[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -968,7 +969,7 @@ def _normalise(kind: str, fields: dict[str, Any]) -> dict[str, Any]:
 
     The store writes what it is given and has no idea what any field MEANS.
     `clean_email` lived here for a real reason — agents put prose in that
-    field, and one lead was saved as
+    field, and one record was saved as
     `contact@example.fr (sourced from OSM node/1371087888 and SIRENE register)`,
     which is neither sendable nor matchable against an inbound `From` — but
     the RULE is the web agency's, not the ledger's.
@@ -992,22 +993,22 @@ def _veto(record: dict[str, Any], frm: str, to: str) -> str | None:
     return environment.current().veto("before_stage_change", record, frm, to)
 
 
-def lead_kind(lead: dict[str, Any] | None) -> str:
-    """Which pipeline a lead runs on. Absent means the original one."""
+def record_kind(record: dict[str, Any] | None) -> str:
+    """Which pipeline a record runs on. Absent means the original one."""
     m = _machine()
-    kind = (lead or {}).get("kind") or m["PROSPECT"]
-    return kind if kind in m["LEAD_KINDS"] else m["PROSPECT"]
+    kind = (record or {}).get("kind") or m["DEFAULT_KIND"]
+    return kind if kind in m["KINDS"] else m["DEFAULT_KIND"]
 
 
 def allowed_targets(from_stage: str, kind: str = "") -> set[str]:
-    """Every stage this one may legally move to, for this kind of lead."""
-    kind = kind or _machine()["PROSPECT"]
+    """Every stage this one may legally move to, for this kind of record."""
+    kind = kind or _machine()["DEFAULT_KIND"]
     return {to for f, to, _r, _k, kinds in _machine()["PIPELINE"]
             if f == from_stage and kind in kinds}
 
 
 def edge_allowed(from_stage: str, to_stage: str, kind: str = "") -> bool:
-    kind = kind or _machine()["PROSPECT"]
+    kind = kind or _machine()["DEFAULT_KIND"]
     if from_stage == to_stage and from_stage in _machine()["DEAD_STAGES"]:
         return True
     return any(f == from_stage and t == to_stage and kind in kinds
@@ -1015,9 +1016,9 @@ def edge_allowed(from_stage: str, to_stage: str, kind: str = "") -> bool:
 
 
 #: Terminal states are reachable from anywhere by an agent that has genuinely
-#: concluded the lead is dead. Enumerating 13 x 3 edges would say nothing the
+#: concluded the record is dead. Enumerating 13 x 3 edges would say nothing the
 #: stage names do not, and refusing an agent the ability to give up is how a
-#: lead gets stuck rather than closed.
+#: record gets stuck rather than closed.
 def always_reachable(kind: str | None = None) -> frozenset[str]:
     """Endings a record may be moved to from anywhere.
 
@@ -1027,7 +1028,7 @@ def always_reachable(kind: str | None = None) -> frozenset[str]:
     every other pipeline.
 
     Enumerating 15x2 edges would say nothing the stage names do not, and
-    refusing an agent the ability to give up is how a lead gets stuck rather
+    refusing an agent the ability to give up is how a record gets stuck rather
     than closed.
     """
     from . import environment
@@ -1043,16 +1044,16 @@ def always_reachable(kind: str | None = None) -> frozenset[str]:
 
 
 def roles_for(stage: str, kind: str = "") -> set[str]:
-    """Who has an outgoing edge from this stage, for this kind of lead.
+    """Who has an outgoing edge from this stage, for this kind of record.
 
     `rooms.role_for_stage` stays the router for anything a ROOM works — the
     manifests are the single source of truth for that, and this does not
     displace it. What this adds is the case the manifests cannot express: a
-    stage whose next move depends on which pipeline the lead is on. A `port`
-    lead at `published` is waiting for the operator to say the client approved
+    stage whose next move depends on which pipeline the record is on. A `port`
+    record at `published` is waiting for the operator to say the client approved
     it; a `prospect` at the same stage is waiting for Scribe to write a pitch.
     """
-    kind = kind or _machine()["PROSPECT"]
+    kind = kind or _machine()["DEFAULT_KIND"]
     return {r for f, _t, r, _k, kinds in _machine()["PIPELINE"]
             if f == stage and kind in kinds}
 
@@ -1060,7 +1061,7 @@ def roles_for(stage: str, kind: str = "") -> set[str]:
 def pipeline_steps(only_kind: str | None = None) -> list[dict[str, Any]]:
     """The pipeline grouped by step — one entry per (stage, role) pair.
 
-    A step is what actually runs: the room that works `stage` picks a lead up
+    A step is what actually runs: the room that works `stage` picks a record up
     and decides which of its outgoing edges to take. That is why a gate belongs
     to the step and not to one edge: the operator is asked BEFORE the run, when
     which edge it will take is not yet known.
@@ -1073,11 +1074,11 @@ def pipeline_steps(only_kind: str | None = None) -> list[dict[str, Any]]:
                 continue
             key = (frm, role, lk)
             step = steps.setdefault(key, {
-                "from": frm, "role": role, "lead_kind": lk, "outcomes": [],
+                "from": frm, "role": role, "record_kind": lk, "outcomes": [],
                 "order": order.get(frm, 99),
             })
             step["outcomes"].append({"to": to, "kind": edge})
-    return sorted(steps.values(), key=lambda s: (s["lead_kind"], s["order"]))
+    return sorted(steps.values(), key=lambda s: (s["record_kind"], s["order"]))
 
 
 # ---------------------------------------------------------------------------
@@ -1138,21 +1139,5 @@ def set_stage_gate(stage: str, on: bool) -> dict[str, bool]:
 def step_is_gated(stage: str) -> bool:
     """Should the pipeline ask before running the room that works `stage`?"""
     return stage in permanent_gates() or bool(stage_gates().get(stage))
-
-
-# ---------------------------------------------------------------------------
-# How we can reach a business.
-#
-# "No contact route, no lead" is the rule, but email is not the only route.
-# A brewery was disqualified with the note "not found — Instagram blocked,
-# Facebook 400": the run had located both accounts and had nowhere to record
-# them, so a business reachable two ways was filed as reachable none — and a
-# full site was built for it anyway, because a later Lens verdict re-qualified
-# it without re-checking.
-#
-# Social accounts count as routes because the operator messages them by hand.
-# Nothing here sends anything: it only decides whether a lead is worth working.
-# A phone number deliberately does NOT count — we do not cold-call.
-# ---------------------------------------------------------------------------
 
 

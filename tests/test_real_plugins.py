@@ -323,7 +323,7 @@ def test_the_orchestrator_sweeps_run_without_unresolved_names(real_env, monkeypa
 
     Every lead-reading call is stubbed to return nothing. The earlier version
     ran the real sweeps over `state/leads.json`: `_expire_silence` calls
-    `advance_lead(lead, "lost")` on live businesses and `_advance_leads`
+    `advance_record(lead, "lost")` on live businesses and `_advance_leads`
     creates tasks that are real, paid agent runs. It was saved only by
     `asyncio.run` closing the loop before those tasks were scheduled. Running
     the suite must not be able to mark a real lead lost.
@@ -332,15 +332,15 @@ def test_the_orchestrator_sweeps_run_without_unresolved_names(real_env, monkeypa
     from tanrim.orchestrator import Orchestrator
     from tanrim.world import World
 
-    monkeypatch.setattr(state_mod, "list_leads", lambda *a, **k: [])
-    monkeypatch.setattr(state_mod, "list_lead_rows", lambda *a, **k: [])
+    monkeypatch.setattr(state_mod, "list_records", lambda *a, **k: [])
+    monkeypatch.setattr(state_mod, "list_record_rows", lambda *a, **k: [])
     monkeypatch.setattr(state_mod, "list_user_approvals", lambda *a, **k: [])
 
     def refuse(*a, **k):
         raise AssertionError("a sweep tried to WRITE during the test suite")
 
-    monkeypatch.setattr(state_mod, "advance_lead", refuse)
-    monkeypatch.setattr(state_mod, "update_lead", refuse)
+    monkeypatch.setattr(state_mod, "advance_record", refuse)
+    monkeypatch.setattr(state_mod, "update_record", refuse)
     monkeypatch.setattr(state_mod, "add_user_approval", refuse)
 
     orch = Orchestrator(World())
@@ -385,3 +385,41 @@ def test_the_core_serves_no_route_about_the_work(real_env):
 
     served = {r.path for _id, router in real_env.routers() for r in router.routes}
     assert "/leads" in served and "/invoices" in served
+
+
+def test_the_core_speaks_of_records_not_leads(real_env):
+    """The ledger stores records. What a record IS belongs to a plugin.
+
+    Two deliberate exceptions, both load-bearing:
+      - `"lead_id"` as a dict KEY. It is the wire format — approval payloads,
+        history entries and log details already written into `state/*.json`,
+        and read by the frontend. Renaming it would be a migration for a
+        cosmetic gain.
+      - `state/leads.json`, the ledger file, for the same reason.
+    """
+    import re
+
+    offenders = []
+    for path in Path("backend/tanrim").rglob("*.py"):
+        if path.name == "contract.py":
+            continue            # the contract quotes the domain in its prose
+        body = path.read_text()
+        body = body.replace('"lead_id"', "").replace("'lead_id'", "")
+        body = body.replace('STATE_DIR / "leads.json"', "")
+        for m in re.finditer(r"\blead(s|_id)?\b", body):
+            line = body[:m.start()].count("\n") + 1
+            offenders.append(f"{path.name}:{line} {m.group(0)}")
+    assert not offenders, offenders
+
+
+def test_the_core_builds_no_prompt_context(real_env):
+    """`run_agent` is machinery; what goes IN the prompt is the plugin's.
+
+    `agent_helpers` formatted a business's address, the dossier's blocks and
+    Ultron's memory — one plugin's record shape, for one plugin's overseer,
+    and nothing in the core ever called any of it.
+    """
+    from tanrim import agent_helpers
+
+    leaked = [n for n in dir(agent_helpers) if n.startswith("format_")]
+    assert not leaked, f"prompt formatting left in the core: {leaked}"

@@ -24,7 +24,7 @@ class AgentSpec(BaseModel):
     role: str
     color: str = "#ffffff"
     # A bench this agent stands at even when idle, instead of the idle strip.
-    # Ultron lives at the Lead Board — an overseer with nothing on his desk is
+    # Ultron lives at the Record Board — an overseer with nothing on his desk is
     # not idle, he is reading. Everyone else steps away when their job is done.
     station: str | None = None
 
@@ -70,7 +70,7 @@ class WorkbenchSpec(BaseModel):
     A room's agent walks to the bench for the duration of a job and returns to
     the middle when it's done, so the map shows *what* is happening, not just
     that something is. Adding one is a few lines of YAML: give it an id, a name,
-    and the lead stages it handles. Position and size are computed if omitted,
+    and the record stages it handles. Position and size are computed if omitted,
     so you never have to do the geometry by hand.
     """
 
@@ -81,7 +81,7 @@ class WorkbenchSpec(BaseModel):
     name: str = ""
     # One line, shown in the panel tab and on hover.
     job: str = ""
-    # Lead stages worked at this bench. Empty means it isn't stage-driven —
+    # Record stages worked at this bench. Empty means it isn't stage-driven —
     # a review or subtask bench, reached only when another agent asks.
     stages: list[str] = Field(default_factory=list)
     # Free-form tags, e.g. ["review"] or ["subtask"], for non-stage work.
@@ -128,7 +128,7 @@ class RoomSpec(BaseModel):
     mcp_servers: list[McpServerSpec] = Field(default_factory=list)
     workbenches: list[WorkbenchSpec] = Field(default_factory=list)
     # How many agents may work in this room at once (extras are spawned on
-    # demand and retired when their lead's run through the pipeline ends).
+    # demand and retired when their record's run through the pipeline ends).
     max_workers: int = 1
 
 
@@ -337,7 +337,7 @@ def workbench(room: RoomSpec, bench_id: str) -> WorkbenchSpec | None:
 
 
 def stages_for_role(role: str) -> set[str]:
-    """Lead stages the room staffed by `role` accepts work at.
+    """Record stages the room staffed by `role` accepts work at.
 
     Derived from the workbench declarations, so the manifests stay the single
     source of truth: adding a bench with a stage is what makes that stage
@@ -354,7 +354,7 @@ def stages_for_role(role: str) -> set[str]:
 
 
 def role_for_stage(stage: str) -> str | None:
-    """Which room's agent works a lead at this stage.
+    """Which room's agent works a record at this stage.
 
     The inverse of `stages_for_role`, and like it, derived from the workbench
     declarations — so the manifests remain the only place the pipeline's shape

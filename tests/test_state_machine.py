@@ -54,7 +54,7 @@ def machine(plugins):
 def test_stages_and_terminals_come_from_the_plugins(machine):
     assert list(state.STAGES) == ["start", "middle", "end", "intake_x"]
     assert list(state.DEAD_STAGES) == ["dropped", "failed"]
-    assert state.LEAD_KINDS == ("normal", "special")
+    assert state.KINDS == ("normal", "special")
 
 
 def test_a_declared_edge_is_allowed(machine):
@@ -86,10 +86,10 @@ def test_roles_for_distinguishes_the_kinds(machine):
 
 
 def test_lead_kind_defaults_to_the_first_declared(machine):
-    assert state.lead_kind({}) == "normal"
-    assert state.lead_kind({"kind": "special"}) == "special"
-    assert state.lead_kind({"kind": "nonsense"}) == "normal"
-    assert state.lead_kind(None) == "normal"
+    assert state.record_kind({}) == "normal"
+    assert state.record_kind({"kind": "special"}) == "special"
+    assert state.record_kind({"kind": "nonsense"}) == "normal"
+    assert state.record_kind(None) == "normal"
 
 
 def test_a_pipelines_own_endings_are_reachable_from_anywhere(machine):
@@ -108,5 +108,5 @@ def test_an_empty_environment_has_no_machine_at_all(plugins):
     plugins.install({})
     assert list(state.STAGES) == []
     assert state.PIPELINE == ()
-    assert state.LEAD_KINDS == ()
+    assert state.KINDS == ()
     assert not state.edge_allowed("anything", "anywhere", "normal")

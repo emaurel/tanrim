@@ -1,12 +1,12 @@
 """Worker assignment.
 
 A room is staffed by one or more interchangeable agents of the same role. When
-two leads need the Factory at once, a second Forge is hired rather than one
-Forge queueing them, and it is retired once its lead finishes the pipeline.
+two records need the Factory at once, a second Forge is hired rather than one
+Forge queueing them, and it is retired once its record finishes the pipeline.
 
 The policy, in order:
-  1. A free worker already assigned to this lead — continuity, so the same
-     sprite follows a lead through repeated visits to a room.
+  1. A free worker already assigned to this record — continuity, so the same
+     sprite follows a record through repeated visits to a room.
   2. Any free worker.
   3. Hire a new one, up to the room's `max_workers`.
   4. Refuse. The room is genuinely at capacity.
@@ -84,7 +84,7 @@ def _is_free(world: "World", agent_id: str) -> bool:
 async def acquire(
     world: "World",
     role: str,
-    lead_id: str | None = None,
+    record_id: str | None = None,
 ) -> str:
     """Return the id of a worker that may start work now. Raises
     `RoomAtCapacity` when the room cannot take the job."""
@@ -94,37 +94,37 @@ async def acquire(
     crew = world.workers(role)
     free = [a for a in crew if _is_free(world, a.id)]
 
-    if lead_id:
+    if record_id:
         for agent in free:
-            if agent.lead_id == lead_id:
+            if agent.record_id == record_id:
                 return agent.id
     if free:
         chosen = free[0]
-        # Claim it for this lead so repeat visits reuse the same sprite.
-        chosen.lead_id = lead_id
+        # Claim it for this record so repeat visits reuse the same sprite.
+        chosen.record_id = record_id
         return chosen.id
 
     limit = max_workers(role, crew[0].home_room if crew else None)
     if len(crew) >= limit:
         raise RoomAtCapacity(role, limit)
 
-    worker = await world.spawn_worker(role, lead_id)
+    worker = await world.spawn_worker(role, record_id)
     return worker.id
 
 
-async def release_lead(world: "World", lead_id: str) -> list[str]:
-    """Retire the ephemeral workers hired for a finished lead. Returns the ids
+async def release_lead(world: "World", record_id: str) -> list[str]:
+    """Retire the ephemeral workers hired for a finished record. Returns the ids
     actually removed. Busy workers are left alone and picked up on a later pass."""
     removed: list[str] = []
     for agent in list(world.agents.values()):
-        if agent.ephemeral and agent.lead_id == lead_id and not agent.busy:
+        if agent.ephemeral and agent.record_id == record_id and not agent.busy:
             if await world.despawn_worker(agent.id):
                 removed.append(agent.id)
     return removed
 
 
 async def sweep(world: "World") -> list[str]:
-    """Retire ephemeral workers whose lead is finished, gone, or who were never
+    """Retire ephemeral workers whose record is finished, gone, or who were never
     assigned one. Cheap enough to run on the orchestrator's regular tick."""
     from . import state
 
@@ -134,13 +134,13 @@ async def sweep(world: "World") -> list[str]:
             continue
         if agent_lock(agent.id).locked():
             continue
-        lead_id = agent.lead_id
-        if lead_id is None:
+        record_id = agent.record_id
+        if record_id is None:
             if await world.despawn_worker(agent.id):
                 removed.append(agent.id)
             continue
-        lead = state.get_lead(lead_id)
-        if lead is None or lead.get("stage") in done_stages():
+        record = state.get_record(record_id)
+        if record is None or record.get("stage") in done_stages():
             if await world.despawn_worker(agent.id):
                 removed.append(agent.id)
     return removed
@@ -159,7 +159,7 @@ def crew_status(world: "World") -> dict[str, Any]:
             "name": agent.name,
             "busy": agent.busy,
             "ephemeral": agent.ephemeral,
-            "lead_id": agent.lead_id,
+            "lead_id": agent.record_id,
         })
         if agent.busy:
             bucket["busy"] += 1

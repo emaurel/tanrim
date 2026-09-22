@@ -96,196 +96,6 @@ def resolve_room_tools(room_id: str) -> list[str]:
     return out
 
 
-def format_feedback(notes: list[dict[str, Any]], room_id: str, max_n: int = 20) -> str:
-    """Format operator feedback that's either global (room_id=None) or scoped to
-    the agent's room. (scope) markers help the agent see what applies directly.
-    """
-    if not notes:
-        return ""
-    relevant = [n for n in notes if n.get("room_id") in (None, room_id)]
-    if not relevant:
-        return ""
-    lines = [
-        "OPERATOR FEEDBACK (from Archives — most recent first. (global) applies "
-        "everywhere; (room) is scoped specifically to your room. Respect rejections, "
-        "lean into approvals, treat feedback as guidance):",
-    ]
-    for n in relevant[:max_n]:
-        scope = n.get("room_id") or "global"
-        text = (n.get("text") or "").strip().replace("\n", " ")
-        if len(text) > 280:
-            text = text[:277] + "…"
-        lines.append(f"- [{n['kind']}] ({scope}) {text}")
-    return "\n".join(lines)
-
-
-def format_ultron_memory(limit: int = 18) -> str:
-    """Recent cross-agent activity Ultron should see so he doesn't repeat
-    himself, re-ask the same operator question, or forget what's already
-    been produced. Pulled from the activity log.
-    """
-    events = state.list_events(limit=80)
-    keep_kinds = {
-        "dispatch_start", "dispatch_end",
-        "tool_request", "tool_review", "tool_fabricate",
-        "ask_ultron", "ask_response",
-        "agent_report",
-        "run_end",
-        "user_approval",
-    }
-    relevant = [e for e in events if e["kind"] in keep_kinds][:limit]
-    if not relevant:
-        return ""
-    lines = [
-        "YOUR RECENT MEMORY (cross-agent activity, oldest first — reference "
-        "this so you don't re-ask questions you've already asked, don't "
-        "re-decide what you already decided, and notice what's already been "
-        "produced):"
-    ]
-    for e in reversed(relevant):  # oldest first reads more naturally
-        flow = (
-            f"{e['from']} → {e['to']}" if (e.get("from") and e.get("to"))
-            else (e.get("from") or e.get("to") or "system")
-        )
-        outcome = f" [{e['outcome']}]" if e.get("outcome") else ""
-        summary = (e.get("summary") or "").replace("\n", " ")
-        if len(summary) > 240:
-            summary = summary[:237] + "…"
-        lines.append(f"- {flow}{outcome}: {summary}")
-    return "\n".join(lines)
-
-
-def format_past_outputs(
-    records: list[dict[str, Any]],
-    label: str,
-    name_field: str,
-    max_n: int = 10,
-) -> str:
-    """Avoid-list of an agent's prior outputs so they don't redo the same thing.
-    `name_field` is the key in `data` to use as the headline (e.g. 'design_concept'
-    for Forge, 'title' for Scribe, 'niche' for Nova).
-    """
-    if not records:
-        return ""
-    lines = [
-        f"YOUR PAST {label.upper()} (you've already produced these — avoid "
-        f"duplicating; pivot or go deeper instead):"
-    ]
-    for r in records[:max_n]:
-        data = r.get("data") or {}
-        name = (data.get(name_field) or "(unparsed)").strip()
-        prompt = (r.get("prompt") or "").strip().replace("\n", " ")
-        if len(prompt) > 80:
-            prompt = prompt[:77] + "…"
-        lines.append(f"- {name}  (asked: {prompt})")
-    return "\n".join(lines)
-
-
-def format_secret_names() -> str:
-    """List available secret names (never values) so agents and Tinker know
-    which env vars they can rely on. Pulled live so the user can add a secret
-    mid-session and it becomes visible immediately on the next agent run.
-    """
-    from . import secrets as secrets_store
-    items = secrets_store.list_secrets()
-    if not items:
-        return ""
-    names = [s["name"] for s in items]
-    return (
-        "AVAILABLE SECRETS (env var names already loaded into os.environ on "
-        "this machine — values not shown here for security). When a tool needs "
-        "an API key from this list, just call it; the tool's code reads the "
-        "value via os.environ.get(NAME). Do NOT claim a credential is missing "
-        "if its name appears below:\n- " + "\n- ".join(names)
-    )
-
-
-def format_sent_back(lead: dict[str, Any]) -> str:
-    """What the operator said when they sent this lead back for another look.
-
-    It travels in `lead["sent_back"]` rather than only in the lead's history,
-    because history is not in anybody's prompt. It used to be only in history:
-    a lead was refused twice with "find photos from their instagram" and the
-    photo pass redid precisely what it had done before, both times, because
-    nothing ever told it. A send-back that does not reach the agent is just an
-    expensive way to repeat yourself.
-    """
-    sb = lead.get("sent_back") or {}
-    reason = str(sb.get("reason") or "").strip()
-    if not reason:
-        return ""
-    return (
-        "THE OPERATOR SENT THIS LEAD BACK, AND THIS IS WHY. They saw what you "
-        "produced last time and asked for something specific. Do THAT — not "
-        "the same work again:\n\n"
-        f"  \"{reason}\"\n\n"
-        "If what they are asking for turns out not to be possible, say so "
-        "plainly in your output rather than quietly doing what you did before. "
-        "Being told the same thing twice means the first attempt did not "
-        "register."
-    )
-
-
-def format_escalations(agent_id: str, limit: int = 5) -> str:
-    """Show the agent the guidance Ultron gave on prior escalations they raised
-    via `ask_ultron`. Critical for the auto-rerun: the rerun must see the
-    resolution, otherwise the loop is identical to the failing one.
-    """
-    items = state.list_escalations(agent=agent_id, limit=20)
-    resolved = [
-        e for e in items
-        if e["status"] == "resolved" and (e.get("ultron_response") or {}).get("guidance")
-    ][:limit]
-    if not resolved:
-        return ""
-    lines = [
-        "ULTRON'S RESPONSES TO YOUR PRIOR QUESTIONS (apply this guidance — "
-        "do NOT re-ask the same question):"
-    ]
-    for e in resolved:
-        msg = (e.get("message") or "").strip().replace("\n", " ")
-        if len(msg) > 200:
-            msg = msg[:197] + "…"
-        guidance = (e["ultron_response"]["guidance"] or "").strip()
-        if e["ultron_response"].get("alert_operator"):
-            lines.append(f"- you asked: \"{msg}\"")
-            lines.append(f"  Ultron: {guidance}  [also flagged operator]")
-        else:
-            lines.append(f"- you asked: \"{msg}\"")
-            lines.append(f"  Ultron: {guidance}")
-    return "\n".join(lines)
-
-
-def format_tool_history(agent_id: str, limit: int = 10) -> str:
-    """Tell the agent what tools they've already requested and what happened.
-    Critical for adaptation: never re-request a denied tool; use ready ones.
-    """
-    requests = state.list_tool_requests(limit=50)
-    mine = [r for r in requests if r.get("requesting_agent") == agent_id]
-    if not mine:
-        return ""
-    lines = [
-        "YOUR PRIOR TOOL REQUESTS (DO NOT re-request denied or failed tools — "
-        "adapt your approach. CALL any tool marked READY when relevant):"
-    ]
-    for r in mine[:limit]:
-        status = r["status"]
-        name = r["name"]
-        if status == "denied":
-            reason = (r.get("ultron_decision") or {}).get("reason", "")
-            lines.append(f"- '{name}' DENIED by Ultron: {reason[:200]}")
-        elif status == "failed":
-            err = (r.get("tinker_result") or {}).get("error", "fabrication failed")
-            lines.append(f"- '{name}' FAILED to fabricate: {err[:200]}")
-        elif status == "ready":
-            lines.append(f"- '{name}' READY — available; call it via mcp__{name}__* when relevant")
-        elif status == "awaiting_user":
-            lines.append(f"- '{name}' awaiting operator approval (not yet available)")
-        elif status in ("pending", "approved", "fabricating"):
-            lines.append(f"- '{name}' {status} (in flight; not yet available this run)")
-    return "\n".join(lines)
-
-
 # ---------- Shared agent run loop ----------
 #
 # Every room agent does the same six things around its Claude call: flip the
@@ -301,7 +111,7 @@ from dataclasses import dataclass, field  # noqa: E402
 
 # One lock per agent. Ultron chains dispatches off agent reports, and the
 # operator can click a room's run button at the same moment — without this an
-# agent can end up running twice at once, both writing the same lead.
+# agent can end up running twice at once, both writing the same record.
 _AGENT_LOCKS: dict[str, asyncio.Lock] = {}
 
 
@@ -316,8 +126,8 @@ class AgentBusy(RuntimeError):
     """Raised when an agent is asked to start while its previous run is live."""
 
 
-# (role, lead_id) pairs currently being worked. Several things can dispatch the
-# same lead at nearly the same moment — an operator decision, the stage sweep,
+# (role, record_id) pairs currently being worked. Several things can dispatch the
+# same record at nearly the same moment — an operator decision, the stage sweep,
 # Ultron chaining off a report — and the per-worker lock does not stop that,
 # because each dispatch simply hires a different worker. Two Forges then write
 # the same site directory and clobber each other.
@@ -365,17 +175,17 @@ def cancel_worker(worker_id: str, reason: str = "") -> bool:
     return True
 
 
-def cancel_lead(lead_id: str, reason: str = "") -> list[str]:
-    """Stop every run currently working this lead. Returns the workers stopped.
+def cancel_lead(record_id: str, reason: str = "") -> list[str]:
+    """Stop every run currently working this record. Returns the workers stopped.
 
-    Called when the operator moves a lead by hand. A run takes minutes, and
+    Called when the operator moves a record by hand. A run takes minutes, and
     letting it finish means paying for output about a state that no longer
     holds — and, before the supersede guard, having it overwrite the decision.
     Cancelling is the honest response to "I have decided something else".
     """
     stopped: list[str] = []
     for worker_id, info in list(_IN_FLIGHT.items()):
-        if info.get("lead_id") != lead_id:
+        if info.get("lead_id") != record_id:
             continue
         task = _TASKS.get(worker_id)
         if task is not None and not task.done():
@@ -385,8 +195,8 @@ def cancel_lead(lead_id: str, reason: str = "") -> list[str]:
         state.log_event(
             "run_end", from_="operator", to=",".join(stopped),
             summary=f"stopped {', '.join(stopped)} — the operator moved this "
-                    f"lead mid-run{(': ' + reason) if reason else ''}"[:240],
-            outcome="cancelled", details={"lead_id": lead_id},
+                    f"record mid-run{(': ' + reason) if reason else ''}"[:240],
+            outcome="cancelled", details={"lead_id": record_id},
         )
     return stopped
 
@@ -677,7 +487,7 @@ async def run_agent(
     `builtin_tools` opts the agent into SDK file/shell tools (e.g. ["Write",
     "Read", "Edit"]) — used by Forge, which genuinely writes a website to disk,
     and by Lens, which opens screenshot PNGs. Pair it with `cwd` so the agent is
-    scoped to that lead's build directory.
+    scoped to that record's build directory.
 
     `skills` names skills from `<repo>/.claude/skills`; they require a `cwd`,
     since Claude Code discovers project skills relative to it.
@@ -703,42 +513,42 @@ async def run_agent(
     from .meta_tools import make_meta_server
     from .tools import registry as tool_registry
 
-    lead_id = (original_task or {}).get("lead_id")
+    record_id = (original_task or {}).get("lead_id")
 
-    # Claim the lead for this role before anything can yield. Two dispatches of
+    # Claim the record for this role before anything can yield. Two dispatches of
     # the same work arriving together is normal — the point is that only one
     # of them proceeds.
-    # A delegated specialist runs as the SAME role on the SAME lead — that is
+    # A delegated specialist runs as the SAME role on the SAME record — that is
     # the design: it borrows a worker from the parent's own room. So it must be
-    # exempt from the parent's lead claim, or it collides with the run that
+    # exempt from the parent's record claim, or it collides with the run that
     # asked for it. It did: Forge recorded
     # "delegate_subtask returned 'AgentBusy: forge is already working this
-    # lead'; I drew mark.svg + logo.svg myself". Delegation worked before the
+    # record'; I drew mark.svg + logo.svg myself". Delegation worked before the
     # claim existed and has been silently impossible since.
     #
     # The parent blocks on the specialist, so nothing races: there is exactly
     # one Forge writing at a time either way, and MAX_DEPTH already stops a
     # specialist delegating further.
-    claim = (role, lead_id) if lead_id and delegation_depth == 0 else None
+    claim = (role, record_id) if record_id and delegation_depth == 0 else None
     if claim is not None:
         if claim in _LEAD_CLAIMS:
             state.log_event(
                 "run_end", from_=role,
-                summary=f"skipped: {role} is already working lead {lead_id[:8]}",
+                summary=f"skipped: {role} is already working record {record_id[:8]}",
                 outcome="skipped",
             )
-            raise AgentBusy(f"{role} is already working this lead")
+            raise AgentBusy(f"{role} is already working this record")
         _LEAD_CLAIMS.add(claim)
 
     # And on disk, for the writers. `_LEAD_CLAIMS` lives in this process, so it
     # cannot see a `claude` subprocess orphaned by a killed server — which is
     # the case that actually cost money, since the replacement process boots
-    # with an empty claim set and re-dispatches the same lead within seconds.
+    # with an empty claim set and re-dispatches the same record within seconds.
     # Only writers take this; a read-only QA pass or a delegated specialist
     # shares the parent's directory legitimately.
     held = None
     if exclusive_cwd and cwd is not None:
-        held = buildlock.acquire(cwd, agent_id=role, lead_id=lead_id)
+        held = buildlock.acquire(cwd, agent_id=role, record_id=record_id)
         if held is not None:
             if claim is not None:
                 _LEAD_CLAIMS.discard(claim)
@@ -746,7 +556,7 @@ async def run_agent(
                 "run_end", from_=role,
                 summary=(f"skipped: pid {held.get('pid')} ({held.get('agent_id')}) "
                          f"is still writing this build directory")[:240],
-                outcome="skipped", details={"lead_id": lead_id, "holder": held},
+                outcome="skipped", details={"lead_id": record_id, "holder": held},
             )
             raise AgentBusy(
                 f"another process (pid {held.get('pid')}) is still writing "
@@ -754,7 +564,7 @@ async def run_agent(
 
     # Pick the worker BEFORE taking any lock — acquire() may hire a new one.
     try:
-        agent_id = await workers_mod.acquire(world, role, lead_id)
+        agent_id = await workers_mod.acquire(world, role, record_id)
     except Exception:
         if claim is not None:
             _LEAD_CLAIMS.discard(claim)
@@ -779,10 +589,10 @@ async def run_agent(
     agent = world.agents.get(agent_id)
     if agent is not None:
         agent.busy = True
-        agent.lead_id = lead_id
+        agent.record_id = record_id
     deleg_ctx: dict[str, Any] = {
         **(delegation_context or {}),
-        "lead_id": lead_id,
+        "lead_id": record_id,
         "cwd": str(cwd) if cwd is not None else None,
     }
 
@@ -815,7 +625,7 @@ async def run_agent(
     _IN_FLIGHT[agent_id] = {
         "role": role,
         "summary": summary,
-        "lead_id": lead_id,
+        "lead_id": record_id,
         "workbench": workbench,
         "started_ts": started_ts,
     }
@@ -826,9 +636,9 @@ async def run_agent(
     # asyncio.Task is not JSON — putting it there made every room showing a
     # working agent return 500, which the panel rendered as loading forever.
     _TASKS[agent_id] = asyncio.current_task()
-    # Declares which lead this run belongs to, so `state.advance_lead` can
+    # Declares which record this run belongs to, so `state.advance_record` can
     # refuse a write from a run the operator has already overtaken.
-    state.RUN_CONTEXT.set({"lead_id": lead_id, "started_ts": started_ts,
+    state.RUN_CONTEXT.set({"lead_id": record_id, "started_ts": started_ts,
                            "agent_id": agent_id})
     if workbench:
         await world.move_to_workbench(agent_id, room_id, workbench)
@@ -1009,7 +819,7 @@ async def run_agent(
                 usage.record(
                     agent_id, model, in_t, out_t,
                     cache_write=cw, cache_read=cr,
-                    lead_id=lead_id, workbench=workbench,
+                    record_id=record_id, workbench=workbench,
                 )
             result.input_tokens += in_t
             result.output_tokens += out_t
@@ -1070,7 +880,7 @@ async def run_agent(
                         summary=(f"could not resume the interrupted session "
                                  f"({type(e).__name__}); starting a fresh one "
                                  f"with a recap of what it did")[:240],
-                        outcome="continued", details={"lead_id": lead_id},
+                        outcome="continued", details={"lead_id": record_id},
                     )
                     continue
                 if _hit_budget_ceiling(e) or not _hit_turn_limit(e):
@@ -1092,7 +902,7 @@ async def run_agent(
                         "run_end", from_=agent_id,
                         summary=(f"ran out of turns again and stopped: {why_not}")[:240],
                         outcome="turns_exhausted",
-                        details={"lead_id": lead_id,
+                        details={"lead_id": record_id,
                                  "continuations": result.continuations},
                     )
                     raise
@@ -1117,7 +927,7 @@ async def run_agent(
                              + f" with {allowance} turns to finish"
                              + (f", ${left:.2f} of budget left" if left is not None else ""))[:240],
                     outcome="continued",
-                    details={"lead_id": lead_id,
+                    details={"lead_id": record_id,
                              "continuation": result.continuations,
                              "resumed_session": bool(session_id)},
                 )
@@ -1224,7 +1034,7 @@ async def run_agent(
         state.log_event(
             "run_end", from_=agent_id,
             summary=f"cancelled: {summary}"[:240], outcome="cancelled",
-            details={"lead_id": lead_id},
+            details={"lead_id": record_id},
         )
         raise
     finally:
@@ -1242,71 +1052,3 @@ async def run_agent(
         await world.set_status(agent_id, "idle")
 
 
-def format_lead(lead: dict[str, Any], *, include: tuple[str, ...] = ()) -> str:
-    """Render a lead as prompt context. `include` selects the heavy enrichment
-    blocks ('audit', 'site', 'qa', 'outreach') so each agent only pays for the
-    slots it actually needs."""
-    if not lead:
-        return "(no lead)"
-    lines = [
-        "THE LEAD YOU ARE WORKING ON:",
-        f"- id: {lead['id']}",
-        f"- name: {lead.get('name')}",
-        f"- stage: {lead.get('stage')}",
-    ]
-    for key in ("category", "address", "city", "country", "phone", "email", "website"):
-        val = lead.get(key)
-        if val:
-            lines.append(f"- {key}: {val}")
-    src = lead.get("source") or {}
-    if src:
-        lines.append(f"- source: {src.get('kind')} {src.get('ref', '')}".rstrip())
-    for key in include:
-        blob = lead.get(key)
-        if blob:
-            lines.append(f"- {key}: {json.dumps(blob, ensure_ascii=False)[:1500]}")
-    hist = lead.get("history") or []
-    if hist:
-        lines.append("- history: " + " | ".join(
-            f"{h.get('agent') or '?'}→{h.get('stage')}" for h in hist[-6:]
-        ))
-    return "\n".join(lines)
-
-
-def format_lead_board(limit: int = 24) -> str:
-    """The whole pipeline at a glance, for Ultron. Grouped by stage so he can
-    see where work is piled up and what the next move is."""
-    from . import state
-
-    leads = state.list_leads(limit=200)
-    if not leads:
-        return "LEAD BOARD: empty. Nothing is in the pipeline — the Watchtower must source first."
-    by_stage: dict[str, list[dict[str, Any]]] = {}
-    for lead in leads:
-        by_stage.setdefault(lead.get("stage", "?"), []).append(lead)
-
-    lines = [
-        "LEAD BOARD (every lead in the pipeline and where it is. Dispatch by "
-        "lead id. Stage order: sourced → qualified → built → qa_passed → "
-        "published → contacted → replied → won):"
-    ]
-    shown = 0
-    for stage in state.ALL_STAGES:
-        bucket = by_stage.get(stage) or []
-        if not bucket:
-            continue
-        lines.append(f"  [{stage}] {len(bucket)}")
-        for lead in bucket:
-            if shown >= limit:
-                lines.append("    …(more not shown)")
-                break
-            last = (lead.get("history") or [{}])[-1]
-            note = (last.get("note") or "")[:80]
-            city = lead.get("city") or ""
-            lines.append(
-                f"    - {lead['id']}  {lead.get('name')}"
-                + (f" ({city})" if city else "")
-                + (f" — {note}" if note else "")
-            )
-            shown += 1
-    return "\n".join(lines)

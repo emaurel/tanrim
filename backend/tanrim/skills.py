@@ -5,7 +5,7 @@ SKILL.md. A room grants skills to its agent by listing them in
 `rooms/<id>.yaml` under `skills:`.
 
 Claude Code discovers project skills relative to the run's **working
-directory**, and our agents run scoped to a per-lead build directory — so the
+directory**, and our agents run scoped to a per-record build directory — so the
 skills in the repo root are invisible to them by default. Rather than widen an
 agent's cwd to the whole repo (which would let a file-writing agent roam), each
 run gets a `.claude` symlink in its own directory, pointing at a purpose-built

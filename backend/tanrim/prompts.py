@@ -76,18 +76,18 @@ def loader(module: str):
 def kind_loader(module: str):
     """Like `loader`, but takes the RECORD and resolves for its kind.
 
-    `_PK("ROLE", lead)` in a `_build_*_prompt` is the whole change an agent
+    `_PK("ROLE", record)` in a `_build_*_prompt` is the whole change an agent
     module needs: it keeps knowing nothing about which plugins exist, and the
     environment decides whose prompt answers.
     """
     short = module.rsplit(".", 1)[-1]
 
-    def resolve(name: str, lead: dict | None = None, kind: str | None = None) -> str:
-        if kind is None and lead is not None:
-            # Through `state.lead_kind`, so a record written before kinds
+    def resolve(name: str, record: dict | None = None, kind: str | None = None) -> str:
+        if kind is None and record is not None:
+            # Through `state.record_kind`, so a record written before kinds
             # existed resolves as the base pipeline rather than as no-kind.
             from . import state
-            kind = state.lead_kind(lead)
+            kind = state.record_kind(record)
         return load(short, name, kind)
 
     return resolve

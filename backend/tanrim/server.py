@@ -117,13 +117,13 @@ async def stop_agent(worker_id: str, body: dict[str, Any] | None = None):
     info = agent_helpers.all_in_flight().get(worker_id)
     if not info:
         raise HTTPException(404, f"{worker_id} is not running anything")
-    lead_id = info.get("lead_id")
-    if lead_id:
+    record_id = info.get("lead_id")
+    if record_id:
         # So a run that finishes in the same instant cannot write its result.
-        state.mark_operator_move(lead_id)
+        state.mark_operator_move(record_id)
     agent_helpers.cancel_worker(worker_id, str((body or {}).get("reason") or ""))
     await world.publish({"type": "approvals_updated"})
-    return {"ok": True, "stopped": worker_id, "lead_id": lead_id,
+    return {"ok": True, "stopped": worker_id, "lead_id": record_id,
             "was_doing": info.get("summary")}
 
 
@@ -193,9 +193,9 @@ async def put_worker_caps(caps: WorkerCaps) -> dict[str, Any]:
     # `max_workers` in the `/rooms` payload — nothing reads it for capacity,
     # and the settings pane reads `/rooms/workers` instead.)
     #
-    # Raising a cap hires nobody by itself: a worker appears when a lead needs
+    # Raising a cap hires nobody by itself: a worker appears when a record needs
     # a room whose workers are all busy. Lowering it fires nobody either; the
-    # sweep retires them as their leads finish.
+    # sweep retires them as their records finish.
     return {"ok": True, "changed": sorted(changed), "problems": problems}
 
 
@@ -233,7 +233,7 @@ async def get_room_state(room_id: str) -> dict[str, Any]:
             "status": a.status,
             "busy": a.busy,
             "ephemeral": a.ephemeral,
-            "lead_id": a.lead_id,
+            "lead_id": a.record_id,
         }
         for a in world.agents.values()
         if a.home_room == room_id
@@ -253,7 +253,7 @@ async def get_room_state(room_id: str) -> dict[str, Any]:
         ]
         benches.append({
             **bench.model_dump(),
-            "queue": state.list_leads(stages=list(bench.stages), limit=40)
+            "queue": state.list_records(stages=list(bench.stages), limit=40)
                      if bench.stages else [],
             "working": at_bench,
             "occupants": [
@@ -307,7 +307,7 @@ async def get_plugins() -> dict[str, Any]:
         "plugins": environment.current().describe(),
         "stages": list(state.STAGES),
         "dead_stages": list(state.DEAD_STAGES),
-        "lead_kinds": list(state.LEAD_KINDS),
+        "lead_kinds": list(state.KINDS),
         "edges": len(state.PIPELINE),
     }
 
@@ -322,7 +322,7 @@ async def get_pipeline() -> dict[str, Any]:
     """
     gates = state.stage_gates()
     _permanent = state.permanent_gates()
-    counts = state.lead_counts_by_stage()
+    counts = state.counts_by_stage()
     steps = []
     for step in state.pipeline_steps():
         stage, role = step["from"], step["role"]
@@ -332,7 +332,7 @@ async def get_pipeline() -> dict[str, Any]:
         steps.append({
             "stage": stage,
             "role": role,
-            "lead_kind": step["lead_kind"],
+            "record_kind": step["record_kind"],
             "room_id": room_id,
             "room_name": getattr(room, "name", room_id),
             "outcomes": step["outcomes"],
@@ -344,7 +344,7 @@ async def get_pipeline() -> dict[str, Any]:
     return {
         "steps": steps,
         "stages": list(state.STAGES),
-        "lead_kinds": list(state.LEAD_KINDS),
+        "lead_kinds": list(state.KINDS),
         "dead_stages": sorted(state.DEAD_STAGES),
         "gates": gates,
     }
@@ -381,7 +381,7 @@ async def health():
         "ok": True,
         "rooms": len(world.rooms),
         "agents": len(world.agents),
-        "leads": state.lead_counts_by_stage(),
+        "records": state.counts_by_stage(),
     }
 
 
@@ -394,11 +394,11 @@ async def list_approvals(status: str = "pending"):
 
 
 async def continue_pipeline(
-    lead_id: str, why: str, prefer_role: str | None = None
+    record_id: str, why: str, prefer_role: str | None = None
 ) -> str | None:
-    """Dispatch whichever room works this lead's current stage.
+    """Dispatch whichever room works this record's current stage.
 
-    An operator decision can move a lead — rejecting a publish sends it back to
+    An operator decision can move a record — rejecting a publish sends it back to
     the Factory — but nothing was picking it up afterwards. Ultron only reacts
     to agents reporting in, so a rejection with detailed feedback sat at
     `qa_failed` forever and the feedback was never acted on.
@@ -409,10 +409,10 @@ async def continue_pipeline(
     """
     from .rooms import role_for_stage
 
-    lead = state.get_lead(lead_id)
-    if lead is None:
+    record = state.get_record(record_id)
+    if record is None:
         return None
-    stage = lead.get("stage")
+    stage = record.get("stage")
     # Some stages are worked by two rooms — `published` belongs to both the Copy
     # Desk (write the pitch) and Communications (send it). The caller knows
     # which it means; the stage alone does not.
@@ -426,9 +426,9 @@ async def continue_pipeline(
         "dispatch_end", from_="operator", to=role,
         summary=f"{why} → {role} picks it up at '{stage}'",
         outcome="dispatched",
-        details={"lead_id": lead_id, "stage": stage},
+        details={"lead_id": record_id, "stage": stage},
     )
-    asyncio.create_task(runner(world, {"lead_id": lead_id, "prompt": why}))
+    asyncio.create_task(runner(world, {"lead_id": record_id, "prompt": why}))
     return role
 
 

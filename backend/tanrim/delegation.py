@@ -1,6 +1,6 @@
 """Agent-initiated delegation.
 
-Until now a second worker only ever appeared because two leads needed the same
+Until now a second worker only ever appeared because two records needed the same
 room at once. This lets an agent hire a helper for a *subtask* — Forge, part-way
 through a build, deciding the site needs a logo and handing that off rather than
 losing its thread over it.
@@ -97,7 +97,7 @@ async def run_specialist(
     instruction: str,
     deliverable: str,
     cwd: Path,
-    lead_id: str | None,
+    record_id: str | None,
     depth: int = 1,
 ) -> dict[str, Any]:
     """Hire a helper for one subtask and return what it produced."""
@@ -119,7 +119,7 @@ async def run_specialist(
         summary=f"subtask for {parent_role}: {name}",
         say=f"{name[:26]}…",
         workbench="craft",
-        original_task={"lead_id": lead_id, "subtask": name},
+        original_task={"lead_id": record_id, "subtask": name},
         builtin_tools=["Write", "Read", "Edit", "Glob", "Bash"],
         cwd=cwd,
         permission_mode="acceptEdits",
@@ -136,7 +136,7 @@ async def run_specialist(
                '"review_verdict":null,"notes":[]}',
         delegation_depth=depth,    # blocks this worker from delegating again
         delegation_context={
-            "lead_id": lead_id, "cwd": str(cwd), "parent_role": parent_role,
+            "lead_id": record_id, "cwd": str(cwd), "parent_role": parent_role,
         },
     )
 
@@ -159,7 +159,7 @@ async def run_specialist(
         "subtask", from_=result.worker_id or parent_role, to=parent_role,
         summary=f"{name}: {out['summary'][:160]}",
         outcome="completed" if out["ok"] else "failed",
-        details={"lead_id": lead_id, "files": written, "cost_usd": result.cost_usd},
+        details={"lead_id": record_id, "files": written, "cost_usd": result.cost_usd},
     )
     return out
 
@@ -251,7 +251,7 @@ async def run_review(
     question: str,
     cwd: Path,
     files: list[str],
-    lead_id: str | None,
+    record_id: str | None,
     requested_by: str,
 ) -> dict[str, Any]:
     """Have another room's agent judge an artifact, and return their verdict."""
@@ -288,7 +288,7 @@ async def run_review(
         summary=f"review for {requested_by}: {question[:80]}",
         say=f"reviewing for {requested_by[:14]}…",
         workbench="review",
-        original_task={"lead_id": lead_id},
+        original_task={"lead_id": record_id},
         builtin_tools=tools,
         cwd=cwd,
         max_turns=16,
@@ -303,7 +303,7 @@ async def run_review(
         "subtask_review", from_=result.worker_id or reviewer_role, to=requested_by,
         summary=f"{verdict}: {(data.get('reasoning') or '')[:160]}",
         outcome=verdict,
-        details={"lead_id": lead_id, "cost_usd": result.cost_usd},
+        details={"lead_id": record_id, "cost_usd": result.cost_usd},
     )
     return {
         "verdict": verdict,
