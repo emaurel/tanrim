@@ -17,9 +17,6 @@ from .config import ROOT
 
 STATE_DIR = ROOT / "state"
 NOTES_FILE = STATE_DIR / "notes.json"
-BRIEFS_FILE = STATE_DIR / "briefs.json"
-DESIGNS_FILE = STATE_DIR / "designs.json"
-LISTINGS_FILE = STATE_DIR / "listings.json"
 LEADS_FILE = STATE_DIR / "leads.json"
 ROOM_TOOL_OVERRIDES_FILE = STATE_DIR / "room_tool_overrides.json"
 EVENTS_FILE = STATE_DIR / "events.json"
@@ -106,9 +103,6 @@ def _ensure() -> None:
     STATE_DIR.mkdir(exist_ok=True)
     for f, default in [
         (NOTES_FILE, "[]"),
-        (BRIEFS_FILE, "[]"),
-        (DESIGNS_FILE, "[]"),
-        (LISTINGS_FILE, "[]"),
         (LEADS_FILE, "[]"),
         (ROOM_TOOL_OVERRIDES_FILE, "{}"),
         (EVENTS_FILE, "[]"),
@@ -153,92 +147,6 @@ def delete_note(note_id: str) -> bool:
         if len(notes) == n0:
             return False
         _write(NOTES_FILE, notes)
-    return True
-
-
-def list_briefs(limit: int = 50) -> list[dict[str, Any]]:
-    _ensure()
-    briefs: list[dict[str, Any]] = _read(BRIEFS_FILE)
-    briefs.sort(key=lambda b: b["ts"], reverse=True)
-    return briefs[:limit]
-
-
-def add_brief(brief: dict[str, Any]) -> dict[str, Any]:
-    _ensure()
-    record = {
-        "id": str(uuid.uuid4()),
-        "ts": time.time(),
-        **brief,
-    }
-    with _lock:
-        briefs: list[dict[str, Any]] = _read(BRIEFS_FILE)
-        briefs.append(record)
-        _write(BRIEFS_FILE, briefs)
-    return record
-
-
-def _crud_list(file_path, *, limit: int = 50) -> list[dict[str, Any]]:
-    _ensure()
-    items: list[dict[str, Any]] = json.loads(file_path.read_text())
-    items.sort(key=lambda r: r["ts"], reverse=True)
-    return items[:limit]
-
-
-def _crud_add(file_path, record: dict[str, Any]) -> dict[str, Any]:
-    _ensure()
-    rec = {"id": str(uuid.uuid4()), "ts": time.time(), **record}
-    with _lock:
-        items: list[dict[str, Any]] = json.loads(file_path.read_text())
-        items.append(rec)
-        file_path.write_text(json.dumps(items, indent=2))
-    return rec
-
-
-def _crud_delete(file_path, item_id: str) -> bool:
-    _ensure()
-    with _lock:
-        items: list[dict[str, Any]] = json.loads(file_path.read_text())
-        n0 = len(items)
-        items = [r for r in items if r["id"] != item_id]
-        if len(items) == n0:
-            return False
-        file_path.write_text(json.dumps(items, indent=2))
-    return True
-
-
-def list_designs(limit: int = 50) -> list[dict[str, Any]]:
-    return _crud_list(DESIGNS_FILE, limit=limit)
-
-
-def add_design(record: dict[str, Any]) -> dict[str, Any]:
-    return _crud_add(DESIGNS_FILE, record)
-
-
-def delete_design(design_id: str) -> bool:
-    return _crud_delete(DESIGNS_FILE, design_id)
-
-
-def list_listings(limit: int = 50) -> list[dict[str, Any]]:
-    return _crud_list(LISTINGS_FILE, limit=limit)
-
-
-def add_listing(record: dict[str, Any]) -> dict[str, Any]:
-    return _crud_add(LISTINGS_FILE, record)
-
-
-def delete_listing(listing_id: str) -> bool:
-    return _crud_delete(LISTINGS_FILE, listing_id)
-
-
-def delete_brief(brief_id: str) -> bool:
-    _ensure()
-    with _lock:
-        briefs: list[dict[str, Any]] = _read(BRIEFS_FILE)
-        n0 = len(briefs)
-        briefs = [b for b in briefs if b["id"] != brief_id]
-        if len(briefs) == n0:
-            return False
-        _write(BRIEFS_FILE, briefs)
     return True
 
 
@@ -516,29 +424,6 @@ def update_escalation(esc_id: str, **fields: Any) -> dict[str, Any] | None:
 # `PIPELINE` are all served by `__getattr__` at the foot of this module.
 
 
-EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
-
-
-def clean_email(value: Any) -> str | None:
-    """Pull a usable address out of whatever a model wrote in the field.
-
-    Agents append provenance to it — one real lead was stored as
-    `contact@example.fr (sourced from OSM node/1371087888 and SIRENE register)`, which
-    is neither sendable nor matchable against an inbound `From` header. The
-    address is the only part that can be acted on, so it is the only part kept.
-    """
-    if not value:
-        return None
-    text = str(value)
-    # A display-name form gets handled first; otherwise take the first address.
-    _, addr = parseaddr(text)
-    if addr and EMAIL_RE.fullmatch(addr):
-        return addr.lower()
-    found = EMAIL_RE.search(text)
-    return found.group(0).lower() if found else None
-
-
-
 # ---------------------------------------------------------------------------
 # Operator overrides beat work already in flight.
 #
@@ -581,33 +466,39 @@ def add_lead(
     source: dict[str, Any] | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
-    """Create a lead at stage `sourced`. `fields` may carry anything Scout
-    already knows (address, phone, website, category, raw payload)."""
+    """Create a record at its pipeline's entry stage.
+
+    `fields` carries whatever the caller already knows. The store has no
+    opinion about what those are: it used to open five named slots — `audit`,
+    `site`, `qa`, `outreach`, `preview_url` — which were one plugin's dossier
+    sections, and it chose the starting stage by testing the kind against a
+    hardcoded `"port"`. Both now come from the pipeline itself.
+    """
     _ensure()
     m = _machine()
     kind = fields.pop("kind", m["PROSPECT"])
     if kind not in m["LEAD_KINDS"]:
-        raise ValueError(f"unknown lead kind: {kind}")
+        raise ValueError(f"unknown kind: {kind}")
+    from . import environment
+
+    entry = environment.current().entry(kind) if environment.booted() else ""
+    stage = fields.pop("stage", entry)
+    if not stage:
+        raise ValueError(
+            f"the {kind!r} pipeline declares no entry stage, so there is "
+            f"nowhere to create this record — set `Pipeline(entry=...)`")
     rec: dict[str, Any] = {
         "id": str(uuid.uuid4()),
         "ts": time.time(),
         "updated_ts": time.time(),
         "kind": kind,
-        # A port starts where its own site is read; a prospect starts where it
-        # was found.
-        "stage": fields.pop("stage", "intake" if kind == PORT else "sourced"),
+        "stage": stage,
         "name": name,
         "source": source or {},
-        # Enrichment slots, filled in by each room as the lead moves through.
-        "audit": None,      # Probe
-        "site": None,       # Forge
-        "qa": None,         # Lens
-        "outreach": None,   # Scribe
-        "preview_url": None,
         "history": [],
         **fields,
     }
-    rec["email"] = clean_email(rec.get("email"))
+    rec = _normalise(kind, rec)
     with _lock:
         items: list[dict[str, Any]] = _read(LEADS_FILE)
         items.append(rec)
@@ -641,8 +532,7 @@ def get_lead(lead_id: str) -> dict[str, Any] | None:
 
 def update_lead(lead_id: str, **fields: Any) -> dict[str, Any] | None:
     """Patch a lead without touching its stage."""
-    if "email" in fields:
-        fields["email"] = clean_email(fields["email"])
+    fields = _normalise(lead_kind(get_lead(lead_id)), fields)
     _ensure()
     with _lock:
         items: list[dict[str, Any]] = _read(LEADS_FILE)
@@ -723,8 +613,7 @@ def advance_lead(
             outcome="superseded", details={"lead_id": lead_id, "stage": stage},
         )
         return None
-    if "email" in fields:
-        fields["email"] = clean_email(fields["email"])
+    fields = _normalise(lead_kind(get_lead(lead_id)), fields)
     _ensure()
     with _lock:
         items: list[dict[str, Any]] = _read(LEADS_FILE)
@@ -748,7 +637,15 @@ def advance_lead(
 
 
 def delete_lead(lead_id: str) -> bool:
-    return _crud_delete(LEADS_FILE, lead_id)
+    """Remove a record entirely. The operator's, never an agent's."""
+    _ensure()
+    with _lock:
+        items: list[dict[str, Any]] = _read(LEADS_FILE)
+        kept = [r for r in items if r.get("id") != lead_id]
+        if len(kept) == len(items):
+            return False
+        _write(LEADS_FILE, kept)
+        return True
 
 
 def lead_counts_by_stage() -> dict[str, int]:
@@ -756,18 +653,6 @@ def lead_counts_by_stage() -> dict[str, int]:
     for r in list_leads(limit=10_000):
         counts[r.get("stage", "?")] = counts.get(r.get("stage", "?"), 0) + 1
     return counts
-
-
-def find_lead_by_website_host(host: str) -> dict[str, Any] | None:
-    """Dedupe helper — Scout shouldn't re-source a business already in the board."""
-    host = (host or "").lower().lstrip("www.")
-    if not host:
-        return None
-    for r in list_leads(limit=10_000):
-        w = (r.get("website") or "").lower()
-        if w and host in w:
-            return r
-    return None
 
 
 # ---------- Rerun ceiling (loop protection) ----------
@@ -860,20 +745,20 @@ def get_meta(key: str, default: Any = None) -> Any:
 # ---------------------------------------------------------------------------
 
 # The fields a row renders, kept whatever their size.
-ROW_FIELDS = (
-    "id", "ts", "updated_ts", "stage", "name", "city", "address", "email",
-    "email_bounced", "phone", "website", "preview_url", "source",
-    "scout_note", "lost_reason", "disqualified_reason",
-)
+#: Fields every record has, whatever a plugin adds. The rest of the row is
+#: `Plugin.summary_fields` — the store has no idea what a `scout_note` is, and
+#: this list named sixteen of one plugin's fields.
+ROW_FIELDS = ("id", "ts", "updated_ts", "stage", "kind")
 
-# Known dossier sections. Named only to skip measuring them — the size rule
-# below is what actually protects a row, so a section missing from this list
-# costs a little CPU, never a 90 KB payload.
-BULK_FIELDS = frozenset((
-    "profile", "visual", "qa", "site", "site_history", "audit", "outreach",
-    "domains", "owner_assets", "replies", "google_profile", "incumbent_review",
-    "appraisal", "company_registry", "revision", "assets", "photos",
-))
+
+def _row_fields() -> tuple[frozenset[str], frozenset[str]]:
+    """What a row always keeps, and what it never bothers measuring."""
+    from . import environment
+
+    if not environment.booted():
+        return frozenset(ROW_FIELDS), frozenset()
+    env = environment.current()
+    return frozenset((*ROW_FIELDS, *env.summary_fields())), env.bulk_fields()
 
 # Anything else is carried only while it stays this small. 400 bytes holds a
 # verdict, a URL set or a short note; it cannot hold a dossier or a QA report.
@@ -886,17 +771,18 @@ def lead_summary(lead: dict[str, Any]) -> dict[str, Any]:
     `history` is replaced by its length and its tail, because a row shows
     "what happened last" and the full history is 60 KB across the board.
     """
+    keep, bulk = _row_fields()
     out: dict[str, Any] = {}
     for k, v in lead.items():
         if k == "history":
             continue
-        if k in ROW_FIELDS:
+        if k in keep:
             out[k] = v
             continue
-        # Fast paths first: serialising every field of every lead to measure it
-        # cost 22 ms per board, which is the same order as the saving. Scalars
-        # are decided by type, and the known dossier sections are decided by
-        # name; only an unrecognised container is actually measured.
+        # Fast paths first: serialising every field of every record to
+        # measure it cost 9 ms per board of seventy, on the loop thread agent
+        # runs share. Scalars are decided by type and the plugin's declared
+        # bulk sections by name; only an unrecognised container is measured.
         if v is None or isinstance(v, (bool, int, float)):
             out[k] = v
             continue
@@ -904,7 +790,7 @@ def lead_summary(lead: dict[str, Any]) -> dict[str, Any]:
             if len(v) <= ROW_MAX_FIELD_BYTES:
                 out[k] = v
             continue
-        if k in BULK_FIELDS:
+        if k in bulk:
             continue
         try:
             if len(orjson.dumps(v)) <= ROW_MAX_FIELD_BYTES:
@@ -995,7 +881,6 @@ def list_lead_rows(
 #: has none, which is the point.
 #: The first kind declared is what a record without an explicit kind is taken
 #: to be, so leads written before kinds existed keep working.
-PORT = "port"
 
 #: The transition table, assembled from every plugin's declared edges. It is
 #: LAW: `advance_lead` refuses anything not on it, and only the operator's
@@ -1076,6 +961,23 @@ def reload_machine() -> None:
     """
     _MACHINE.clear()
     _machine()
+
+
+def _normalise(kind: str, fields: dict[str, Any]) -> dict[str, Any]:
+    """Let the installed plugins tidy a record's fields before they are stored.
+
+    The store writes what it is given and has no idea what any field MEANS.
+    `clean_email` lived here for a real reason — agents put prose in that
+    field, and one lead was saved as
+    `contact@example.fr (sourced from OSM node/1371087888 and SIRENE register)`,
+    which is neither sendable nor matchable against an inbound `From` — but
+    the RULE is the web agency's, not the ledger's.
+    """
+    from . import environment
+
+    if not environment.booted():
+        return fields
+    return environment.current().transform("normalise_write", fields, kind)
 
 
 def _veto(record: dict[str, Any], frm: str, to: str) -> str | None:
@@ -1254,38 +1156,3 @@ def step_is_gated(stage: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def contact_routes(lead: dict[str, Any]) -> dict[str, str]:
-    """Every way we could reach this business, by route name.
-
-    Reads the lead's own fields first, then the dossier's contact block, so it
-    works at qualification (before a dossier exists) and after it.
-    """
-    out: dict[str, str] = {}
-    email = (lead.get("email") or "").strip()
-    if email:
-        out["email"] = email
-
-    socials: dict[str, Any] = {}
-    for src in ((lead.get("profile") or {}).get("contact") or {},
-                (lead.get("audit") or {}).get("contact") or {}):
-        for k, v in ((src.get("socials") or {})).items():
-            if v and not socials.get(k):
-                socials[k] = v
-    for k in ("instagram", "facebook"):
-        # A lead may also carry one at the top level, put there by a harvest.
-        v = socials.get(k) or lead.get(k)
-        if v and isinstance(v, str) and v.strip():
-            out[k] = v.strip()
-    return out
-
-
-def is_reachable(lead: dict[str, Any]) -> bool:
-    """Is there any route to this business at all?"""
-    return bool(contact_routes(lead))
-
-
-def unreachable_note(lead: dict[str, Any]) -> str:
-    """Why a lead is being dropped, in the terms the operator thinks in."""
-    return ("no way to reach them: no email address, no Instagram account and "
-            "no Facebook page. A phone number alone is not a route — we do not "
-            "cold-call.")

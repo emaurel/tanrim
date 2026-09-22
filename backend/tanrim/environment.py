@@ -48,6 +48,7 @@ from .contract import (
     BROADCAST_HOOKS,
     HOOKS,
     SUPPLIER_HOOKS,
+    TRANSFORM_HOOKS,
     VETO_HOOKS,
     AgentPatch,
     AgentSpec,
@@ -183,6 +184,7 @@ class Environment:
                 "step_gates": list(p.step_gates()),
                 "room_handlers": dict(p.room_handlers()),
                 "summary_fields": list(p.summary_fields()),
+                "bulk_fields": tuple(p.bulk_fields()),
                 "declares_prompts": tuple(p.declares_prompts()),
                 "routes": p.routes(),
             }
@@ -337,14 +339,14 @@ class Environment:
                         f"workbench in room {agent.room!r} declares that "
                         f"stage — every dispatch would be refused. Benches "
                         f"there: {sorted(benched) or 'none'}")
-        for name in VETO_HOOKS:
+        for name in (*VETO_HOOKS, *TRANSFORM_HOOKS):
             for fn in self._hooks.get(name, ()):
                 if inspect.iscoroutinefunction(fn):
                     problems.append(
-                        f"the veto hook {name!r} is registered with an async "
-                        f"function ({getattr(fn, '__name__', fn)!r}). A veto "
-                        f"is consulted inside a synchronous write and cannot "
-                        f"be awaited — it should read the record, not do I/O.")
+                        f"the hook {name!r} is registered with an async "
+                        f"function ({getattr(fn, '__name__', fn)!r}). It runs "
+                        f"inside a synchronous write and cannot be awaited — "
+                        f"it should read the record, not do I/O.")
         for room_id in self._room_handlers:
             if room_id not in self._rooms:
                 problems.append(
@@ -580,6 +582,18 @@ class Environment:
                 return str(refusal)
         return None
 
+    def transform(self, name: str, value: Any, *args: Any) -> Any:
+        """Pass `value` through every listener in turn.
+
+        Each one's output feeds the next, so two plugins can each clean the
+        part of a record they own without either knowing about the other.
+        Synchronous for the same reason `veto` is: this runs inside a durable
+        write, and `_validate` refuses an `async def` listener.
+        """
+        for fn in self.listeners(name):
+            value = fn(*args, value)
+        return value
+
     # -- gates on a step ----------------------------------------------------
 
     def step_gate(self, stage: str, kind: str) -> StepGate | None:
@@ -605,6 +619,11 @@ class Environment:
 
     def room_handlers(self) -> dict[str, type]:
         return dict(self._room_handlers)
+
+    def bulk_fields(self) -> frozenset[str]:
+        """Every plugin's large sections. See `Plugin.bulk_fields`."""
+        return frozenset(f for p in self.plugins
+                         for f in self._answers[p.id]["bulk_fields"])
 
     def summary_fields(self) -> list[str]:
         """Record fields a list row should carry. See `Plugin.summary_fields`."""

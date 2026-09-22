@@ -396,7 +396,20 @@ SUPPLIER_HOOKS = {
         "belongs to the manifest module, not to the agent that will run.",
 }
 
-HOOKS = {**BROADCAST_HOOKS, **VETO_HOOKS, **SUPPLIER_HOOKS}
+#: Each listener is applied IN TURN and its output feeds the next, so several
+#: plugins can each clean the part of a record they own. A transform must be
+#: pure and synchronous: it runs inside a durable write.
+TRANSFORM_HOOKS = {
+    "normalise_write":
+        "(kind, fields) -> fields — tidy a record's fields before they are "
+        "stored. The store writes what it is given and has no idea what any "
+        "field MEANS; `clean_email` lived in it because agents put prose in "
+        "that field, and a guard at each call site is a guard that gets "
+        "forgotten. It belongs on the write, and the write belongs to the "
+        "core, so the RULE has to arrive from outside.",
+}
+
+HOOKS = {**BROADCAST_HOOKS, **VETO_HOOKS, **SUPPLIER_HOOKS, **TRANSFORM_HOOKS}
 
 
 class Plugin(ABC):
@@ -457,6 +470,21 @@ class Plugin(ABC):
         a dossier is tens of kilobytes and there may be hundreds of records.
         The environment cannot guess which fields matter, because it does not
         know what any of them are.
+        """
+        return ()
+
+    def bulk_fields(self) -> tuple[str, ...]:
+        """Fields of this plugin's record that are LARGE.
+
+        Purely a shortcut. A list row carries the summary fields plus any
+        other field small enough to be worth having, and deciding that means
+        serialising the field to measure it — which cost 9 ms per board across
+        seventy records, on the event loop thread that agent runs share.
+        Naming the big sections skips the measurement.
+
+        Missing one costs a little CPU and never a payload: the size rule is
+        what actually protects a row. The core used to hold this list, which
+        meant seventeen of one plugin's field names living in the store.
         """
         return ()
 
