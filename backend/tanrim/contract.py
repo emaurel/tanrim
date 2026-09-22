@@ -115,6 +115,32 @@ class Pipeline:
 # The world
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class McpServer:
+    """A third-party MCP server a room's agents may use.
+
+    `tools` is an ALLOWLIST applied per tool name, not a wildcard: a remote
+    server decides what it exposes and can add to it whenever it likes, so a
+    room gets the ones it was granted and nothing else.
+
+    `deny` exists because an allowlist only blocks invocation — the server
+    still ADVERTISES everything, so without it the model sees a tool, tries
+    it, is refused, and has burned a turn learning that.
+
+    `auth_env` names an environment variable, never a value. A plugin is
+    committed; a secret is not, and a missing variable skips the server with a
+    log line rather than failing the run.
+    """
+
+    id: str
+    url: str
+    transport: str = "http"
+    auth_env: str | None = None
+    tools: tuple[str, ...] = ()
+    deny: tuple[str, ...] = ()
+    note: str = ""
+
+
 @dataclass
 class Workbench:
     """A station inside a room where one kind of job is done.
@@ -156,8 +182,7 @@ class Room:
     #: How many workers may run here at once. Every one is another concurrent
     #: model call against the same budget, which is the only reason for a cap.
     max_workers: int = 1
-    #: Remote MCP servers, as `McpServer`.
-    mcp_servers: tuple[Any, ...] = ()
+    mcp_servers: tuple[McpServer, ...] = ()
 
 
 @dataclass
@@ -175,14 +200,26 @@ class RoomPatch:
     workbenches: tuple[Workbench, ...] = ()
     tools: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
+    mcp_servers: tuple[McpServer, ...] = ()
     name: str = ""
     purpose: str = ""
+    color: str = ""
     position: tuple[int, int] | None = None
     size: tuple[int, int] | None = None
+    max_workers: int | None = None
 
 
-#: What an agent's job is: `(world, record_id, instruction) -> result`.
-Job = Callable[..., Awaitable[Any]]
+#: What an agent's job is: `(world, task) -> result`.
+#:
+#: A dict rather than positional arguments, because not every job is about a
+#: record at a stage. Nova is given a PLACE to search and no record at all;
+#: Scribe branches on a `mode` the dispatcher chose; Echo is dispatched at
+#: three stages and does nothing at two of them. A fixed
+#: `(world, record_id, instruction)` could express none of those.
+#:
+#: The environment puts `record_id` in the task when there is one, and
+#: whatever else the dispatcher knows. A job reads what it needs.
+Job = Callable[["Any", dict], Awaitable[Any]]
 
 
 @dataclass
@@ -208,6 +245,33 @@ class AgentSpec:
     #: A bench this agent stands at even when idle. An overseer with nothing
     #: on their desk is reading, not idle.
     station: str = ""
+    #: Exactly one worker, ever. A second overseer would dispatch against the
+    #: first; a second builder is simply more throughput.
+    singleton: bool = False
+
+
+@dataclass
+class AgentPatch:
+    """A job added to a role another plugin declared.
+
+    Without this an extension wanting Probe to do something new would have to
+    return a whole `AgentSpec(role="probe", ...)`, which REPLACES the original
+    and silently drops every job it had. That is the same trap `RoomPatch`
+    exists for, one level down, and it is easy to write by accident — the
+    first version of this contract had it, and the test that appeared to prove
+    otherwise only passed because the extension rebuilt the whole spec by hand.
+
+    `jobs` merge; a stage declared twice goes to the later plugin. Everything
+    else overrides only when given.
+    """
+
+    extends: str
+    jobs: Mapping[str, Job] = field(default_factory=dict)
+    default_job: Job | None = None
+    name: str = ""
+    description: str = ""
+    color: str = ""
+    model: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +302,38 @@ class Gate:
 
 
 @dataclass(frozen=True)
+class StepGate:
+    """Stop before running a STEP and ask, rather than before taking an edge.
+
+    A distinct thing from a `Transition`, and conflating the two was a real
+    mistake in the first draft. The operator is asked BEFORE the room runs,
+    when which outgoing edge it will take is not yet known — so the question
+    belongs to the (stage, pipeline) pair, not to one arrow. Inferring "this
+    is a gate" from "every transition out of here is the operator's" also
+    fails outright for a stage that has both: the publish step has a courier
+    edge AND an operator rejection, and is gated all the same.
+
+    `build` makes the card's payload from the record, so the operator sees
+    what they are deciding about rather than a JSON dump.
+    """
+
+    stage: str
+    #: Which gate kind to raise. Must be a `Gate` some plugin declares.
+    gate: str
+    #: `(world, record) -> dict`, the card's payload.
+    build: Callable[..., Any]
+    #: Which pipelines this applies to. Empty means all of them.
+    kinds: tuple[str, ...] = ()
+    #: Always gated, whatever the operator's settings say. Anything
+    #: irreversible or outward-facing should be — those must never depend on a
+    #: checkbox.
+    permanent: bool = False
+    #: Why it is permanent, shown where the UI must present it as fixed rather
+    #: than as a choice.
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class Tool:
     """An MCP server a room's agent may call."""
 
@@ -255,15 +351,34 @@ class Tool:
 #: the signature; the plugin supplies the behaviour, and a hook nobody
 #: implements simply does nothing — an environment with no mail plugin has no
 #: mail behaviour rather than an error.
-HOOKS = {
+#: Every listener is called, in plugin order. Use for reacting.
+BROADCAST_HOOKS = {
     "record_created":  "(world, record) — a new unit of work exists",
     "stage_changed":   "(world, record, frm, to) — after a legal transition",
     "agent_report":    "(world, event) — an agent reported something",
     "escalation":      "(world, escalation_id) — an agent asked for guidance",
     "inbound_message": "(world, record_id, message) — something arrived",
-    "subtask_review":  "(world, ...) — who judges a specialist's work",
+    "inbound_bounce":  "(world, record_id, address, permanent, detail)",
     "tick":            "(world) — every orchestrator pass, for sweeps",
 }
+
+#: Every listener is consulted and the FIRST refusal wins. A veto returns a
+#: string saying why; None means no objection.
+VETO_HOOKS = {
+    "before_stage_change":
+        "(record, frm, to) -> str | None — refuse a move the transition table "
+        "allows but the domain does not. The agency will not rebuild a site "
+        "underneath a business that is holding our email and has not replied; "
+        "that is domain law and has no business inside a generic write.",
+}
+
+#: One answer. The last plugin to supply it wins, so an extension can replace
+#: what it extends.
+SUPPLIER_HOOKS = {
+    "subtask_review": "(world, ...) — who judges a specialist's work",
+}
+
+HOOKS = {**BROADCAST_HOOKS, **VETO_HOOKS, **SUPPLIER_HOOKS}
 
 
 class Plugin(ABC):
@@ -313,6 +428,16 @@ class Plugin(ABC):
 
     # -- the world ----------------------------------------------------------
 
+    def summary_fields(self) -> tuple[str, ...]:
+        """Record fields worth putting in a list row.
+
+        The board sends one row per record and must not send the whole thing:
+        a dossier is tens of kilobytes and there may be hundreds of records.
+        The environment cannot guess which fields matter, because it does not
+        know what any of them are.
+        """
+        return ()
+
     def rooms(self) -> Iterable[Room | RoomPatch]:
         """Rooms this plugin adds, and patches to rooms it extends.
 
@@ -322,8 +447,47 @@ class Plugin(ABC):
         """
         return ()
 
-    def agents(self) -> Iterable[AgentSpec]:
-        """Who staffs which room, and what they do at each stage."""
+    def agents(self) -> Iterable[AgentSpec | AgentPatch]:
+        """Who staffs which room, and what they do at each stage.
+
+        An `AgentPatch` adds a job to a role another plugin declared, rather
+        than replacing it.
+        """
+        return ()
+
+    def room_handlers(self) -> Mapping[str, type]:
+        """room id -> a `handlers.RoomHandler` subclass.
+
+        The base classes are machinery: the queue, the one-run-at-a-time
+        guard, the error surface. What a room's panel SHOWS and which actions
+        it offers is domain, and there is no generic answer to it.
+        """
+        return {}
+
+    def step_gates(self) -> Iterable[StepGate]:
+        """Steps the operator is asked about before they run."""
+        return ()
+
+    def persist_room(self, room: Room) -> None:
+        """Called when the environment changes a room at runtime.
+
+        Only `max_workers` does this today, from the crew slider. The
+        environment holds rooms in memory and has no idea where they came
+        from — a plugin that read YAML writes the YAML back, one that
+        generated them ignores this, and one backed by a database updates a
+        row. Doing nothing is a legitimate implementation: the change simply
+        does not survive a restart.
+        """
+
+    def declares_prompts(self) -> tuple[str, ...]:
+        """Every prompt this plugin needs, as `module/NAME`.
+
+        Declared rather than discovered, because prompt text is usually kept
+        out of version control — which is the whole reason for keeping it in
+        files — so a fresh checkout has the code and none of the text. This is
+        what lets the environment say at BOOT which are missing instead of
+        failing on the first run that reaches one.
+        """
         return ()
 
     def tools(self) -> Iterable[Tool]:

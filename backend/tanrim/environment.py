@@ -44,6 +44,10 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable
 
 from .contract import (
+    BROADCAST_HOOKS,
+    SUPPLIER_HOOKS,
+    VETO_HOOKS,
+    AgentPatch,
     AgentSpec,
     Gate,
     Job,
@@ -52,9 +56,16 @@ from .contract import (
     Room,
     RoomPatch,
     Stage,
+    StepGate,
     Tool,
     Transition,
 )
+
+
+#: Not a technical limit — the lock, the sprite and the log line all scale —
+#: but every worker is another concurrent model call against the same budget,
+#: so the ceiling exists to stop a slider producing a bill nobody authorised.
+MAX_WORKERS = 20
 
 
 class EnvironmentError(RuntimeError):
@@ -111,7 +122,13 @@ class Environment:
     _agents: dict[str, AgentSpec] = field(default_factory=dict)
     _gates: dict[str, Gate] = field(default_factory=dict)
     _tools: dict[str, Tool] = field(default_factory=dict)
-    _hooks: dict[str, Callable[..., Any]] = field(default_factory=dict)
+    #: Every listener per hook name, in plugin order. A single slot meant two
+    #: plugins wanting `tick` collided with no rule; broadcast and veto hooks
+    #: fan out, suppliers take the last.
+    _hooks: dict[str, list[Callable[..., Any]]] = field(default_factory=dict)
+    _step_gates: list[StepGate] = field(default_factory=list)
+    _room_handlers: dict[str, type] = field(default_factory=dict)
+    _summary_fields: list[str] = field(default_factory=list)
     _models: dict[str, Any] = field(default_factory=dict)
     _owns_kind: dict[str, list[Plugin]] = field(default_factory=dict)
     #: Snapshotted at boot. The contract promises a plugin's methods are called
@@ -168,18 +185,45 @@ class Environment:
             self._rooms[patch.extends] = _apply(target, patch)
 
     def _collect_rest(self) -> None:
+        patches: list[AgentPatch] = []
         for p in self.plugins:
-            for agent in p.agents():
-                self._agents[agent.role] = agent
+            for item in p.agents():
+                if isinstance(item, AgentPatch):
+                    patches.append(item)
+                else:
+                    self._agents[item.role] = item
             for gate in p.gates():
                 self._gates[gate.kind] = gate
             for tool in p.tools():
                 self._tools[tool.name] = tool
-            self._hooks.update(p.hooks())
+            for name, fn in p.hooks().items():
+                self._hooks.setdefault(name, []).append(fn)
+            self._step_gates.extend(p.step_gates())
+            self._room_handlers.update(p.room_handlers())
+            for f in p.summary_fields():
+                if f not in self._summary_fields:
+                    self._summary_fields.append(f)
+
+        for patch in patches:
+            target = self._agents.get(patch.extends)
+            if target is None:
+                raise EnvironmentError(
+                    f"a plugin adds a job to role {patch.extends!r}, which no "
+                    f"installed plugin declares. Roles: {sorted(self._agents)}")
+            self._agents[patch.extends] = replace(
+                target,
+                jobs={**target.jobs, **patch.jobs},
+                default_job=patch.default_job or target.default_job,
+                name=patch.name or target.name,
+                description=patch.description or target.description,
+                color=patch.color or target.color,
+                model=patch.model or target.model,
+            )
 
     def _describe(self) -> None:
         for p in self.plugins:
             rooms = list(p.rooms())
+            agents = list(p.agents())
             self._described.append({
                 "id": p.id, "name": p.name, "description": p.description,
                 "requires": list(p.requires),
@@ -187,7 +231,11 @@ class Environment:
                               if p in owners],
                 "rooms": [r.id for r in rooms if isinstance(r, Room)],
                 "patches": [r.extends for r in rooms if isinstance(r, RoomPatch)],
-                "agents": [a.role for a in p.agents()],
+                "agents": [a.role for a in agents if isinstance(a, AgentSpec)],
+                "agent_patches": [a.extends for a in agents
+                                  if isinstance(a, AgentPatch)],
+                "step_gates": [g.stage for g in p.step_gates()],
+                "room_handlers": sorted(p.room_handlers()),
                 "gates": [g.kind for g in p.gates()],
                 "tools": [t.name for t in p.tools()],
                 "hooks": sorted(p.hooks()),
@@ -205,6 +253,19 @@ class Environment:
                     problems.append(
                         f"agent {role!r} declares a job at stage {stage!r}, "
                         f"which no pipeline defines")
+        for sg in self._step_gates:
+            if sg.gate not in self._gates:
+                problems.append(
+                    f"a step gate at {sg.stage!r} raises {sg.gate!r}, which no "
+                    f"plugin declares as a Gate")
+            if sg.stage not in self._stages:
+                problems.append(
+                    f"a step gate names stage {sg.stage!r}, which nothing defines")
+        for room_id in self._room_handlers:
+            if room_id not in self._rooms:
+                problems.append(
+                    f"a room handler is registered for {room_id!r}, which is "
+                    f"not a room")
         for kind, pipe in self._pipelines.items():
             known = {s.id for s in pipe.stages}
             for t in pipe.transitions:
@@ -329,13 +390,105 @@ class Environment:
     def tools(self) -> dict[str, Tool]:
         return dict(self._tools)
 
-    def hook(self, name: str) -> Callable[..., Any] | None:
-        """A named extension point, or None when nothing supplies it.
+    def listeners(self, name: str) -> list[Callable[..., Any]]:
+        """Everything registered for a broadcast hook, in plugin order.
 
-        None rather than raising: a core that calls a hook no plugin
-        implements should do nothing.
+        An empty list rather than an error: a core that fires a hook nobody
+        implements should do nothing. An environment with no mail plugin has
+        no mail behaviour.
         """
-        return self._hooks.get(name)
+        return list(self._hooks.get(name, ()))
+
+    def hook(self, name: str) -> Callable[..., Any] | None:
+        """The single supplier for a hook, or None.
+
+        Last one wins, so an extension can replace what it extends. Use
+        `listeners` for anything every plugin should hear about.
+        """
+        got = self._hooks.get(name)
+        return got[-1] if got else None
+
+    async def broadcast(self, name: str, *args: Any, **kw: Any) -> None:
+        """Fire a broadcast hook at every listener.
+
+        One listener raising must not stop the others: they belong to
+        different plugins and are not each other's business. The failure is
+        re-raised as a group only after all of them have run.
+        """
+        errors: list[BaseException] = []
+        for fn in self.listeners(name):
+            try:
+                result = fn(*args, **kw)
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup(f"hook {name!r} failed", errors)  # noqa: F821
+
+    def veto(self, name: str, *args: Any, **kw: Any) -> str | None:
+        """Consult every veto listener; the first refusal wins.
+
+        This is where domain law that a generic write cannot hold belongs —
+        "do not rebuild underneath a business that is holding our email" is a
+        rule about businesses and email, and `advance` knows about neither.
+        """
+        for fn in self.listeners(name):
+            refusal = fn(*args, **kw)
+            if refusal:
+                return str(refusal)
+        return None
+
+    # -- gates on a step ----------------------------------------------------
+
+    def step_gate(self, stage: str, kind: str) -> StepGate | None:
+        """The gate that stops this step, if there is one.
+
+        Asked BEFORE the room runs, which is why it is keyed by (stage,
+        pipeline) and not by a transition: at that moment which edge the room
+        will take is not yet known.
+        """
+        for sg in self._step_gates:
+            if sg.stage == stage and (not sg.kinds or kind in sg.kinds):
+                return sg
+        return None
+
+    def step_gates(self) -> list[StepGate]:
+        return list(self._step_gates)
+
+    def room_handler(self, room_id: str) -> type | None:
+        return self._room_handlers.get(room_id)
+
+    def room_handlers(self) -> dict[str, type]:
+        return dict(self._room_handlers)
+
+    def summary_fields(self) -> list[str]:
+        """Record fields a list row should carry. See `Plugin.summary_fields`."""
+        return list(self._summary_fields)
+
+    def agents_in(self, room_id: str) -> list[AgentSpec]:
+        """Who staffs a room. Derived, so a room and its agents cannot disagree."""
+        return [a for a in self._agents.values() if a.room == room_id]
+
+    def set_max_workers(self, room_id: str, n: int) -> str | None:
+        """Change a room's crew size, and let its plugin persist it.
+
+        The environment holds rooms in memory and does not know where they
+        came from, so it changes its own copy and hands the room back to the
+        plugin that declared it. A plugin that does not implement
+        `persist_room` simply loses the change on restart, which is a
+        legitimate answer.
+        """
+        room = self._rooms.get(room_id)
+        if room is None:
+            return f"no room {room_id!r}"
+        if not 1 <= n <= MAX_WORKERS:
+            return f"{n} is outside 1..{MAX_WORKERS}"
+        room.max_workers = n
+        for p in self.plugins:
+            if any(getattr(r, "id", None) == room_id for r in p.rooms()):
+                p.persist_room(room)
+        return None
 
     def prompt(self, module: str, name: str, kind: str | None = None) -> str | None:
         """The text for `<module>/<name>`, asked of the right plugin first.

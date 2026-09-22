@@ -249,3 +249,189 @@ def test_asking_before_boot_is_a_loud_error():
     environment.reset()
     with pytest.raises(EnvironmentError, match="not been booted"):
         environment.current()
+
+
+# --- adding to a role another plugin declared ------------------------------
+
+def test_an_extension_adds_a_job_without_replacing_the_role():
+    """The trap the first draft fell into.
+
+    Returning a whole `AgentSpec(role="worker", ...)` REPLACES the original
+    and silently drops every job it had. The extension test that appeared to
+    prove otherwise only passed because it rebuilt the spec by hand.
+    """
+    from tanrim.contract import AgentPatch
+
+    async def extra(world, task): return {"ok": True}
+
+    class Ext2(Ext):
+        def agents(self):
+            return [AgentPatch(extends="worker", jobs={"checking": extra})]
+
+    env = Environment.boot([Base(), Ext2()])
+    worker = env.agent("worker")
+    assert sorted(worker.jobs) == ["checking", "new"]   # both, not just the new one
+    assert env.job_for("worker", "new") is _job
+    assert env.job_for("worker", "checking") is extra
+    assert worker.name == "Worker"                      # untouched
+
+
+def test_patching_a_role_nobody_declares_is_an_error():
+    from tanrim.contract import AgentPatch
+
+    class Orphan(Plugin):
+        id, name = "orphan", "Orphan"
+        def agents(self):
+            return [AgentPatch(extends="ghost")]
+    with pytest.raises(EnvironmentError, match="ghost"):
+        Environment.boot([Orphan()])
+
+
+# --- hooks -----------------------------------------------------------------
+
+def test_every_listener_on_a_broadcast_hook_is_called():
+    """A single slot meant two plugins wanting `tick` collided silently."""
+    import asyncio
+    heard = []
+
+    class A(Base):
+        def hooks(self): return {"tick": lambda w: heard.append("a")}
+    class B(Ext):
+        def hooks(self): return {"tick": lambda w: heard.append("b")}
+
+    env = Environment.boot([A(), B()])
+    assert len(env.listeners("tick")) == 2
+    asyncio.run(env.broadcast("tick", None))
+    assert heard == ["a", "b"]
+
+
+def test_one_failing_listener_does_not_stop_the_others():
+    import asyncio
+    heard = []
+
+    def boom(world): raise RuntimeError("mine broke")
+
+    class A(Base):
+        def hooks(self): return {"tick": boom}
+    class B(Ext):
+        def hooks(self): return {"tick": lambda w: heard.append("b")}
+
+    env = Environment.boot([A(), B()])
+    with pytest.raises(BaseException):
+        asyncio.run(env.broadcast("tick", None))
+    assert heard == ["b"], "the second plugin's listener must still have run"
+
+
+def test_a_veto_hook_refuses_and_the_first_refusal_wins():
+    class A(Base):
+        def hooks(self):
+            return {"before_stage_change":
+                    lambda rec, frm, to: "they are holding our email" if to == "doing" else None}
+
+    env = Environment.boot([A()])
+    assert env.veto("before_stage_change", {}, "new", "doing") == "they are holding our email"
+    assert env.veto("before_stage_change", {}, "new", "done") is None
+
+
+def test_a_supplier_hook_takes_the_last_plugin():
+    class A(Base):
+        def hooks(self): return {"subtask_review": lambda: "base"}
+    class B(Ext):
+        def hooks(self): return {"subtask_review": lambda: "ext"}
+    env = Environment.boot([A(), B()])
+    assert env.hook("subtask_review")() == "ext"
+
+
+# --- step gates ------------------------------------------------------------
+
+def test_a_step_gate_is_keyed_by_stage_and_pipeline_not_by_an_edge():
+    """The conflation the first draft got wrong.
+
+    Inferring "gated" from "every transition out of here is the operator's"
+    fails for a step that has BOTH an agent edge and an operator rejection —
+    publishing is exactly that, and is gated all the same.
+    """
+    from tanrim.contract import Gate, StepGate
+
+    class Gated(Base):
+        def pipelines(self):
+            return [pipe("work", ["new", "doing", Stage("done", terminal=True)],
+                         [Transition("new", "doing", "worker"),
+                          Transition("new", "done", "operator", "reject")])]
+        def gates(self):
+            return [Gate(kind="may_i", means="may this go out")]
+        def step_gates(self):
+            return [StepGate(stage="new", gate="may_i",
+                             build=lambda w, r: {}, permanent=True,
+                             reason="it reaches a stranger")]
+
+    env = Environment.boot([Gated()])
+    assert env.roles_at("new", "work") == {"worker", "operator"}   # both
+    sg = env.step_gate("new", "work")
+    assert sg is not None and sg.permanent and sg.gate == "may_i"
+    assert env.step_gate("doing", "work") is None
+
+
+def test_a_step_gate_raising_an_undeclared_gate_is_refused():
+    from tanrim.contract import StepGate
+
+    class Bad(Base):
+        def step_gates(self):
+            return [StepGate(stage="new", gate="nonexistent", build=lambda w, r: {})]
+    with pytest.raises(EnvironmentError, match="nonexistent"):
+        Environment.boot([Bad()])
+
+
+# --- rooms, handlers and the runtime change --------------------------------
+
+def test_a_room_handler_is_registered_per_room():
+    class WithPanel(Base):
+        def room_handlers(self): return {"shop": dict}
+    env = Environment.boot([WithPanel()])
+    assert env.room_handler("shop") is dict
+    assert env.room_handler("nowhere") is None
+
+
+def test_a_handler_for_a_room_that_does_not_exist_is_refused():
+    class Bad(Base):
+        def room_handlers(self): return {"nowhere": dict}
+    with pytest.raises(EnvironmentError, match="nowhere"):
+        Environment.boot([Bad()])
+
+
+def test_who_staffs_a_room_is_derived_not_declared_twice():
+    env = Environment.boot([Base()])
+    assert [a.role for a in env.agents_in("shop")] == ["worker"]
+    assert env.agents_in("nowhere") == []
+
+
+def test_changing_the_crew_size_hands_the_room_back_to_its_plugin():
+    saved = []
+
+    class Persists(Base):
+        def persist_room(self, room): saved.append((room.id, room.max_workers))
+
+    env = Environment.boot([Persists()])
+    assert env.set_max_workers("shop", 5) is None
+    assert env.room("shop").max_workers == 5
+    assert saved == [("shop", 5)]
+    assert "outside" in (env.set_max_workers("shop", 999) or "")
+    assert env.set_max_workers("nowhere", 2) is not None
+
+
+def test_a_plugin_that_cannot_persist_simply_loses_it_on_restart():
+    env = Environment.boot([Base()])          # no persist_room override
+    assert env.set_max_workers("shop", 3) is None
+    assert env.room("shop").max_workers == 3  # in memory, and that is all
+
+
+# --- what a list row carries ----------------------------------------------
+
+def test_summary_fields_are_the_plugins_choice():
+    """The environment cannot guess: it does not know what any field means."""
+    class A(Base):
+        def summary_fields(self): return ("name", "email")
+    class B(Ext):
+        def summary_fields(self): return ("email", "domain")
+    env = Environment.boot([A(), B()])
+    assert env.summary_fields() == ["name", "email", "domain"]   # union, ordered
