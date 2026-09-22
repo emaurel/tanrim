@@ -48,14 +48,16 @@ def reload() -> None:
     supplied = _from_environment()
     if supplied is not None:
         SERVERS.update(supplied)
-    seen: set[str] = set()
+    # A plugin's tool always wins. `seen` started empty and never held the
+    # plugin-supplied names, so the comment promised the opposite of what the
+    # code did: a stale module left in `state/tools/` would have overwritten a
+    # plugin's tool of the same name.
+    seen: set[str] = set(SERVERS)
     for path in [q for d in tool_dirs() if d.is_dir()
                  for q in sorted(d.glob("*.py"))]:
         if path.name.startswith("_"):
             continue
         name = path.stem
-        # First wins: plugin directories are searched before the legacy drop,
-        # so a stale copy left in `state/tools/` cannot shadow a plugin's.
         if name in seen:
             continue
         seen.add(name)

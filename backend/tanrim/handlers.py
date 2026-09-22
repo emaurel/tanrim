@@ -11,15 +11,11 @@ Rooms without a handler fall back to the generic panel on the frontend.
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any, TYPE_CHECKING
 
-from . import secrets as secrets_store
-from . import config
-from . import state, usage
-from .agent_helpers import AgentBusy, every_in_flight, in_flight_for_role
-from .workers import RoomAtCapacity, crew_status, max_workers
-from .tools import registry as tool_registry
+from . import state
+from .agent_helpers import AgentBusy, in_flight_for_role
+from .workers import RoomAtCapacity, max_workers
 
 if TYPE_CHECKING:
     from .world import World

@@ -336,6 +336,10 @@ class StepGate:
     build: Callable[..., Any]
     #: Which pipelines this applies to. Empty means all of them.
     kinds: tuple[str, ...] = ()
+    #: Which room the card belongs to, and who is asking. Without these the
+    #: core had to guess, and it guessed with one plugin's room id.
+    room: str = ""
+    agent: str = ""
     #: Always gated, whatever the operator's settings say. Anything
     #: irreversible or outward-facing should be — those must never depend on a
     #: checkbox.
@@ -365,7 +369,6 @@ class Tool:
 #: mail behaviour rather than an error.
 #: Every listener is called, in plugin order. Use for reacting.
 BROADCAST_HOOKS = {
-    "record_created":  "(world, record) — a new unit of work exists",
     "stage_changed":   "(world, record, frm, to) — after a legal transition",
     "agent_report":    "(world, event) — an agent reported something",
     "escalation":      "(world, escalation_id) — an agent asked for guidance",
@@ -388,7 +391,13 @@ VETO_HOOKS = {
 #: One answer. The last plugin to supply it wins, so an extension can replace
 #: what it extends.
 SUPPLIER_HOOKS = {
-    "subtask_review": "(world, ...) — who judges a specialist's work",
+    # `subtask_review` used to be here, naming a function to judge a
+    # specialist's work. Nothing ever consulted it: `delegation.run_review`
+    # runs a generic review agent in whichever room the named reviewer lives,
+    # which is what "ask the Gallery to look at this" actually means. A hook
+    # nobody fires is a promise the contract cannot keep, so it is gone —
+    # `record_created` went the same way, because the write that would fire
+    # it is synchronous and has nowhere to await one.
     "subtask_review_model":
         "() -> str — which model that review runs on. Separate from the hook "
         "above because the core cannot read it off the reviewing function: "

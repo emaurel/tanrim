@@ -10,7 +10,6 @@ from . import state, workers
 from . import runners as _runners
 from .world import World
 
-MAX_RERUNS = 2  # safety cap so a request_tool loop can't run forever
 
 # How many times one follow-up may be drafted before the sweep gives up on it.
 # A rejected draft is redrafted with the operator's note as the brief, and that
@@ -170,8 +169,17 @@ class Orchestrator:
         for record in state.list_records(limit=500):
             record_id = record["id"]
             stage = record.get("stage") or ""
-            changed = self._lead_stages.get(record_id) != stage
+            was = self._lead_stages.get(record_id)
+            changed = was != stage
             self._lead_stages[record_id] = stage
+            if changed and was is not None:
+                # `stage_changed` is declared and was never fired. The write
+                # itself is synchronous so it cannot await a hook; this is the
+                # first async moment after one, and where the rest of the
+                # transport already reacts to a move. `was is None` is the
+                # boot seed, not a change.
+                await environment.current().broadcast(
+                    "stage_changed", self.world, record, was, stage)
 
             role = role_for_stage(stage)
             if role is None:
@@ -189,7 +197,7 @@ class Orchestrator:
                 continue  # terminal for this kind of record
             if role not in allowed_roles:
                 if allowed_roles == {"operator"}:
-                    await self._raise_client_approval(record)
+                    await self._raise_step_gate(record, stage, kind)
                 continue
 
             if not changed:
@@ -295,49 +303,43 @@ class Orchestrator:
             task.add_done_callback(
                 lambda t, key=(record_id, stage): self._unmark_if_refused(t, key))
 
-    async def _raise_client_approval(self, record: dict[str, Any]) -> None:
-        """A port client's rebuild is published — did they say yes?
+    async def _raise_step_gate(self, record: dict[str, Any], stage: str,
+                               kind: str) -> None:
+        """A stage whose only outgoing move is the operator's. Ask them.
 
-        No email. They asked for this and are already a customer, so the
-        operator shows them the preview however they like and ticks the card.
-        Approving is what moves the record to `won`, which is what the Launch Pad
-        works.
+        Which question, in which room, with what on the card, is the plugin's:
+        it declares a `StepGate` for that (stage, pipeline) and builds the
+        payload. This used to be `_raise_client_approval`, fifty lines of one
+        plugin's vocabulary in the core — a `client_approved` card in a room
+        called `launch` requested by an agent called `porter`, with French
+        project prose — raised for ANY plugin's record that reached such a
+        stage. An install without those two plugins raised an undeclared gate
+        kind in a room that does not exist.
         """
+        gate = environment.current().step_gate(stage, kind)
+        if gate is None:
+            return
         record_id = record["id"]
         already = [
             a for a in state.list_user_approvals(status="pending", limit=200)
             if a["payload"].get("lead_id") == record_id
-            and a["kind"] == "client_approved"
+            and a["kind"] == gate.gate
         ]
         if already:
             return
+        payload = gate.build(self.world, record)
         state.add_user_approval(
-            kind="client_approved",
-            room_id="launch",
-            requesting_agent="porter",
-            summary=f"Did {record.get('name')} approve their rebuilt site?",
-            payload={
-                "lead_id": record_id,
-                "business": record.get("name"),
-                "preview_url": record.get("preview_url"),
-                "old_site": ((record.get("profile") or {}).get("existing_site")
-                             or {}).get("url") or record.get("website"),
-                "must_not_lose": ((record.get("profile") or {})
-                                  .get("must_not_lose") or [])[:20],
-                "what_this_means":
-                    "This is a port: the client asked us to rebuild the site "
-                    "they already had, and the new one is now on a preview URL. "
-                    "Nothing has been sent to them — show them the preview "
-                    "however you like. Approve once they have said yes, which "
-                    "moves the record to 'won' and lets the Launch Pad create "
-                    "their account. Reject to send it back to be changed, with "
-                    "whatever you type below as the brief.",
-            },
+            kind=gate.gate,
+            room_id=gate.room or rooms_mod.room_for_role(gate.agent) or "throne",
+            requesting_agent=gate.agent,
+            summary=payload.pop("summary", None)
+                    or f"{record.get('name')} is at '{stage}'",
+            payload=payload,
         )
         state.log_event(
-            "user_approval", from_="porter", to="operator",
-            summary=f"{record.get('name')}: rebuilt site published — waiting on "
-                    f"the client's approval",
+            "user_approval", from_=gate.agent or "system", to="operator",
+            summary=f"{record.get('name')}: waiting on the operator at "
+                    f"'{stage}'",
             details={"lead_id": record_id},
         )
         await self.world.publish({"type": "approvals_updated"})
@@ -396,12 +398,18 @@ class Orchestrator:
 
                 # Pending agent escalations → Ultron responds.
                 pending_esc = state.list_escalations(status="pending", limit=10)
-                for esc in pending_esc:
-                    on_escalation = environment.current().hook("escalation")
-                    if on_escalation is None:
-                        break
-                    await _timed("escalation", on_escalation(self.world, esc["id"]))
-                    await self.world.publish({"type": "approvals_updated"})
+                if pending_esc and environment.current().listeners("escalation"):
+                    for esc in pending_esc:
+                        # BROADCAST: every plugin that wants to hear about a
+                        # stuck agent does. `hook()` was used here, which
+                        # returns the LAST registrant only — so the moment a
+                        # second plugin registered, the first was silently
+                        # switched off, which is the exact failure a list of
+                        # listeners exists to prevent.
+                        await _timed("escalation",
+                                     environment.current().broadcast(
+                                         "escalation", self.world, esc["id"]))
+                        await self.world.publish({"type": "approvals_updated"})
 
                 # Resolved escalations → re-fire the agent so the rerun sees
                 # Ultron's guidance via format_escalations().
@@ -488,10 +496,9 @@ class Orchestrator:
                 # Process oldest first so chains form in the right order.
                 for report in reversed(new_reports):
                     self._processed_reports.add(report["id"])
-                    on_report = environment.current().hook("agent_report")
-                    if on_report is not None:
-                        await _timed("agent_report",
-                                     on_report(self.world, report))
+                    await _timed("agent_report",
+                                 environment.current().broadcast(
+                                     "agent_report", self.world, report))
             except Exception as e:  # never let this loop die silently
                 print(f"[gatekeeper] {type(e).__name__}: {e}")
             await asyncio.sleep(3.0)

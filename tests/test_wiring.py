@@ -56,7 +56,8 @@ def test_every_tool_a_plugin_supplies_reaches_the_registry(real_env):
 
 @pytest.mark.parametrize("name", [
     "inbound_message", "inbound_bounce", "agent_report", "escalation",
-    "subtask_review", "subtask_review_model", "tick",
+    "subtask_review_model", "tick", "startup", "normalise_write",
+    "before_stage_change",
 ])
 def test_the_hooks_the_core_calls_are_supplied(name, real_env):
     """Each of these has a call site in the core.
@@ -407,3 +408,127 @@ def test_every_action_the_frontend_posts_is_handled(real_env):
     assert posted, "found no actions in the frontend — the regex stopped matching"
     missing = sorted(posted - handled)
     assert not missing, f"the frontend posts actions nothing handles: {missing}"
+
+
+def test_booting_invalidates_every_derived_cache(plugins):
+    """Each of these is built from the environment and cached for the life of
+    the process. A second boot used to keep the FIRST boot's answers —
+    verified for the runner table, which meant one test touching
+    `agent_runners()` poisoned every later test in the process.
+
+    Asserted as a SET so the list cannot drift: a new cache added without
+    being registered here fails immediately.
+    """
+    from tanrim import environment, prompts, rooms, runners, state
+
+    plugins.install({"base": """
+        class B(Plugin):
+            id, name = "base", "B"
+            def pipelines(self):
+                return [Pipeline("k", entry="s", stages=(Stage("s"),))]
+            def rooms(self):
+                return [Room(id="shop", name="Shop",
+                             workbenches=(Workbench(id="b", stages=("s",)),))]
+            def agents(self):
+                return [AgentSpec(role="solo", name="Solo", room="shop",
+                                  jobs={"s": _job})]
+            def prompt(self, module, name, kind=None):
+                return "text"
+
+        async def _job(world, task):
+            return {"ok": True}
+
+        PLUGIN = B()
+    """})
+    # warm every one of them
+    assert sorted(runners.agent_runners()) == ["solo"]
+    assert rooms.load_rooms() and list(state.STAGES) == ["s"]
+    assert prompts.load("any", "THING") == "text"
+    state.list_record_rows(limit=1)
+
+    caches = (state._MACHINE, state._ROWS_CACHE, rooms._ROOMS_CACHE,
+              prompts._cache, runners._CACHE)
+    assert any(caches), "nothing was warmed, so this proves nothing"
+
+    environment._invalidate_derived()
+    still_full = [n for n, c in zip(
+        ("state._MACHINE", "state._ROWS_CACHE", "rooms._ROOMS_CACHE",
+         "prompts._cache", "runners._CACHE"), caches) if c]
+    assert not still_full, f"a boot left these populated: {still_full}"
+
+
+def test_every_endpoint_the_frontend_gets_still_answers(real_env):
+    """A deleted route is invisible until someone opens the page.
+
+    Removing `continue_pipeline` — 38 lines of dead code — took `GET
+    /approvals` with it, because the block boundaries were wrong. The whole
+    approvals panel stopped working and 157 tests stayed green, because
+    nothing in the suite made an HTTP request.
+
+    Only LITERAL paths are requested. A templated one filled with a made-up
+    id returns 404 for the resource, which is indistinguishable over HTTP
+    from 404 for the route — so those are checked by asking the router
+    whether anything matches, which is exact.
+    """
+    import asyncio
+    import re
+    from pathlib import Path
+
+    import httpx
+
+    from tanrim.server import app
+
+    src = Path("frontend/src")
+    if not src.is_dir():
+        pytest.skip("no frontend checkout")
+
+    wanted = set()
+    for path in src.rglob("*.ts"):
+        for m in re.finditer(
+                r'["`](/(?:leads|rooms|approvals|pipeline|plugins|invoices|health|staging)'
+                r'[^"`\s?]*)', path.read_text()):
+            wanted.add(m.group(1))
+
+    literal = {p for p in wanted if "${" not in p}
+    templated = {p for p in wanted if "${" in p}
+    assert literal and templated, "the frontend scan stopped matching"
+
+    def _routed(path: str) -> bool:
+        from starlette.routing import Match
+
+        for method in ("GET", "POST", "PUT", "DELETE"):
+            scope = {"type": "http", "method": method, "path": path,
+                     "headers": [], "query_string": b"", "root_path": ""}
+            if any(r.matches(scope)[0] != Match.NONE for r in app.routes):
+                return True
+        return False
+
+    async def check():
+        bad = []
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://t") as c:
+            for p in sorted(literal):
+                r = await c.get(p)
+                if r.status_code < 400 or r.status_code == 405:
+                    continue          # 405: POST-only, but the route exists
+                # A GET 404 on a literal path might still be a POST-only
+                # route that FastAPI reports as 404 rather than 405, so ask
+                # the router before calling it missing.
+                if _routed(p):
+                    continue
+                bad.append((p, r.status_code))
+        return bad
+
+    bad = asyncio.run(check())
+    assert not bad, f"literal paths the frontend GETs that do not answer: {bad}"
+
+    # Templated: does ANY route match the shape?
+    shapes = {re.sub(r"\$\{[^}]*\}", "x", p) for p in templated}
+    unmatched = []
+    for shape in sorted(shapes):
+        scope = {"type": "http", "method": "GET", "path": shape,
+                 "headers": [], "query_string": b"", "root_path": ""}
+        from starlette.routing import Match
+        if not any(r.matches(scope)[0] != Match.NONE for r in app.routes):
+            unmatched.append(shape)
+    assert not unmatched, f"no route matches: {unmatched}"

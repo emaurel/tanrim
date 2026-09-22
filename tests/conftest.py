@@ -33,13 +33,17 @@ HERE = Path(__file__).parent
 
 
 def _drop_caches() -> None:
-    """Clear everything derived from a previous environment."""
-    from tanrim import environment, prompts, rooms, state
+    """Clear everything derived from a previous environment.
+
+    Delegates rather than listing them: this was a second copy of
+    `environment._invalidate_derived`'s list, maintained separately, and it
+    had already drifted — neither knew about `runners._CACHE`, so one test
+    touching `agent_runners()` poisoned every later test in the process.
+    """
+    from tanrim import environment
 
     environment.reset()
-    prompts._cache.clear()
-    rooms._ROOMS_CACHE.clear()
-    state._MACHINE.clear()
+    environment._invalidate_derived()
 
 
 def _forget_modules(root: Path) -> None:

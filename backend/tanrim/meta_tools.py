@@ -74,6 +74,8 @@ def make_meta_server(
             original_task=original_task,
         )
         state.log_event(
+            # The kind is wire format — `state/events.json` already holds
+            # thousands of these and the Archives panel filters on it.
             "ask_ultron",
             from_=agent_id, to=boss,
             summary=args["message"][:200],
@@ -328,7 +330,13 @@ def make_meta_server(
         if not cwd:
             return {"content": [{"type": "text", "text":
                 "No working directory, so there is nothing to review."}]}
-        reviewer = (args.get("reviewer") or "lens").strip().lower()
+        # No default reviewer. It was `"lens"` — the core naming one plugin's
+        # agent as the fallback judge, which in any other install is a role
+        # that does not exist.
+        reviewer = (args.get("reviewer") or "").strip().lower()
+        if not reviewer:
+            return {"content": [{"type": "text", "text":
+                    "name a reviewer: which role should judge this?"}]}
         files = [f.strip() for f in re.split(r"[,\n]+", args.get("files") or "") if f.strip()]
         try:
             out = await run_review(

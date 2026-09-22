@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -204,7 +203,7 @@ def _layout_workbenches(room: RoomSpec) -> None:
 _ROOMS_CACHE: dict[str, list[RoomSpec]] = {}
 
 
-def load_rooms(directory: Path | None = None) -> list[RoomSpec]:
+def load_rooms() -> list[RoomSpec]:
     """Every room, patched and laid out, from the installed plugins.
 
     A translation of what the environment already merged, not a second reader
@@ -271,44 +270,8 @@ def _from_environment(env: "Any") -> list[RoomSpec]:
         _layout_workbenches(spec)
         rooms.append(spec)
     return rooms
-
-
-def _apply_patch(target: RoomSpec, patch: RoomSpec) -> None:
-    """Merge an `extends:` manifest into the room it names. See RoomSpec."""
-    for bench in patch.workbenches:
-        existing = next((b for b in target.workbenches if b.id == bench.id), None)
-        if existing is None:
-            target.workbenches.append(bench)
-            continue
-        # Additive, because "this bench also works my stage" is the whole
-        # reason an extension touches a bench it did not create.
-        existing.stages = list(dict.fromkeys([*existing.stages, *bench.stages]))
-        existing.tasks = list(dict.fromkeys([*existing.tasks, *bench.tasks]))
-        if bench.name:
-            existing.name = bench.name
-        if bench.job:
-            existing.job = bench.job
-
-    target.tools = list(dict.fromkeys([*target.tools, *patch.tools]))
-    target.skills = list(dict.fromkeys([*target.skills, *patch.skills]))
-    target.mcp_servers = [*target.mcp_servers, *patch.mcp_servers]
-    for agent in patch.agents:
-        if not any(a.id == agent.id for a in target.agents):
-            target.agents.append(agent)
-    if patch.name:
-        target.name = patch.name
-    if patch.purpose:
-        target.purpose = patch.purpose
-    if patch.position is not None:
-        target.position = patch.position
-    if patch.size is not None:
-        target.size = patch.size
-
-
-#: The most workers a room may be given. Not a technical limit — the per-worker
-#: lock, the sprite and the log line all scale — but every worker is another
-#: concurrent model run against the same API budget, so the ceiling exists to
-#: stop a slider producing a bill nobody meant to authorise.
+#: The most workers a room may be given. The environment enforces its own
+#: copy of this; it is exported because the settings panel shows the ceiling.
 MAX_WORKERS_CAP = 20
 
 

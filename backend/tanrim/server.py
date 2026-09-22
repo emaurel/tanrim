@@ -3,30 +3,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pathlib import Path
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import agent_helpers
 from . import discovery
 from . import environment
-from . import buildlock
 from . import secrets as secrets_store
-from . import config
 from . import prompts as prompts_mod
 from . import skills as skills_mod
 from . import rooms as rooms_mod
-from . import runners
 from . import state
-from . import usage as usage_mod
 from .handlers import build_handlers
 from .orchestrator import Orchestrator
 from .tools import registry as tool_registry
@@ -391,47 +383,6 @@ async def list_approvals(status: str = "pending"):
         "approvals": state.list_user_approvals(status=status, limit=200),
         "counts_by_room": state.approval_counts_by_room(),
     }
-
-
-async def continue_pipeline(
-    record_id: str, why: str, prefer_role: str | None = None
-) -> str | None:
-    """Dispatch whichever room works this record's current stage.
-
-    An operator decision can move a record — rejecting a publish sends it back to
-    the Factory — but nothing was picking it up afterwards. Ultron only reacts
-    to agents reporting in, so a rejection with detailed feedback sat at
-    `qa_failed` forever and the feedback was never acted on.
-
-    Deterministic rather than a dispatch call: the stage → room mapping is
-    already declared by the workbenches, and asking a model to re-derive it
-    would be slower, dearer and less reliable.
-    """
-    from .rooms import role_for_stage
-
-    record = state.get_record(record_id)
-    if record is None:
-        return None
-    stage = record.get("stage")
-    # Some stages are worked by two rooms — `published` belongs to both the Copy
-    # Desk (write the pitch) and Communications (send it). The caller knows
-    # which it means; the stage alone does not.
-    role = prefer_role or role_for_stage(stage or "")
-    if role is None:
-        return None
-    runner = runners.agent_runners().get(role)
-    if runner is None:
-        return None
-    state.log_event(
-        "dispatch_end", from_="operator", to=role,
-        summary=f"{why} → {role} picks it up at '{stage}'",
-        outcome="dispatched",
-        details={"lead_id": record_id, "stage": stage},
-    )
-    asyncio.create_task(runner(world, {"lead_id": record_id, "prompt": why}))
-    return role
-
-
 class ApprovalDecision(BaseModel):
     decision: str  # "approved" | "rejected"
     reason: str | None = None

@@ -342,6 +342,21 @@ def test_the_orchestrator_sweeps_run_without_unresolved_names(real_env, monkeypa
     monkeypatch.setattr(state_mod, "advance_record", refuse)
     monkeypatch.setattr(state_mod, "update_record", refuse)
     monkeypatch.setattr(state_mod, "add_user_approval", refuse)
+    monkeypatch.setattr(state_mod, "add_record", refuse)
+    monkeypatch.setattr(state_mod, "delete_record", refuse)
+    monkeypatch.setattr(state_mod, "set_meta", refuse)
+
+    # And no network. `sweeps.read_mail` runs on the same tick, and
+    # `mailbox.configured()` is true on a developer machine with `IMAP_*` set
+    # — so this test opened a real IMAP_SSL connection to the live account and
+    # was one un-stubbed call away from consuming an actual customer reply.
+    from tanrim_plugins.web_agency import mailbox as mailbox_mod
+
+    def no_network(*a, **k):
+        raise AssertionError("the suite tried to reach the real mailbox")
+
+    monkeypatch.setattr(mailbox_mod, "configured", lambda: False)
+    monkeypatch.setattr(mailbox_mod, "poll", no_network)
 
     orch = Orchestrator(World())
 

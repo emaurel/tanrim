@@ -4,11 +4,9 @@ import hashlib
 import os
 import json
 import orjson
-import re
 import time
 from contextvars import ContextVar
 import uuid
-from email.utils import parseaddr
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -591,8 +589,14 @@ def advance_record(
     # a rule about businesses and email, and this function knows about
     # neither — it used to carry a hardcoded list of one plugin's stage names
     # to enforce it. The plugin that owns those stages owns the rule.
+    # `by_hand` does NOT get past this. It is the operator's override of the
+    # TRANSITION TABLE — a move the pipeline never declared — and on `main`
+    # the rework guard was unconditional: only `force_rework` went through it.
+    # Letting `by_hand` skip it made the `set_stage` room action able to send
+    # a business that is holding our email straight back to be rebuilt, with
+    # nothing asked and nothing logged.
     forced = bool(fields.pop("force_rework", False))
-    if not forced and not by_hand:
+    if not forced:
         refusal = _veto(_current, _from, stage)
         if refusal:
             log_event(
@@ -939,7 +943,10 @@ def _from_environment(env: Any) -> dict[str, Any]:
         # The first pipeline declared. `web_agency` loads before the
         # extensions that require it, so records written before kinds existed
         # still resolve to `prospect`.
-        "DEFAULT_KIND": kinds[0] if kinds else "prospect",
+        # The first pipeline declared. Empty when nothing is installed —
+        # it used to fall back to `"prospect"`, which is one plugin's kind
+        # name sitting in the ledger as a default.
+        "DEFAULT_KIND": kinds[0] if kinds else "",
         "PIPELINE": rows,
     }
 

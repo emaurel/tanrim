@@ -45,9 +45,7 @@ import inspect
 from typing import Any, Callable, Iterable
 
 from .contract import (
-    BROADCAST_HOOKS,
     HOOKS,
-    SUPPLIER_HOOKS,
     TRANSFORM_HOOKS,
     VETO_HOOKS,
     AgentPatch,
@@ -718,17 +716,24 @@ class Environment:
 def _invalidate_derived() -> None:
     """Drop every cache built from a previous environment.
 
-    `state` caches its stage tables and `rooms` caches its room list, both
-    for the life of the process. Anything that read one BEFORE the boot — an
-    entrypoint that is not `server.py`, a new import-time read — cached the
-    empty fallback permanently, and `advance_record` then refused every stage
-    in the system. Booting is the one moment at which those answers change.
+    `state` caches its stage tables and its row projections, `rooms` its room
+    list, `prompts` its text and `runners` the whole dispatch table — all for
+    the life of the process. Anything that read one BEFORE the boot cached the
+    answer from the environment that is now gone: a second `boot()` kept the
+    FIRST boot's runners, and a row cache keyed only on the ledger's mtime
+    served rows built under a different plugin set.
+
+    Booting is the one moment at which every one of those answers changes, so
+    the list lives here and nowhere else — `tests/conftest.py` calls this
+    rather than keeping its own copy, which is how the two drift.
     """
-    from . import prompts, rooms, state
+    from . import prompts, rooms, runners, state
 
     state._MACHINE.clear()
+    state._ROWS_CACHE.clear()
     rooms._ROOMS_CACHE.clear()
     prompts._cache.clear()
+    runners._CACHE.clear()
 
 
 def _apply(room: Room, patch: RoomPatch) -> Room:

@@ -362,11 +362,11 @@ def test_an_async_veto_listener_is_refused_at_boot():
 
 def test_a_supplier_hook_takes_the_last_plugin():
     class A(Base):
-        def hooks(self): return {"subtask_review": lambda: "base"}
+        def hooks(self): return {"subtask_review_model": lambda: "base"}
     class B(Ext):
-        def hooks(self): return {"subtask_review": lambda: "ext"}
+        def hooks(self): return {"subtask_review_model": lambda: "ext"}
     env = Environment.boot([A(), B()])
-    assert env.hook("subtask_review")() == "ext"
+    assert env.hook("subtask_review_model")() == "ext"
 
 
 # --- step gates ------------------------------------------------------------
@@ -654,3 +654,30 @@ def test_setup_does_not_run_when_the_environment_is_invalid():
     with pytest.raises(EnvironmentError):
         Environment.boot([A()])
     assert opened == []
+
+
+def test_every_declared_hook_has_somewhere_that_fires_it():
+    """A hook nobody fires is a promise the contract cannot keep.
+
+    Five were declared and never called from anywhere: a plugin could
+    register `stage_changed` or `inbound_message` and simply never hear
+    anything, with no error and nothing to debug.
+    """
+    import re
+    from pathlib import Path
+
+    from tanrim.contract import HOOKS
+
+    fired = set()
+    for root in (Path("backend/tanrim"), Path("plugins")):
+        for path in root.rglob("*.py"):
+            body = path.read_text()
+            for m in re.finditer(
+                    r'(?:broadcast|veto|transform|hook|listeners|_announce)\(\s*["\'](\w+)["\']',
+                    body):
+                fired.add(m.group(1))
+
+    never = sorted(set(HOOKS) - fired)
+    assert not never, (
+        f"declared but never fired: {never}. Either fire it or stop "
+        f"declaring it — a plugin registering one of these hears nothing.")
