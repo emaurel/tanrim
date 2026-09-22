@@ -26,6 +26,20 @@ class MissingPrompt(RuntimeError):
     """A prompt file the code needs is not on disk."""
 
 
+def _shown(path: Path) -> str:
+    """A path for an error message, whether or not it is inside the repo.
+
+    `relative_to(ROOT)` raises for a plugin installed anywhere else — and a
+    plugin system whose plugins must live inside the application is not much
+    of one. A ValueError raised while building the message for a different
+    error is the worst possible way to find that out.
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def prompt_dirs(kind: str | None = None) -> list[Path]:
     """Every tree a prompt may live in, most specific first for `kind`.
 
@@ -64,16 +78,16 @@ def load(module: str, name: str, kind: str | None = None) -> str:
     if not path.is_file():
         example = EXAMPLE_DIR / module / f"{name}.md"
         hint = (
-            f"\n\nA stub exists at {example.relative_to(ROOT)} — copy "
+            f"\n\nA stub exists at {_shown(example)} — copy "
             f"prompts.example/ to prompts/ and write the real text."
             if example.is_file() else ""
         )
         raise MissingPrompt(
-            f"missing prompt: {path.relative_to(ROOT)}{hint}"
+            f"missing prompt: {_shown(path)}{hint}"
         )
     text = path.read_text(encoding="utf-8").strip()
     if not text:
-        raise MissingPrompt(f"empty prompt: {path.relative_to(ROOT)}")
+        raise MissingPrompt(f"empty prompt: {_shown(path)}")
     _cache[key] = text
     return text
 

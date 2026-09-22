@@ -1107,6 +1107,27 @@ PIPELINE: tuple[tuple[str, str, str, str, frozenset[str]], ...] = tuple(
 )
 
 
+def reload_machine() -> None:
+    """Rebuild the stage list and transition table from the plugin registry.
+
+    These are module constants because a stage list changing underneath a run
+    in flight is a debugging nightmare, and installing a plugin is a restart
+    either way. But "frozen at import" and "impossible to rebuild" are not the
+    same thing: the tests swap plugin sets, and a future hot-install would want
+    this too. Nothing in the running server calls it.
+    """
+    global STAGES, DEAD_STAGES, ALL_STAGES, LEAD_KINDS, PROSPECT, BOTH, PIPELINE
+    _plugin.load(force=True)
+    STAGES = _plugin.stage_ids()
+    DEAD_STAGES = _plugin.terminal_ids()
+    ALL_STAGES = STAGES + DEAD_STAGES
+    LEAD_KINDS = tuple(_plugin.lead_kinds())
+    PROSPECT = LEAD_KINDS[0] if LEAD_KINDS else "prospect"
+    BOTH = frozenset(LEAD_KINDS)
+    PIPELINE = tuple(
+        (e.frm, e.to, e.role, e.kind, e.kinds) for e in _plugin.edges())
+
+
 def lead_kind(lead: dict[str, Any] | None) -> str:
     """Which pipeline a lead runs on. Absent means the original one."""
     kind = (lead or {}).get("kind") or PROSPECT

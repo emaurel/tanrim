@@ -84,6 +84,12 @@ class Approval:
     means: str
     #: Dotted path to `async def (world, approval, decision, reason)`.
     on_decision: str | None = None
+    #: True when the card only reports something and is resolved by being
+    #: dismissed — `agent_crashed` says "fix the cause, then dismiss this".
+    #: Dismissal short-circuits before any per-kind branch, so an
+    #: informational card needs no handler, and saying so here is what lets a
+    #: test insist every OTHER kind has one.
+    informational: bool = False
 
 
 @dataclass(frozen=True)
