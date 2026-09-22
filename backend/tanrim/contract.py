@@ -511,6 +511,29 @@ class Plugin(ABC):
         """
         return ()
 
+    def routes(self) -> "Any | None":
+        """An HTTP surface this plugin adds, as a FastAPI `APIRouter`.
+
+        Returning None — the default — adds nothing, which is what a plugin
+        with no UI of its own wants.
+
+        The environment serves the machinery: rooms, the board, approvals,
+        workers, the plugin listing. Everything ABOUT the work is the
+        plugin's, and there was no way to say so — `/leads`, `/invoices` and
+        `/leads/{id}/dossier` all lived in the core's `server.py`, so adding
+        a plugin with its own records meant editing a file the plugin does
+        not own.
+
+        The router is included as given: a plugin owns its own prefix and
+        tags, and the environment does not invent one. Two plugins claiming
+        the same path is a collision they have to resolve between them,
+        exactly as two claiming the same gate kind is.
+
+        Called ONCE at boot, like everything else here, so a router may be
+        built from whatever the plugin knows at that point.
+        """
+        return None
+
     def tools(self) -> Iterable[Tool]:
         """MCP servers this plugin's rooms may be granted."""
         return ()

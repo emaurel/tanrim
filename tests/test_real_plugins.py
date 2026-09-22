@@ -350,3 +350,38 @@ def test_the_orchestrator_sweeps_run_without_unresolved_names(real_env, monkeypa
         await orch._advance_leads()
 
     asyncio.run(run_them())
+
+
+def test_the_core_has_no_domain_modules_left(real_env):
+    """The other half of "the core does not import the domain".
+
+    Nothing imported these — they simply LIVED in `backend/tanrim/`: the
+    review counted 4,768 lines of pure web agency sitting in the environment,
+    from a Cloudflare deployer to a fake restaurant called Le Banc d'Essai.
+    A module that only one plugin could ever want belongs to that plugin.
+    """
+    gone = {
+        "harvest", "mailbox", "invoices", "sitecheck", "sandbox", "schemas",
+        "assets", "domains", "hosting", "places", "fonts", "company",
+        "images", "siteeditor", "handover",
+    }
+    present = {p.stem for p in Path("backend/tanrim").glob("*.py")}
+    assert not (gone & present), f"domain modules back in the core: {gone & present}"
+
+
+def test_the_core_serves_no_route_about_the_work(real_env):
+    """`/leads`, `/invoices` and the dossier are the plugin's, via
+    `Plugin.routes()`. The environment serves the machinery — rooms, the
+    board, approvals, workers — and adding a plugin with records of its own
+    must not mean editing `server.py`."""
+    import re
+
+    body = Path("backend/tanrim/server.py").read_text()
+    paths = set(re.findall(r'@app\.(?:get|post|put|delete)\("([^"]+)"', body))
+    domain = {p for p in paths
+              if p.startswith(("/leads", "/invoices"))
+              or p in ("/health/mail", "/health/google", "/health/domain-pricing")}
+    assert not domain, f"domain routes still in the core: {sorted(domain)}"
+
+    served = {r.path for _id, router in real_env.routers() for r in router.routes}
+    assert "/leads" in served and "/invoices" in served

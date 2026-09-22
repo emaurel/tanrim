@@ -184,6 +184,7 @@ class Environment:
                 "room_handlers": dict(p.room_handlers()),
                 "summary_fields": list(p.summary_fields()),
                 "declares_prompts": tuple(p.declares_prompts()),
+                "routes": p.routes(),
             }
 
     def _said(self, p: Plugin, key: str) -> Any:
@@ -507,6 +508,17 @@ class Environment:
 
     def tools(self) -> dict[str, Tool]:
         return dict(self._tools)
+
+    def routers(self) -> list[tuple[str, Any]]:
+        """Every plugin's HTTP surface, in load order, with whose it is.
+
+        The plugin id travels alongside so a startup log can say which plugin
+        put a path there — with several installed, "why is /leads 404" is
+        otherwise a question nothing can answer.
+        """
+        return [(p.id, self._said(p, "routes"))
+                for p in self.plugins
+                if self._said(p, "routes") is not None]
 
     def listeners(self, name: str) -> list[Callable[..., Any]]:
         """Everything registered for a broadcast hook, in plugin order.

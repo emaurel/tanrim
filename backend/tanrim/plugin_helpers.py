@@ -25,6 +25,7 @@ from typing import Any, Iterable
 import importlib.util
 import os
 import re
+import sys
 
 import yaml
 
@@ -179,7 +180,7 @@ def persist_max_workers(directory: Path, room_id: str, n: int) -> str | None:
 # Tools from a directory of Python modules
 # ---------------------------------------------------------------------------
 
-def py_tools(directory: Path) -> list[Tool]:
+def py_tools(directory: Path, package: str | None = None) -> list[Tool]:
     """Every `*.py` in a directory that exports a top-level `mcp_server`.
 
     Called BY the plugin, like `yaml_rooms`. The core used to glob every
@@ -189,6 +190,11 @@ def py_tools(directory: Path) -> list[Tool]:
 
     A module that fails to import is reported rather than raised: one broken
     tool should cost that tool, not the whole environment.
+
+    `package` is the dotted name the modules are loaded UNDER — pass
+    `f"{__package__}.tools"` and a tool may then do `from .. import domains`
+    like any other file in the plugin. Without it they load under a flat name
+    with no parent, and every relative import in them fails.
     """
     directory = Path(directory)
     out: list[Tool] = []
@@ -198,14 +204,18 @@ def py_tools(directory: Path) -> list[Tool]:
         if path.name.startswith("_"):
             continue
         name = path.stem
-        spec = importlib.util.spec_from_file_location(
-            f"tanrim_tool_{name}", path)
+        mod_name = f"{package}.{name}" if package else f"tanrim_tool_{name}"
+        spec = importlib.util.spec_from_file_location(mod_name, path)
         if spec is None or spec.loader is None:
             continue
         module = importlib.util.module_from_spec(spec)
+        # Registered before execution so a relative import inside the tool
+        # resolves against its package rather than re-entering this.
+        sys.modules[mod_name] = module
         try:
             spec.loader.exec_module(module)
         except Exception as exc:  # noqa: BLE001
+            sys.modules.pop(mod_name, None)
             out.append(Tool(name=name, server=None,
                             description=f"failed to import: {exc}"))
             continue

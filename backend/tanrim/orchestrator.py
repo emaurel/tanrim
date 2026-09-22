@@ -71,7 +71,6 @@ class Orchestrator:
         # (lead_id, stage) pairs already dispatched, so recovery of a stalled
         # lead happens once rather than every tick.
         self._dispatched: set[tuple[str, str]] = set()
-        self._last_mail_poll = 0.0
         # Mark all current reports as already processed so we don't replay
         # history on every restart. Only NEW reports trigger a Sonnet reaction.
         self._processed_reports: set[str] = {
@@ -101,78 +100,6 @@ class Orchestrator:
         while True:
             await self.world.tick()
             await asyncio.sleep(0.1)
-
-    async def _read_mail(self) -> None:
-        """Fetch replies and file their attachments, then read what they said.
-
-        Polled on a slow clock: a business answers within a day, and hammering
-        an IMAP server is how an account gets rate-limited. A mailbox that is
-        unreachable must never take the loop down — outreach is the one part of
-        this that depends on someone else's server.
-        """
-        from . import config, mailbox
-
-        if not mailbox.configured():
-            return
-        if time.time() - self._last_mail_poll < config.MAIL_POLL_MINUTES * 60:
-            return
-        self._last_mail_poll = time.time()
-
-        try:
-            arrived = await asyncio.to_thread(mailbox.poll)
-            # A poll that matches nothing logs nothing, so there was no way to
-            # tell "no replies yet" from "the poller never ran". Record the
-            # heartbeat instead of an event per poll, which would be noise
-            # every five minutes.
-            state.set_meta("last_mail_poll", {
-                "ts": time.time(), "matched": len(arrived),
-                "ok": True,
-            })
-        except Exception as e:  # noqa: BLE001
-            state.set_meta("last_mail_poll", {
-                "ts": time.time(), "ok": False,
-                "error": f"{type(e).__name__}: {e}"[:200],
-            })
-            state.log_event(
-                "run_end", from_="echo",
-                summary=f"could not read the mailbox: {type(e).__name__}: {e}"[:240],
-                outcome="failed",
-            )
-            return
-
-        for record in arrived:
-            try:
-                # A delivery failure is a fact, not a message to interpret —
-                # it goes nowhere near the model.
-                # What a reply MEANS is the domain's business. The core knows
-                # only that mail arrived and which hook to call; an
-                # environment with no mail plugin simply has no mail
-                # behaviour rather than crashing.
-                if record.get("kind") == "bounce":
-                    on_bounce = environment.current().hook("inbound_bounce")
-                    if on_bounce is not None:
-                        await on_bounce(
-                            self.world, record["lead_id"], record["recipient"],
-                            bool(record.get("permanent")),
-                            str(record.get("detail") or ""))
-                    continue
-                # `inbound_message`, not `inbound_mail`. The contract renamed it
-                # and this call site did not follow, so every reply was stored
-                # and then never triaged — the whole `replied` branch was dead
-                # and nothing said so, because an unknown hook name simply
-                # answers None.
-                on_mail = environment.current().hook("inbound_message")
-                if on_mail is not None:
-                    await on_mail(self.world, record["lead_id"])
-            except Exception as e:  # noqa: BLE001
-                # The message and its attachments are already stored; only the
-                # reading failed, and the operator can still see it.
-                state.log_event(
-                    "run_end", from_="echo",
-                    summary=f"stored the reply from {record.get('business')} but "
-                            f"could not read it: {type(e).__name__}"[:200],
-                    outcome="failed", details={"lead_id": record["lead_id"]},
-                )
 
     async def _plugin_sweeps(self) -> None:
         """Whatever the installed plugins do on a clock.
@@ -455,7 +382,6 @@ class Orchestrator:
                 # Leads that changed stage → dispatch the room that works it.
                 await _timed("advance_leads", self._advance_leads())
                 await _timed("plugin_sweeps", self._plugin_sweeps())
-                await _timed("read_mail", self._read_mail())
 
                 # Retire ephemeral workers whose lead has finished its run
                 # through the pipeline. Rooms keep their base agent, so a room

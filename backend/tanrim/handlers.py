@@ -16,7 +16,7 @@ from typing import Any, TYPE_CHECKING
 
 from . import secrets as secrets_store
 from . import config
-from . import invoices, state, usage
+from . import state, usage
 from .agent_helpers import AgentBusy, every_in_flight, in_flight_for_role
 from .workers import RoomAtCapacity, crew_status, max_workers
 from .tools import registry as tool_registry
