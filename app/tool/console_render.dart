@@ -7,7 +7,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:tanrim/model/record.dart';
 import 'package:tanrim/model/world.dart';
-import 'package:tanrim/ui/board.dart';
+import 'package:tanrim/api/client.dart';
+import 'package:tanrim/model/approval.dart';
+import 'package:tanrim/ui/approvals.dart';
+
 import 'package:tanrim/ui/map_view.dart';
 
 /// The whole UI, painted to a PNG with the REAL payloads.
@@ -46,6 +49,11 @@ void main() {
     final records = ((board['leads'] ?? []) as List)
         .map((r) => WorkRecord(r as Map<String, dynamic>))
         .toList();
+    final approvals =
+        ((jsonDecode(File('test/approvals_fixture.json').readAsStringSync())
+                    as Map<String, dynamic>)['approvals'] as List)
+            .map((a) => Approval(a as Map<String, dynamic>))
+            .toList();
 
     final agents = <AgentState>[];
     for (final r in rooms) {
@@ -113,24 +121,21 @@ void main() {
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 14, 16, 2),
                         child: Row(children: [
-                          const Text('Board',
+                          const Text('Approvals',
                               style: TextStyle(
                                   fontSize: 18, fontWeight: FontWeight.w700)),
                           const SizedBox(width: 8),
-                          Text('${records.length}',
+                          Text('${approvals.length} waiting  ·  '
+                              '${records.length} records',
                               style:
                                   const TextStyle(color: Colors.white38)),
                         ]),
                       ),
                       Expanded(
-                        child: Board(
-                          records: records,
-                          stages:
-                              ((board['stages'] ?? []) as List).cast<String>(),
-                          deadStages: ((board['dead_stages'] ?? []) as List)
-                              .cast<String>(),
-                          counts: const {},
-                          onTapRecord: (_) {},
+                        child: Approvals(
+                          api: Api('http://127.0.0.1:8765'),
+                          approvals: approvals,
+                          onResolved: () {},
                         ),
                       ),
                     ],
@@ -157,7 +162,7 @@ void main() {
     // `dart_test.yaml` excludes the tag from the ordinary suite.
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('../build/console.png'),
+      matchesGoldenFile('../build/approvals.png'),
     );
   });
 }

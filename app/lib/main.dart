@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 import 'api/client.dart';
 import 'api/live.dart';
+import 'model/approval.dart';
 import 'model/record.dart';
 import 'model/world.dart';
+import 'ui/approvals.dart';
 import 'ui/board.dart';
 import 'ui/map_view.dart';
 import 'ui/room_panel.dart';
@@ -58,7 +60,11 @@ class _WorldPageState extends State<WorldPage> {
   List<String> _deadStages = const [];
   Map<String, int> _counts = const {};
   String? _selectedRecord;
-  bool _showBoard = true;
+
+  List<Approval> _approvals = const [];
+
+  /// Which pane the right-hand column is showing.
+  _Pane _pane = _Pane.board;
 
   @override
   void initState() {
@@ -89,13 +95,12 @@ class _WorldPageState extends State<WorldPage> {
       final rooms = (await api.get('/rooms') as List)
           .map((r) => Room.fromJson(r as Map<String, dynamic>))
           .toList();
-      final approvals = await api.get('/approvals?status=pending');
       setState(() {
         _rooms = rooms;
-        _badges = _countsByRoom(approvals);
         _state = '${rooms.length} rooms';
         _connected = true;
       });
+      await _loadApprovals();
       await _loadBoard();
     } catch (e) {
       setState(() => _state = e is ApiError ? e.message : '$e');
@@ -109,8 +114,7 @@ class _WorldPageState extends State<WorldPage> {
         case LiveKind.agentsChanged:
           setState(() {});
         case LiveKind.approvalsChanged:
-          final a = await api.get('/approvals?status=pending');
-          setState(() => _badges = _countsByRoom(a));
+          await _loadApprovals();
           await _loadBoard();
         case LiveKind.disconnected:
           setState(() => _state = 'reconnecting…');
@@ -142,6 +146,23 @@ class _WorldPageState extends State<WorldPage> {
       });
     } catch (_) {
       // A board that will not load is not worth killing the map for.
+    }
+  }
+
+  Future<void> _loadApprovals() async {
+    final api = _api;
+    if (api == null) return;
+    try {
+      final a = await api.get('/approvals?status=pending');
+      if (!mounted) return;
+      setState(() {
+        _approvals = ((a['approvals'] ?? []) as List)
+            .map((x) => Approval(x as Map<String, dynamic>))
+            .toList();
+        _badges = _countsByRoom(a);
+      });
+    } catch (_) {
+      // Not worth killing the map for.
     }
   }
 
@@ -178,29 +199,108 @@ class _WorldPageState extends State<WorldPage> {
                           selectedRoom: _selected,
                           onRoomTapped: (r) => setState(() {
                             _selected = r.id;
-                            _showBoard = false;
+                            _pane = _Pane.room;
                           }),
                         ),
                       ),
                       SizedBox(
-                        width: 380,
-                        child: _showBoard || selected == null
-                            ? _boardPane()
-                            : RoomPanel(
-                                api: _api!,
-                                room: selected,
-                                here: agents
-                                    .where((a) => a.roomId == selected.id)
-                                    .toList(),
-                                onClose: () =>
-                                    setState(() => _showBoard = true),
-                                onChanged: _loadBoard,
-                              ),
+                        width: 400,
+                        child: Column(
+                          children: [
+                            _tabs(),
+                            Expanded(
+                              child: switch (_pane) {
+                                _Pane.approvals => Container(
+                                    color: const Color(0xFF161922),
+                                    child: Approvals(
+                                      api: _api!,
+                                      approvals: _approvals,
+                                      onResolved: () async {
+                                        await _loadApprovals();
+                                        await _loadBoard();
+                                      },
+                                      onOpenRecord: (id) => setState(() {
+                                        _selectedRecord = id;
+                                        _pane = _Pane.board;
+                                      }),
+                                    ),
+                                  ),
+                                _Pane.room when selected != null => RoomPanel(
+                                    api: _api!,
+                                    room: selected,
+                                    here: agents
+                                        .where((a) => a.roomId == selected.id)
+                                        .toList(),
+                                    onClose: () =>
+                                        setState(() => _pane = _Pane.board),
+                                    onChanged: () async {
+                                      await _loadBoard();
+                                      await _loadApprovals();
+                                    },
+                                  ),
+                                _ => _boardPane(),
+                              },
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// The right-hand column's tabs. Approvals carries a count, because a gate
+  /// nobody notices is a gate that does not work — the whole design assumes
+  /// the operator can walk away and be called back.
+  Widget _tabs() {
+    final pending = _approvals.length;
+    return Container(
+      color: const Color(0xFF191C24),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Row(
+        children: [
+          _tab('Board', _Pane.board),
+          _tab('Approvals', _Pane.approvals, count: pending),
+          if (_selected != null) _tab('Room', _Pane.room),
+        ],
+      ),
+    );
+  }
+
+  Widget _tab(String label, _Pane pane, {int count = 0}) {
+    final on = _pane == pane;
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: TextButton(
+        onPressed: () => setState(() => _pane = pane),
+        style: TextButton.styleFrom(
+          backgroundColor: on ? Colors.white12 : Colors.transparent,
+          foregroundColor: on ? Colors.white : Colors.white54,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          minimumSize: const Size(0, 34),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text(label, style: const TextStyle(fontSize: 13)),
+          if (count > 0) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE23D3D),
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: Text('$count',
+                  style: const TextStyle(
+                      fontSize: 11,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700)),
+            ),
+          ],
+        ]),
       ),
     );
   }
@@ -212,19 +312,18 @@ class _WorldPageState extends State<WorldPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 2),
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 2),
             child: Row(
               children: [
-                const Text('Board',
-                    style: TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.w700)),
-                const SizedBox(width: 8),
-                Text('${_records.length}',
+                Text('${_records.length} records',
                     style: const TextStyle(color: Colors.white38)),
                 const Spacer(),
                 IconButton(
                   tooltip: 'reload',
-                  onPressed: _loadBoard,
+                  onPressed: () async {
+                    await _loadBoard();
+                    await _loadApprovals();
+                  },
                   icon: const Icon(Icons.refresh, size: 18),
                 ),
               ],
@@ -281,3 +380,6 @@ class _WorldPageState extends State<WorldPage> {
     );
   }
 }
+
+/// Which pane the right-hand column shows.
+enum _Pane { board, approvals, room }
