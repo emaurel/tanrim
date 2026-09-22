@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import importlib.util
+import os
+import re
 
 import yaml
 
@@ -93,6 +95,8 @@ def _servers(raw: Any) -> tuple[McpServer, ...]:
             auth_env=item.get("auth_env", ""),
             tools=tuple(item.get("tools") or ()),
             deny=tuple(item.get("deny") or ()),
+            **({"transport": item["transport"]} if item.get("transport") else {}),
+            **({"note": item["note"]} if item.get("note") else {}),
         )
         for item in (raw or [])
     )
@@ -127,6 +131,48 @@ def _pair(value: Any, keys: tuple[str, str]) -> tuple[int, int] | None:
     if a not in value or b not in value:
         return None
     return int(value[a]), int(value[b])
+
+
+def persist_max_workers(directory: Path, room_id: str, n: int) -> str | None:
+    """Write a room's crew size back into the manifest that declares it.
+
+    For `Plugin.persist_room`. The environment holds rooms in memory and has
+    no idea where they came from; a plugin that keeps them in YAML wants this
+    and shouldn't have to write it.
+
+    Rewritten LINE BY LINE rather than through a YAML dumper: these files
+    carry comments, agent roles and workbench jobs, and a round-trip through
+    `yaml.safe_dump` strips all of it to change one integer.
+    """
+    directory = Path(directory)
+    path = None
+    for candidate in sorted(directory.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(candidate.read_text()) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        # A room may be declared in a file whose name is not its id, and a
+        # patch must never be mistaken for the declaration.
+        if data.get("id") == room_id and not data.get("extends"):
+            path = candidate
+            break
+    if path is None:
+        return f"no manifest for {room_id!r}"
+    text = path.read_text()
+    line = f"max_workers: {n}"
+    text, hits = re.subn(r"^max_workers: \d+$", line, text, count=1, flags=re.M)
+    if not hits:
+        # Undeclared, so the room has been running on the default of one. Goes
+        # after `color`, which every manifest has, keeping the room-level
+        # settings together.
+        text, hits = re.subn(r"^(color: .*)$", rf"\1\n{line}", text,
+                             count=1, flags=re.M)
+        if not hits:
+            text = text.rstrip("\n") + f"\n{line}\n"
+    tmp = path.with_suffix(".yaml.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+    return None
 
 
 # ---------------------------------------------------------------------------

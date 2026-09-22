@@ -159,6 +159,7 @@ class Environment:
         env._validate()
         for p in env.plugins:
             p.setup(env)
+        _invalidate_derived()
         return env
 
     def _ask(self) -> None:
@@ -320,6 +321,20 @@ class Environment:
                         f"a step gate at {sg.stage!r} is scoped to pipeline "
                         f"{k!r}, which no plugin declares — so it would never "
                         f"fire, silently")
+        # A job at a stage no bench in that room declares is dispatched and
+        # then refused by `runners._wrong_stage`, which reads BENCHES. The two
+        # were independent truths: a plugin adding an `AgentPatch` job without
+        # the matching `RoomPatch` bench booted clean and never ran. That is
+        # the trap `AgentPatch` exists to close, one level up.
+        for role, agent in self._agents.items():
+            benched = self.stages_for_role(role)
+            for stage in agent.jobs:
+                if stage not in benched:
+                    problems.append(
+                        f"agent {role!r} has a job at stage {stage!r}, but no "
+                        f"workbench in room {agent.room!r} declares that "
+                        f"stage — every dispatch would be refused. Benches "
+                        f"there: {sorted(benched) or 'none'}")
         for room_id in self._room_handlers:
             if room_id not in self._rooms:
                 problems.append(
@@ -627,6 +642,22 @@ class Environment:
     def describe(self) -> list[dict[str, Any]]:
         """What is installed, for `/plugins` and for the operator."""
         return list(self._described)
+
+
+def _invalidate_derived() -> None:
+    """Drop every cache built from a previous environment.
+
+    `state` caches its stage tables and `rooms` caches its room list, both
+    for the life of the process. Anything that read one BEFORE the boot — an
+    entrypoint that is not `server.py`, a new import-time read — cached the
+    empty fallback permanently, and `advance_lead` then refused every stage
+    in the system. Booting is the one moment at which those answers change.
+    """
+    from . import prompts, rooms, state
+
+    state._MACHINE.clear()
+    rooms._ROOMS_CACHE.clear()
+    prompts._cache.clear()
 
 
 def _apply(room: Room, patch: RoomPatch) -> Room:

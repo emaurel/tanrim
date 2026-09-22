@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any
 
-from . import plugin
+from . import environment
 from . import rooms as rooms_mod
 from . import state, workers
 from . import runners as _runners
@@ -16,55 +16,6 @@ MAX_RERUNS = 2  # safety cap so a request_tool loop can't run forever
 # A rejected draft is redrafted with the operator's note as the brief, and that
 # is the loop this bounds: three attempts at one nudge is already generous for
 # a message whose whole job is to be four sentences long.
-MAX_FOLLOWUP_ATTEMPTS = 3
-# How long to leave a follow-up alone after an attempt that did not raise a
-# card. Long enough that a preview host being down costs one fetch an hour
-# rather than one every three seconds.
-FOLLOWUP_RETRY_SECONDS = 30 * 60
-
-
-def _mark_attempt(lead_id: str, touch: int, why: str | None) -> None:
-    """Record that a follow-up attempt was made and what stopped it.
-
-    Written onto the draft so it survives a restart. `rejected` is cleared
-    here: whatever the operator asked for has now been attempted, and leaving
-    the flag set would redraft the same note on every pass.
-    """
-    lead = state.get_lead(lead_id) or {}
-    followups = [dict(f) for f in (lead.get("followups") or [])]
-    found = False
-    for f in followups:
-        if f.get("touch") == touch:
-            f["attempts"] = int(f.get("attempts") or 0) + 1
-            f["last_attempt_ts"] = time.time()
-            f["rejected"] = False
-            if why:
-                f["last_problem"] = str(why)[:300]
-            found = True
-    if not found:
-        # Nothing was written — the drafting run itself failed. Keep the count
-        # somewhere, or a lead whose draft cannot be produced is retried for
-        # ever.
-        followups.append({"touch": touch, "attempts": 1,
-                          "last_attempt_ts": time.time(), "sent": False,
-                          "rejected": False, "last_problem": str(why or "")[:300]})
-    state.update_lead(lead_id, followups=followups)
-
-
-def _rewrite_brief(draft: dict[str, Any] | None) -> str:
-    """The instruction for a redraft, built from why the last one was refused."""
-    if not draft:
-        return ""
-    note = (draft.get("operator_feedback") or "").strip()
-    if not note:
-        return ""
-    return ("YOU ARE REWRITING. The operator rejected your previous follow-up "
-            f"with this note, which is the brief for this attempt:\n  \"{note}\"\n"
-            "Your previous version was:\n"
-            f"  subject: {draft.get('subject', '')}\n"
-            f"  body: {(draft.get('body_final') or '')[:600]}")
-
-
 # How settled a lead must look before the sweep recovers it. Long enough to
 # outlast a server restart and the tail of a killed run; short enough that a
 # genuinely stuck lead is picked up while the operator is still watching.
@@ -159,7 +110,7 @@ class Orchestrator:
         unreachable must never take the loop down — outreach is the one part of
         this that depends on someone else's server.
         """
-        from . import config, mailbox, plugin
+        from . import config, mailbox
 
         if not mailbox.configured():
             return
@@ -198,14 +149,19 @@ class Orchestrator:
                 # environment with no mail plugin simply has no mail
                 # behaviour rather than crashing.
                 if record.get("kind") == "bounce":
-                    on_bounce = plugin.hook("inbound_bounce")
+                    on_bounce = environment.current().hook("inbound_bounce")
                     if on_bounce is not None:
                         await on_bounce(
                             self.world, record["lead_id"], record["recipient"],
                             bool(record.get("permanent")),
                             str(record.get("detail") or ""))
                     continue
-                on_mail = plugin.hook("inbound_mail")
+                # `inbound_message`, not `inbound_mail`. The contract renamed it
+                # and this call site did not follow, so every reply was stored
+                # and then never triaged — the whole `replied` branch was dead
+                # and nothing said so, because an unknown hook name simply
+                # answers None.
+                on_mail = environment.current().hook("inbound_message")
                 if on_mail is not None:
                     await on_mail(self.world, record["lead_id"])
             except Exception as e:  # noqa: BLE001
@@ -218,134 +174,20 @@ class Orchestrator:
                     outcome="failed", details={"lead_id": record["lead_id"]},
                 )
 
-    async def _expire_silence(self) -> None:
-        """Treat a long silence as a no.
+    async def _plugin_sweeps(self) -> None:
+        """Whatever the installed plugins do on a clock.
 
-        A lead sits at `contacted` until the business answers, and most never
-        will. Without this the board fills with leads that are neither won nor
-        lost, which buries the ones still worth chasing.
+        `_expire_silence` and `_followup_sweep` used to live here, which put
+        the web agency's follow-up policy — quiet leads, the silence timer,
+        the redraft brief — inside the core's tick loop. They moved to
+        `web_agency/sweeps.py` behind the `tick` hook, which the contract had
+        declared and nothing had ever fired.
+
+        `broadcast` runs every listener even if one raises, and re-raises the
+        failures together afterwards: they belong to different plugins and are
+        not each other's business.
         """
-        from . import config, sandbox
-
-        cutoff = time.time() - config.NO_REPLY_DAYS * 86400
-        for lead in state.list_leads(stage="contacted", limit=500):
-            # The fixture never ages into `lost`; nobody was ever written to.
-            if sandbox.is_sandbox(lead):
-                continue
-            # From the last message we actually SENT them, not `updated_ts`.
-            # Any write to the lead bumps that field, so drafting a follow-up —
-            # which reaches nobody — used to buy the lead another three weeks of
-            # life, and so did any incidental patch. Silence is measured from
-            # the last thing that landed in their inbox, which is the only
-            # clock the business itself is running on.
-            sends = [float(r.get("ts") or 0) for r in (lead.get("sent_log") or [])]
-            sent = max(sends) if sends else float(lead.get("updated_ts") or 0)
-            if sent and sent < cutoff:
-                state.advance_lead(
-                    lead["id"], "lost", agent="system",
-                    note=f"no reply in {config.NO_REPLY_DAYS} days",
-                )
-                state.log_event(
-                    "run_end", from_="system",
-                    summary=f"{lead.get('name')}: no reply in "
-                            f"{config.NO_REPLY_DAYS} days — marked lost",
-                    outcome="completed", details={"lead_id": lead["id"]},
-                )
-
-    async def _followup_sweep(self) -> None:
-        """Nudge businesses that were emailed once and have gone quiet.
-
-        The gap this closes: of the first 21 leads, every single one received
-        exactly one message and nothing afterwards, and `_expire_silence` then
-        filed it as lost. The site was already built, published and paid for in
-        compute, so a lead dropped after one touch is the cheapest thing in
-        this pipeline to throw away.
-
-        Deliberately one lead per tick. Drafting is a model call, and a backlog
-        of quiet leads would otherwise fire a dozen of them in the same second
-        — for a queue the operator can only read one card at a time anyway.
-        Nothing here sends: Echo raises the gate and it waits.
-
-        All the retry state lives ON THE LEAD rather than in this object,
-        because the orchestrator's memory is emptied by every restart and the
-        thing being bounded is a model call that costs money. A counter that
-        forgets itself on reboot is not a ceiling.
-        """
-        from . import config, plugin
-
-        if not config.followups_enabled():
-            return
-        # Resolved through the registry, like everything else here. These used
-        # to be `from .agents import echo, scribe`; converting this loop to
-        # hooks removed the import and left the calls, so the sweep raised
-        # NameError the moment a lead actually became due — and the gatekeeper
-        # swallows exceptions, so it would have been a follow-up system that
-        # silently never ran. This whole sweep is domain and belongs behind a
-        # `tick` hook; until then it at least resolves the way the rest does.
-        echo = plugin.runner_for("echo")
-        scribe = plugin.runner_for("scribe")
-        if echo is None or scribe is None:
-            return
-        import importlib
-        echo = importlib.import_module(echo.__module__)
-        scribe = importlib.import_module(scribe.__module__)
-
-        pending_leads = {
-            a["payload"].get("lead_id")
-            for a in state.list_user_approvals(status="pending", limit=200)
-        }
-        for lead in state.list_leads(stage="contacted", limit=500):
-            lead_id = lead["id"]
-            # A card already open for this business needs nothing from us, and
-            # a second one for the same lead is how one message is approved
-            # twice.
-            if lead_id in pending_leads:
-                continue
-            touch = echo.followup_due(lead)
-            if touch is None:
-                continue
-
-            draft = next((f for f in (lead.get("followups") or [])
-                          if f.get("touch") == touch), None)
-            attempts = int((draft or {}).get("attempts") or 0)
-            if attempts >= MAX_FOLLOWUP_ATTEMPTS:
-                continue
-            # A draft that could not be raised — a dead preview link, a
-            # registry timeout — is retried, but on a slow clock. Without the
-            # backoff a lead whose preview host is down re-runs this every
-            # three seconds, and each attempt is an HTTP fetch.
-            last_try = float((draft or {}).get("last_attempt_ts") or 0)
-            if last_try and time.time() - last_try < FOLLOWUP_RETRY_SECONDS:
-                continue
-
-            needs_draft = draft is None or draft.get("rejected")
-            try:
-                if needs_draft:
-                    result = await scribe.run_followup(
-                        self.world, lead_id, touch,
-                        instruction=_rewrite_brief(draft))
-                    if not result.get("ok"):
-                        _mark_attempt(lead_id, touch, result.get("error"))
-                        state.log_event(
-                            "run_end", from_="scribe",
-                            summary=f"could not draft follow-up {touch} for "
-                                    f"{lead.get('name')}: {result.get('error')}"[:240],
-                            outcome="failed", details={"lead_id": lead_id})
-                        return
-                raised = await echo.request_followup(self.world, lead_id, touch)
-                if not raised.get("ok"):
-                    _mark_attempt(lead_id, touch,
-                                  "; ".join(raised.get("problems") or
-                                            [str(raised.get("error"))])[:300])
-            except Exception as e:  # noqa: BLE001
-                _mark_attempt(lead_id, touch, f"{type(e).__name__}: {e}")
-                state.log_event(
-                    "run_end", from_="echo",
-                    summary=f"follow-up sweep failed on {lead.get('name')}: "
-                            f"{type(e).__name__}: {e}"[:240],
-                    outcome="failed", details={"lead_id": lead_id})
-            # One per tick, whatever happened to it.
-            return
+        await environment.current().broadcast("tick", self.world)
 
     def report_interrupted_runs(self) -> int:
         """Say which runs died with the previous process.
@@ -584,6 +426,13 @@ class Orchestrator:
         result = task.result()
         if isinstance(result, dict) and not result.get("ok"):
             err = str(result.get("error") or "").lower()
+            # A PERMANENT refusal keeps the mark. The same input reaches the
+            # same refusal, so unmarking re-dispatches on the very next tick
+            # and for ever: the sandbox lead, which Courier will never
+            # publish, was being dispatched and refused every three seconds —
+            # about 29,000 log events a day saying the same thing.
+            if result.get("permanent"):
+                return
             # "already running" is a genuine duplicate: the work IS happening,
             # so leave the mark. Capacity and busy-room refusals are not.
             if "already running" not in err and "already working" not in err:
@@ -605,8 +454,7 @@ class Orchestrator:
                 # nobody reached for is cost without return, so it is gone.
                 # Leads that changed stage → dispatch the room that works it.
                 await _timed("advance_leads", self._advance_leads())
-                await _timed("expire_silence", self._expire_silence())
-                await _timed("followup_sweep", self._followup_sweep())
+                await _timed("plugin_sweeps", self._plugin_sweeps())
                 await _timed("read_mail", self._read_mail())
 
                 # Retire ephemeral workers whose lead has finished its run
@@ -623,7 +471,7 @@ class Orchestrator:
                 # Pending agent escalations → Ultron responds.
                 pending_esc = state.list_escalations(status="pending", limit=10)
                 for esc in pending_esc:
-                    on_escalation = plugin.hook("escalation")
+                    on_escalation = environment.current().hook("escalation")
                     if on_escalation is None:
                         break
                     await _timed("escalation", on_escalation(self.world, esc["id"]))
@@ -712,7 +560,7 @@ class Orchestrator:
                 # Process oldest first so chains form in the right order.
                 for report in reversed(new_reports):
                     self._processed_reports.add(report["id"])
-                    on_report = plugin.hook("agent_report")
+                    on_report = environment.current().hook("agent_report")
                     if on_report is not None:
                         await _timed("agent_report",
                                      on_report(self.world, report))

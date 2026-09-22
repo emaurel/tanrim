@@ -30,10 +30,17 @@ log = logging.getLogger(__name__)
 
 
 def tool_dirs() -> list[Path]:
-    """Every plugin's `tools/`, then the legacy runtime drop."""
-    from .. import plugin
+    """Directories still scanned for tool modules.
 
-    dirs = list(plugin.dirs("tools"))
+    Only the runtime drop now. A plugin's tools arrive through
+    `Plugin.tools()`; reaching into `<plugin>/tools/` from here was the core
+    reading a plugin's files, which is precisely what the contract removed.
+    """
+    from .. import environment, plugin
+
+    dirs: list[Path] = []
+    if not environment.booted():
+        dirs.extend(plugin.dirs("tools"))
     if TOOLS_DIR not in dirs:
         dirs.append(TOOLS_DIR)
     return dirs
@@ -45,6 +52,9 @@ def reload() -> None:
     SERVERS.clear()
     LOAD_ERRORS.clear()
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+    supplied = _from_environment()
+    if supplied is not None:
+        SERVERS.update(supplied)
     seen: set[str] = set()
     for path in [q for d in tool_dirs() if d.is_dir()
                  for q in sorted(d.glob("*.py"))]:
@@ -78,6 +88,31 @@ def reload() -> None:
 #: Whether `reload()` has run. Not `bool(SERVERS)`: an install with no tools
 #: at all is a legitimate state and would otherwise re-scan on every lookup.
 _loaded = False
+
+
+def _from_environment() -> dict[str, Any] | None:
+    """The installed plugins' tools, or None if nothing is booted.
+
+    A plugin OWNS its tools and hands them over as `Tool(name, server)`; the
+    core no longer globs anyone's `tools/` directory. The directory scan below
+    survives only for `state/tools/`, the runtime drop a fabricated tool lands
+    in, which belongs to no plugin.
+    """
+    from .. import environment
+
+    if not environment.booted():
+        return None
+    out: dict[str, Any] = {}
+    for name, tool in environment.current().tools().items():
+        if tool.server is None:
+            # `py_tools` reports a module that would not import, or that has
+            # no `mcp_server`, as a Tool with no server rather than dropping
+            # it. Keeping the reason is the whole point: a tool that silently
+            # disappears is a room whose agent quietly has fewer capabilities.
+            LOAD_ERRORS[name] = tool.description or "no server"
+            continue
+        out[name] = tool.server
+    return out
 
 
 def _ensure() -> None:

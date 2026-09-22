@@ -196,28 +196,51 @@ def test_every_agent_job_actually_resolves(real_env):
 
 
 def _resolve_lazy(fn) -> None:
-    """Import what a lazy wrapper closes over, without calling it.
+    """Import everything a lazy wrapper would reach, without calling it.
 
-    The wrappers in `jobs.py` and `plugin.py` capture a module name and an
-    attribute name in a closure. Reading those back and importing is what
-    turns "this name is wrong" from a failure during a build into a failure
-    here.
+    The wrappers capture an `_agent(...)` resolver in a closure; a
+    hand-written adapter closes over one or more of them, or over none at all.
+    The first version returned quietly whenever it did not recognise the
+    shape, so it checked NOTHING for `scout`, `survey` and `OUTREACH` — the
+    three hand-written adapters, which are exactly where a typo would be.
+    It now refuses to pass silently.
     """
     import importlib
 
-    closure = dict(zip(fn.__code__.co_freevars,
-                       (c.cell_contents for c in (fn.__closure__ or ()))))
-    for value in list(closure.values()):
-        if callable(value) and getattr(value, "__name__", "").startswith("resolve_"):
-            value()                       # `_agent`'s resolver: imports it
-            return
-    module = closure.get("module")
-    function = closure.get("function")
-    if module and function:
-        pkg = "tanrim_plugins.web_agency"
-        mod = importlib.import_module(f"{pkg}.agents.{module}")
-        assert getattr(mod, function, None) is not None, \
-            f"{module}.{function} does not exist"
+    closure = _closure(fn)
+
+    # Shape 1: closes over an `_agent(...)` resolver. Calling it imports the
+    # module and raises if the attribute is not there.
+    resolvers = [v for v in closure.values()
+                 if callable(v) and getattr(v, "__name__", "").startswith("resolve_")]
+    if resolvers:
+        for r in resolvers:
+            r()
+        return
+
+    # Shape 2: a `_hook(module, function)` wrapper, holding the two names.
+    if "module" in closure and "function" in closure:
+        mod = importlib.import_module(
+            f"{fn.__module__}.agents.{closure['module']}")
+        assert getattr(mod, closure["function"], None) is not None, \
+            f"{closure['module']}.{closure['function']} does not exist"
+        return
+
+    # Shape 3: a hand-written adapter. It must still reach its agents through
+    # module-level resolvers, or nothing can check it without running it.
+    mod = importlib.import_module(fn.__module__)
+    found = [v for v in vars(mod).values()
+             if callable(v) and getattr(v, "__name__", "").startswith("resolve_")]
+    assert found, (
+        f"{fn.__module__}.{fn.__name__} closes over no resolver and its module "
+        f"declares none — this check would have passed on a broken wrapper")
+    for r in found:
+        r()
+
+
+def _closure(fn) -> dict:
+    return dict(zip(fn.__code__.co_freevars,
+                    (c.cell_contents for c in (fn.__closure__ or ()))))
 
 
 def test_every_declared_gate_handler_resolves(real_env):
@@ -247,10 +270,12 @@ def _resolve_gate(fn) -> None:
     """
     import importlib
 
-    freevars = fn.__code__.co_freevars
-    if "name" not in freevars:
+    closure = _closure(fn)
+    if "name" not in closure:
+        # A direct function reference — what a plugin small enough not to need
+        # the laziness writes — is already proof of itself.
+        assert callable(fn)
         return
-    closure = dict(zip(freevars, (c.cell_contents for c in (fn.__closure__ or ()))))
     name = closure["name"]
     # The plugin package IS the manifest module, so its approvals
     # module is a submodule of it.
@@ -277,22 +302,41 @@ def test_the_core_does_not_import_the_domain(real_env):
     assert not offenders, offenders
 
 
-def test_the_orchestrator_sweeps_run_without_unresolved_names(real_env):
-    """Every tick-loop sweep, actually executed.
+def test_the_orchestrator_sweeps_run_without_unresolved_names(real_env, monkeypatch):
+    """Every tick-loop sweep, actually executed — against an EMPTY ledger.
 
     `_followup_sweep` called `echo.` and `scribe.` after the import that
     provided them was removed — a NameError that only fired when a lead
     became due, and the gatekeeper swallows exceptions, so it would have been
     a follow-up system that silently never ran. Importing the module proves
     nothing; these have to be CALLED.
+
+    Every lead-reading call is stubbed to return nothing. The earlier version
+    ran the real sweeps over `state/leads.json`: `_expire_silence` calls
+    `advance_lead(lead, "lost")` on live businesses and `_advance_leads`
+    creates tasks that are real, paid agent runs. It was saved only by
+    `asyncio.run` closing the loop before those tasks were scheduled. Running
+    the suite must not be able to mark a real lead lost.
     """
+    from tanrim import state as state_mod
     from tanrim.orchestrator import Orchestrator
     from tanrim.world import World
+
+    monkeypatch.setattr(state_mod, "list_leads", lambda *a, **k: [])
+    monkeypatch.setattr(state_mod, "list_lead_rows", lambda *a, **k: [])
+    monkeypatch.setattr(state_mod, "list_user_approvals", lambda *a, **k: [])
+
+    def refuse(*a, **k):
+        raise AssertionError("a sweep tried to WRITE during the test suite")
+
+    monkeypatch.setattr(state_mod, "advance_lead", refuse)
+    monkeypatch.setattr(state_mod, "update_lead", refuse)
+    monkeypatch.setattr(state_mod, "add_user_approval", refuse)
 
     orch = Orchestrator(World())
 
     async def run_them():
-        for name in ("_followup_sweep", "_expire_silence", "_advance_leads"):
-            await getattr(orch, name)()
+        await orch._plugin_sweeps()
+        await orch._advance_leads()
 
     asyncio.run(run_them())

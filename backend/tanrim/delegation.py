@@ -35,16 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from . import prompts as _prompts
-from . import plugin, state
-
-
-def _reviewer():
-    """The module that supplies reviews, or None when nothing does."""
-    fn = plugin.hook("subtask_review")
-    if fn is None:
-        return None
-    import importlib
-    return importlib.import_module(fn.__module__)
+from . import environment, state
 
 
 #: When no plugin supplies a reviewer. A specialist can still be reviewed;
@@ -53,8 +44,19 @@ DEFAULT_REVIEW_MODEL = "claude-sonnet-4-6"
 
 
 def reviewer_model() -> str:
-    """The model a review runs on, from the module that supplies reviews."""
-    return getattr(_reviewer(), "MODEL", DEFAULT_REVIEW_MODEL)
+    """The model a review runs on, asked of the plugin that supplies reviews.
+
+    It used to be read off `subtask_review.__module__`, which worked only
+    while a plugin named its agent functions directly. A plugin that resolves
+    its agents lazily registers a wrapper belonging to its manifest module, so
+    that lookup silently returned the default for ever.
+    """
+    if not environment.booted():
+        return DEFAULT_REVIEW_MODEL
+    supplier = environment.current().hook("subtask_review_model")
+    if supplier is None:
+        return DEFAULT_REVIEW_MODEL
+    return supplier() or DEFAULT_REVIEW_MODEL
 from .agent_helpers import RunResult, run_agent
 
 _P = _prompts.loader("delegation")

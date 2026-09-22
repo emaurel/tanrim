@@ -44,8 +44,8 @@ def machine(plugin_env):
 
 
 def test_stages_and_terminals_come_from_the_plugins(machine):
-    assert state.STAGES == ["start", "middle", "end", "intake_x"]
-    assert state.DEAD_STAGES == ["dropped", "failed"]
+    assert list(state.STAGES) == ["start", "middle", "end", "intake_x"]
+    assert list(state.DEAD_STAGES) == ["dropped", "failed"]
     assert state.LEAD_KINDS == ("normal", "special")
 
 
@@ -92,7 +92,7 @@ def test_terminal_states_are_reachable_from_anywhere(machine):
 
 
 def test_an_empty_environment_has_no_machine_at_all(plugin_env):
-    assert state.STAGES == []
+    assert list(state.STAGES) == []
     assert state.PIPELINE == ()
     assert state.LEAD_KINDS == ()
     assert not state.edge_allowed("anything", "anywhere", "normal")

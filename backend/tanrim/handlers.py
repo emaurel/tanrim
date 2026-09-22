@@ -47,7 +47,23 @@ class LeadRoomHandler(RoomHandler):
     agent_id: str = ""
     action_name: str = "run"
     accepts_stages: tuple[str, ...] = ()
+    #: Overridden by a handler whose room makes no model call at all. Left
+    #: empty, it is answered from the room's `AgentSpec` — see `model`.
     model: str = ""
+
+    @property
+    def model_name(self) -> str:
+        """Which model this room's agent runs on.
+
+        Asked of the environment, not of the agent module. Reading a `MODEL`
+        constant off the module meant importing it to render a panel.
+        """
+        if self.model:
+            return self.model
+        from . import environment
+
+        agent = environment.current().agent(self.agent_id)
+        return (agent.model if agent else "") or "(unknown)"
 
     def __init__(self, world: "World") -> None:
         super().__init__(world)
@@ -75,7 +91,7 @@ class LeadRoomHandler(RoomHandler):
             "workers_busy": len(live),
             "at_capacity": len(live) >= limit,
             "agent_id": self.agent_id,
-            "model": self.model,
+            "model": self.model_name,
             "action_name": self.action_name,
             "accepts_stages": list(self.accepts_stages),
             # The work waiting for THIS room, so the panel is a to-do list.

@@ -4,8 +4,9 @@ Lives in its own module to break a cycle: the room handlers and the
 Orchestrator both need this map, and the runners themselves call back into
 state the orchestrator watches.
 
-Every task dict carries `lead_id` except Nova's, which takes a place to search.
-Scribe additionally reads `mode` ('copy' | 'outreach').
+One dispatcher for every role. What a role does at a stage, and whether it
+needs a record at all, comes from the environment; anything that varies WITHIN
+a stage travels in the task and is read by the plugin.
 """
 from __future__ import annotations
 
@@ -17,6 +18,24 @@ from .workers import RoomAtCapacity
 from .world import World
 
 Runner = Callable[[World, dict[str, Any]], Awaitable[Any]]
+
+
+def _task(task: dict[str, Any], record_id: str | None = None) -> dict[str, Any]:
+    """The task dict in the shape the contract's `Job` documents.
+
+    Callers across the codebase write `lead_id` and `prompt`; the contract
+    says `record_id` and `instruction`. Translating in one place is what stops
+    a job silently receiving an empty string for the thing it was dispatched
+    to do.
+    """
+    out = dict(task)
+    if record_id:
+        out["record_id"] = record_id
+    elif task.get("lead_id"):
+        out["record_id"] = task["lead_id"]
+    if not out.get("instruction"):
+        out["instruction"] = task.get("instruction") or task.get("prompt") or ""
+    return out
 
 
 def _needs_lead(name: str) -> dict[str, Any]:
@@ -64,8 +83,11 @@ async def _dispatch(role: str, world: World, task: dict[str, Any]) -> Any:
 
     # A role with no stage jobs is dispatched with whatever it was given —
     # Nova takes a place to search and creates records rather than moving one.
+    # The task is still NORMALISED: callers write `prompt`, the contract's Job
+    # reads `instruction`, and skipping that here handed Nova an empty place
+    # and a cheerful `ok: True` for a search it never ran.
     if not agent.jobs and agent.default_job is not None:
-        return await agent.default_job(world, task)
+        return await agent.default_job(world, _task(task))
 
     record_id = task.get("record_id") or task.get("lead_id")
     if not record_id:
@@ -89,10 +111,7 @@ async def _dispatch(role: str, world: World, task: dict[str, Any]) -> Any:
         return {"ok": True,
                 "skipped": f"{role} has no job at '{stage}'"}
 
-    return await job(world, {**task,
-                             "record_id": record_id,
-                             "instruction": task.get("instruction",
-                                                     task.get("prompt", ""))})
+    return await job(world, _task(task, record_id))
 
 
 def _skip_if_busy(name: str, runner: Runner) -> Runner:

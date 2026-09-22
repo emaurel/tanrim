@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import math
-import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -306,10 +304,16 @@ def _from_environment(env: "Any") -> list[RoomSpec]:
             tools=list(room.tools),
             skills=list(room.skills),
             max_workers=room.max_workers,
-            mcp_servers=[McpServerSpec(id=m.id, url=m.url, auth_env=m.auth_env,
+            mcp_servers=[McpServerSpec(id=m.id, url=m.url, transport=m.transport,
+                                       auth_env=m.auth_env, note=m.note,
                                        tools=list(m.tools), deny=list(m.deny))
                          for m in room.mcp_servers],
-            agents=[AgentSpec(id=a.role, name=a.name, role=a.role,
+            # `RoomSpec.AgentSpec.role` is the one-line DESCRIPTION the
+            # panel and the map label render — not the role id, which is
+            # `id`. Passing the id put "probe" where "Qualifier. Audits the
+            # existing site…" belongs, on every sprite.
+            agents=[AgentSpec(id=a.role, name=a.name,
+                              role=a.description or a.role,
                               color=a.color, station=a.station or None)
                     for a in env.agents_in(room.id)],
             workbenches=[
@@ -370,49 +374,18 @@ MAX_WORKERS_CAP = 20
 def set_max_workers(room_id: str, n: int) -> str | None:
     """Change how many agents a room may run at once. Returns a message, or None.
 
-    Written into the manifest rather than kept as a runtime override, because
-    the manifest is what `load_rooms` reads and what an operator inspects when
-    asking why a room is at capacity. A second source of truth for capacity is
-    how you get a room that says five and behaves like one.
-
-    Rewritten line by line for the same reason placement is: these files carry
-    comments, agent roles and workbench jobs, and a YAML dumper would strip all
-    of it to change one integer.
+    The environment changes its own copy and hands the room back to the plugin
+    that declared it, which is the only thing that knows where the room came
+    from. This used to rewrite a YAML file the core went looking for itself —
+    and once rooms arrived from plugins rather than a directory the core owns,
+    that search found nothing and every change failed.
     """
-    if not 1 <= n <= MAX_WORKERS_CAP:
-        return f"{n} is outside 1..{MAX_WORKERS_CAP}"
-    # The manifest lives in whichever plugin declared the room, which is not
-    # the environment's own directory any more — and a room may be declared in
-    # a file whose name is not its id.
-    path = None
-    for directory in room_dirs():
-        for candidate in sorted(directory.glob("*.yaml")):
-            try:
-                data = yaml.safe_load(candidate.read_text()) or {}
-            except Exception:  # noqa: BLE001
-                continue
-            if data.get("id") == room_id and not data.get("extends"):
-                path = candidate
-                break
-        if path is not None:
-            break
-    if path is None:
-        return f"no manifest for {room_id!r}"
-    text = path.read_text()
-    line = f"max_workers: {n}"
-    text, hits = re.subn(r"^max_workers: \d+$", line, text, count=1, flags=re.M)
-    if not hits:
-        # Undeclared, so the room has been running on the default of one. Goes
-        # after `color`, which every manifest has, keeping the room-level
-        # settings together.
-        text, hits = re.subn(r"^(color: .*)$", rf"\1\n{line}", text,
-                             count=1, flags=re.M)
-        if not hits:
-            text = text.rstrip("\n") + f"\n{line}\n"
-    tmp = path.with_suffix(".yaml.tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
-    return None
+    from . import environment
+
+    problem = environment.current().set_max_workers(room_id, n)
+    if problem is None:
+        _ROOMS_CACHE.clear()
+    return problem
 
 
 def workbench(room: RoomSpec, bench_id: str) -> WorkbenchSpec | None:

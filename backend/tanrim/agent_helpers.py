@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ from . import prompts as _prompts
 
 _P = _prompts.loader("agent_helpers")
 from .tools import registry as tool_registry
+
+log = logging.getLogger(__name__)
 
 
 def parse_json_block(text: str) -> dict[str, Any] | None:
@@ -79,6 +82,14 @@ def resolve_room_tools(room_id: str) -> list[str]:
         if name in seen:
             continue
         if tool_registry.get(name) is None:
+            # Loud. A room granting a tool that does not resolve used to be
+            # dropped in silence, so when the registry went empty every agent
+            # ran fully priced with no tools at all and nothing anywhere said
+            # so. The run still proceeds — one missing tool should not stop
+            # the room — but it is on the record.
+            log.warning("room %s grants tool %r, which no plugin supplies "
+                        "(known: %s)", room_id, name,
+                        ", ".join(tool_registry.list_tools()) or "none")
             continue
         seen.add(name)
         out.append(name)

@@ -377,6 +377,11 @@ VETO_HOOKS = {
 #: what it extends.
 SUPPLIER_HOOKS = {
     "subtask_review": "(world, ...) — who judges a specialist's work",
+    "subtask_review_model":
+        "() -> str — which model that review runs on. Separate from the hook "
+        "above because the core cannot read it off the reviewing function: "
+        "a plugin resolves its agents lazily, so the callable it registers "
+        "belongs to the manifest module, not to the agent that will run.",
 }
 
 HOOKS = {**BROADCAST_HOOKS, **VETO_HOOKS, **SUPPLIER_HOOKS}

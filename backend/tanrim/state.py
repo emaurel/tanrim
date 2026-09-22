@@ -422,11 +422,6 @@ def clear_agent_memory(agent_id: str, outputs_file) -> dict[str, int]:
         kept = [r for r in items if r.get("agent") != agent_id]
         cleared["escalations"] = len(items) - len(kept)
         _write(ESCALATIONS_FILE, kept)
-
-        items = _read(TOOL_REQUESTS_FILE)
-        kept = [r for r in items if r.get("requesting_agent") != agent_id]
-        cleared["tool_requests"] = len(items) - len(kept)
-        _write(TOOL_REQUESTS_FILE, kept)
     return cleared
 
 
@@ -1060,8 +1055,12 @@ def _machine() -> dict[str, Any]:
         if environment.booted():
             _MACHINE.update(_from_environment(environment.current()))
         else:
-            stages = _plugin.stage_ids()
-            dead = _plugin.terminal_ids()
+            # Tuples on both paths. The fallback returned lists, so
+            # `state.STAGES` changed type depending on whether an environment
+            # was booted, and a test asserting `== [...]` passed only because
+            # it happened to take the fallback.
+            stages = tuple(_plugin.stage_ids())
+            dead = tuple(_plugin.terminal_ids())
             kinds = tuple(_plugin.lead_kinds())
             _MACHINE.update(
                 STAGES=stages,
