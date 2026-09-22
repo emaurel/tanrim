@@ -372,6 +372,7 @@ BROADCAST_HOOKS = {
     "inbound_message": "(world, record_id, message) — something arrived",
     "inbound_bounce":  "(world, record_id, address, permanent, detail)",
     "tick":            "(world) — every orchestrator pass, for sweeps",
+    "startup":         "(world) — once, after the server is assembled",
 }
 
 #: Every listener is consulted and the FIRST refusal wins. A veto returns a

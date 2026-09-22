@@ -27,7 +27,6 @@ from . import rooms as rooms_mod
 from . import runners
 from . import state
 from . import usage as usage_mod
-from .config import SITES_DIR
 from .handlers import build_handlers
 from .orchestrator import Orchestrator
 from .tools import registry as tool_registry
@@ -71,24 +70,10 @@ async def lifespan(_: FastAPI):
     if interrupted:
         print(f"[boot] {interrupted} run(s) were interrupted by the last restart")
 
-    # Build-directory claims left by the process that just died are held by
-    # pids that no longer exist; clearing them is what stops a crash from
-    # wedging a lead. A claim still held by a LIVE process is deliberately
-    # left alone and reported instead: that is an orphaned writer from a hard
-    # kill, it is still spending money, and the operator needs to know rather
-    # than have a second worker join it in the same directory.
-    stale = buildlock.sweep(config.SITES_DIR)
-    if stale:
-        print(f"[boot] cleared {len(stale)} stale build lock(s): "
-              + ", ".join(str(r.get("dir"))[:8] for r in stale))
-    orphans = buildlock.live_orphans(config.SITES_DIR)
-    for o in orphans:
-        msg = (f"pid {o.get('pid')} ({o.get('agent_id')}) is STILL writing "
-               f"{str(o.get('dir'))[:8]} — orphaned by a hard restart. It is "
-               f"billing and nothing here can stop it; kill it by hand.")
-        print(f"[boot] WARNING: {msg}")
-        state.log_event("run_end", from_="system", summary=msg[:240],
-                        outcome="failed", details=o)
+    # Whatever the plugins want done once, at startup. The build-lock sweep
+    # used to run here against a directory the core named, which meant the
+    # environment knew where one plugin keeps its build output.
+    await environment.current().broadcast("startup", world)
     orchestrator.start()
     try:
         yield
@@ -116,55 +101,10 @@ app.add_middleware(
 )
 
 
-# Published previews are served straight off disk. Local hosting by default —
-# swap PREVIEW_BASE and this mount for a real host when the sites are good
-# enough to put in front of people.
-PUBLIC_DIR = SITES_DIR / "_published"
-PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
-# Whatever the installed plugins serve. The environment owns the machinery —
-# rooms, the board, approvals, workers — and everything ABOUT the work belongs
-# to the plugin that defines it.
 for _plugin_id, _router in _env.routers():
     app.include_router(_router)
     print(f"[boot] {_plugin_id}: "
           + ", ".join(sorted({r.path for r in _router.routes})))
-
-app.mount("/preview", StaticFiles(directory=str(PUBLIC_DIR), html=True), name="preview")
-
-# Staging: every build, viewable before it is published. The publish gate asks
-# you to approve a site — you have to be able to look at it first, and until now
-# the only URL appeared *after* approving. Local-only, so nothing here is
-# reachable from outside this machine.
-SITES_DIR.mkdir(parents=True, exist_ok=True)
-class _NoStore(StaticFiles):
-    """Staging, with caching turned off.
-
-    StaticFiles sends `etag` and `last-modified` and no `cache-control` at
-    all, which leaves the browser free to apply heuristic freshness — and for
-    an <iframe> whose `src` has not changed, Chrome will happily reuse the
-    whole document and its stylesheet out of the memory cache without
-    revalidating. The operator then approves or rejects the build they saw
-    last time. That is not a theoretical risk: a rebuild that demonstrably
-    changed `styles.css` on disk was reported twice as "literally nothing
-    changed".
-
-    Published previews under /preview are a different case and keep their
-    caching; those files are immutable once deployed.
-    """
-
-    def file_response(self, *args, **kwargs):  # type: ignore[override]
-        resp = super().file_response(*args, **kwargs)
-        resp.headers["cache-control"] = "no-store, must-revalidate"
-        return resp
-
-
-app.mount("/staging", _NoStore(directory=str(SITES_DIR), html=True), name="staging")
-
-
-def staging_url(lead_id: str) -> str:
-    base = config.PREVIEW_BASE.rstrip("/").rsplit("/preview", 1)[0]
-    return f"{base}/staging/{lead_id}/"
-
 
 @app.post("/agents/{worker_id}/stop")
 async def stop_agent(worker_id: str, body: dict[str, Any] | None = None):

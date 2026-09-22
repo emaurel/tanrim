@@ -6,7 +6,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .config import ROOMS_DIR
 
 
 class Vec2(BaseModel):
