@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 
 import 'api/client.dart';
 import 'api/live.dart';
+import 'model/record.dart';
 import 'model/world.dart';
+import 'ui/board.dart';
 import 'ui/map_view.dart';
+import 'ui/room_panel.dart';
 
 void main() => runApp(const TanrimApp());
 
@@ -50,6 +53,13 @@ class _WorldPageState extends State<WorldPage> {
   String _state = 'not connected';
   bool _connected = false;
 
+  List<WorkRecord> _records = const [];
+  List<String> _stages = const [];
+  List<String> _deadStages = const [];
+  Map<String, int> _counts = const {};
+  String? _selectedRecord;
+  bool _showBoard = true;
+
   @override
   void initState() {
     super.initState();
@@ -86,6 +96,7 @@ class _WorldPageState extends State<WorldPage> {
         _state = '${rooms.length} rooms';
         _connected = true;
       });
+      await _loadBoard();
     } catch (e) {
       setState(() => _state = e is ApiError ? e.message : '$e');
       return;
@@ -100,6 +111,7 @@ class _WorldPageState extends State<WorldPage> {
         case LiveKind.approvalsChanged:
           final a = await api.get('/approvals?status=pending');
           setState(() => _badges = _countsByRoom(a));
+          await _loadBoard();
         case LiveKind.disconnected:
           setState(() => _state = 'reconnecting…');
         case LiveKind.connected:
@@ -109,6 +121,28 @@ class _WorldPageState extends State<WorldPage> {
       }
     });
     await live.connect();
+  }
+
+  /// The board. Its stages and their order come from the server, so a plugin
+  /// adding a pipeline needs no change here.
+  Future<void> _loadBoard() async {
+    final api = _api;
+    if (api == null) return;
+    try {
+      final b = await api.get('/leads?slim=1') as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        _records = ((b['leads'] ?? []) as List)
+            .map((r) => WorkRecord(r as Map<String, dynamic>))
+            .toList();
+        _stages = ((b['stages'] ?? []) as List).cast<String>();
+        _deadStages = ((b['dead_stages'] ?? []) as List).cast<String>();
+        _counts = ((b['counts'] ?? {}) as Map)
+            .map((k, v) => MapEntry(k as String, (v as num).toInt()));
+      });
+    } catch (_) {
+      // A board that will not load is not worth killing the map for.
+    }
   }
 
   Map<String, int> _countsByRoom(dynamic payload) {
@@ -142,20 +176,69 @@ class _WorldPageState extends State<WorldPage> {
                           agents: agents,
                           badges: _badges,
                           selectedRoom: _selected,
-                          onRoomTapped: (r) =>
-                              setState(() => _selected = r.id),
+                          onRoomTapped: (r) => setState(() {
+                            _selected = r.id;
+                            _showBoard = false;
+                          }),
                         ),
                       ),
-                      if (selected != null)
-                        _RoomPanel(
-                          room: selected,
-                          agents: agents
-                              .where((a) => a.roomId == selected.id)
-                              .toList(),
-                          onClose: () => setState(() => _selected = null),
-                        ),
+                      SizedBox(
+                        width: 380,
+                        child: _showBoard || selected == null
+                            ? _boardPane()
+                            : RoomPanel(
+                                api: _api!,
+                                room: selected,
+                                here: agents
+                                    .where((a) => a.roomId == selected.id)
+                                    .toList(),
+                                onClose: () =>
+                                    setState(() => _showBoard = true),
+                                onChanged: _loadBoard,
+                              ),
+                      ),
                     ],
                   ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _boardPane() {
+    return Container(
+      color: const Color(0xFF161922),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 2),
+            child: Row(
+              children: [
+                const Text('Board',
+                    style: TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w700)),
+                const SizedBox(width: 8),
+                Text('${_records.length}',
+                    style: const TextStyle(color: Colors.white38)),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'reload',
+                  onPressed: _loadBoard,
+                  icon: const Icon(Icons.refresh, size: 18),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Board(
+              records: _records,
+              stages: _stages,
+              deadStages: _deadStages,
+              counts: _counts,
+              selectedId: _selectedRecord,
+              onTapRecord: (r) => setState(() => _selectedRecord = r.id),
+            ),
           ),
         ],
       ),
@@ -193,114 +276,6 @@ class _WorldPageState extends State<WorldPage> {
               color: _connected ? const Color(0xFF63C77B) : Colors.orange),
           const SizedBox(width: 6),
           Text(_state, style: const TextStyle(color: Colors.white60)),
-        ],
-      ),
-    );
-  }
-}
-
-/// The room a click selects. Deliberately generic — it renders whatever the
-/// manifest says, so a plugin adding a room gets a working panel with no app
-/// change. Bespoke panels come later and are the exception.
-class _RoomPanel extends StatelessWidget {
-  const _RoomPanel(
-      {required this.room, required this.agents, required this.onClose});
-
-  final Room room;
-  final List<AgentState> agents;
-  final VoidCallback onClose;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 340,
-      color: const Color(0xFF161922),
-      padding: const EdgeInsets.all(16),
-      child: ListView(
-        children: [
-          Row(
-            children: [
-              Expanded(
-                  child: Text(room.name,
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w700))),
-              IconButton(onPressed: onClose, icon: const Icon(Icons.close)),
-            ],
-          ),
-          if (room.purpose.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 4, bottom: 12),
-              child: Text(room.purpose,
-                  style: const TextStyle(color: Colors.white60, height: 1.35)),
-            ),
-          _section('Crew', [
-            for (final a in room.agents)
-              _line(a.name, a.role, Color(a.color)),
-          ]),
-          _section('Workbenches', [
-            for (final b in room.workbenches)
-              _line(b.name, b.stages.isEmpty ? b.job : b.stages.join(' · '),
-                  null),
-          ]),
-          if (room.tools.isNotEmpty)
-            _section('Tools', [for (final t in room.tools) _line(t, '', null)]),
-          if (agents.isNotEmpty)
-            _section('Here now', [
-              for (final a in agents)
-                _line(a.name,
-                    a.busy ? (a.status.isEmpty ? 'working' : a.status) : 'idle',
-                    Color(a.color)),
-            ]),
-        ],
-      ),
-    );
-  }
-
-  Widget _section(String title, List<Widget> rows) {
-    if (rows.isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(top: 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title.toUpperCase(),
-              style: const TextStyle(
-                  fontSize: 11,
-                  letterSpacing: 1.2,
-                  color: Colors.white38,
-                  fontWeight: FontWeight.w700)),
-          const SizedBox(height: 6),
-          ...rows,
-        ],
-      ),
-    );
-  }
-
-  Widget _line(String a, String b, Color? dot) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (dot != null) ...[
-            Padding(
-              padding: const EdgeInsets.only(top: 5),
-              child: Icon(Icons.circle, size: 9, color: dot),
-            ),
-            const SizedBox(width: 8),
-          ],
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(a, style: const TextStyle(fontWeight: FontWeight.w600)),
-                if (b.isNotEmpty)
-                  Text(b,
-                      style: const TextStyle(
-                          color: Colors.white54, fontSize: 12, height: 1.3)),
-              ],
-            ),
-          ),
         ],
       ),
     );

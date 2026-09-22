@@ -11,6 +11,7 @@ from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from . import config
 from . import agent_helpers
 from . import discovery
 from . import environment
@@ -66,7 +67,10 @@ async def lifespan(_: FastAPI):
     # used to run here against a directory the core named, which meant the
     # environment knew where one plugin keeps its build output.
     await environment.current().broadcast("startup", world)
-    orchestrator.start()
+    if config.RUN_ORCHESTRATOR:
+        orchestrator.start()
+    else:
+        print("[boot] orchestrator OFF (TANRIM_ORCHESTRATOR=0) — serving only")
     try:
         yield
     finally:
@@ -77,7 +81,8 @@ async def lifespan(_: FastAPI):
             await agent_helpers.cancel_all()
         except Exception as e:  # noqa: BLE001
             print(f"[shutdown] could not cancel runs: {e}")
-        await orchestrator.stop()
+        if config.RUN_ORCHESTRATOR:
+            await orchestrator.stop()
 
 
 # FastAPI's default response class runs `jsonable_encoder` over the whole

@@ -105,6 +105,10 @@ class _MapViewState extends State<MapView>
 
   @override
   Widget build(BuildContext context) {
+    // The painter is not in the widget tree, so it cannot read the theme.
+    final family = DefaultTextStyle.of(context).style.fontFamily ??
+        Theme.of(context).textTheme.bodyMedium?.fontFamily;
+
     return LayoutBuilder(builder: (context, box) {
       final size = Size(box.maxWidth, box.maxHeight);
       _frame(size);
@@ -156,6 +160,7 @@ class _MapViewState extends State<MapView>
                 hoveredRoom: _hovered,
                 selectedRoom: widget.selectedRoom,
                 badges: widget.badges,
+                fontFamily: family,
               ),
             ),
           ),

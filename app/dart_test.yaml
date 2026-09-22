@@ -1,0 +1,4 @@
+# `live` talks to a server on :8765 and skips itself when there is none.
+tags:
+  live:
+    description: talks to a running environment, skipped when there is none

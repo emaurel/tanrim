@@ -42,9 +42,10 @@ class WorldPainter extends CustomPainter {
   /// room id -> pending approval count, drawn as a badge.
   final Map<String, int> badges;
 
-  /// Only set by the render harness. `flutter test` ships a placeholder font
-  /// that draws every glyph as a filled box, so a render for review has to
-  /// name a real one; the app leaves this null and takes the theme's.
+  /// The map's labels are drawn with a raw `TextPainter`, which inherits
+  /// nothing from the widget tree — so the family has to be handed to it or
+  /// the map ends up lettered differently from the rest of the app. `MapView`
+  /// passes the theme's.
   final String? fontFamily;
 
   static const _wallHeight = 1.4;

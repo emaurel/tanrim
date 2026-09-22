@@ -53,7 +53,7 @@ void main() {
 
     final live = Live(api.socket);
     final seen = <LiveKind>[];
-    final sub = live.events.listen(seen.add);
+    final sub = live.events.listen((e) => seen.add(e.kind));
     await live.connect();
     // The environment sends a snapshot on connect; give it a moment.
     await Future<void>.delayed(const Duration(seconds: 3));

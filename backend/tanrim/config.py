@@ -21,3 +21,12 @@ PORT = int(os.getenv("TANRIM_PORT", "8765"))
 
 #: The model an agent runs on when its plugin names none.
 MODEL = "claude-opus-4-7"
+
+#: Whether the orchestrator's tick loop runs.
+#:
+#: Off, the server still serves everything — rooms, the board, approvals, the
+#: live socket — but dispatches nothing and polls no mailbox. That is what you
+#: want while working on a client: the API is real, and starting it does not
+#: quietly begin spending money on whatever is sitting in the queue.
+RUN_ORCHESTRATOR = os.getenv("TANRIM_ORCHESTRATOR", "1").strip().lower() not in (
+    "0", "false", "no", "off")
