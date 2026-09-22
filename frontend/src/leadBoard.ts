@@ -954,6 +954,9 @@ async function buildTimeline(): Promise<HTMLElement> {
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return `mailto:${t}`;
     // French numbers arrive as "+33 1 99 00 00 00" or "04 37 42 09 90"
     if (/^\+?[\d][\d\s.()-]{7,}$/.test(t)) return `tel:${t.replace(/[\s.()-]/g, "")}`;
+    // A same-origin path, e.g. /staging/<id>/. Without this the built site
+    // rendered as dead text: the value was there and simply was not a link.
+    if (/^\/[^\s]*$/.test(t)) return t;
     return null;
   };
   const fact = (k: string, v?: string) => {
@@ -985,6 +988,14 @@ async function buildTimeline(): Promise<HTMLElement> {
   if (lead.email_bounced) fact("bounced", `${lead.email_bounced} — does not exist`);
   fact("their site", lead.website);
   fact("our preview", lead.preview_url);
+  // The build on disk, whether or not it was ever published. Until this
+  // existed the only way to open a built site was to expand the dossier and
+  // find the link nested inside the Files section — and for anything that
+  // cannot be published (the sandbox lead) or has not been yet, the "our
+  // preview" row above is simply empty, so the card showed no way in at all.
+  if ((data.files ?? []).some((g: any) => g.id === "build" && g.files?.length)) {
+    fact("built site", data.staging_url);
+  }
   fact("sourced", `${when(lead.ts)} (${ago(lead.ts)})`);
   fact("last touched", `${when(lead.updated_ts)} (${ago(lead.updated_ts)})`);
 

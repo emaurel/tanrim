@@ -28,3 +28,10 @@ prompts/
 # a real business, so it must never be committed by accident.
 /index.html
 /styles.css
+
+# Brand marks and their Krita sources. Kept out of the tree for the same
+# reason as prompts/: the name and the mark are the part of this worth
+# keeping private, and the .kra files are a working directory, not a build
+# input. Nothing in the app reads from here — assets it needs are copied
+# into frontend/public/ and committed deliberately.
+brand/

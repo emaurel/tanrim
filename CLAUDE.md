@@ -1,4 +1,4 @@
-# agent_environment
+# Tanrim
 
 Claude Agent SDK app that runs an **agent-operated web agency** as a pixel-art
 world. Agents find local businesses that trade but have no website (or a bad
@@ -13,7 +13,7 @@ preview, and email the owner a link plus a quote. Each workflow stage is a
 
 ```
 rooms/                       declarative YAML manifests, read by both sides
-backend/agent_env/           Python — Claude Agent SDK orchestrator + FastAPI WS server
+backend/tanrim/              Python — Claude Agent SDK orchestrator + FastAPI WS server
 frontend/                    Vite + TS + Phaser SPA — renders the world
 state/                       JSON ledgers, generated sites, runtime-fabricated tools
 ```
@@ -80,7 +80,7 @@ These are the ones that must not depend on a model behaving:
   for billing language and flags it; Echo's preflight blocks a flagged draft.
 - **Identifiable sender + opt-out.** `config.outreach_footer()` is appended in
   code so it cannot go missing, and `outreach_config_problems()` blocks sending
-  entirely until `AGENT_ENV_AGENCY_NAME` and `AGENT_ENV_SENDER_EMAIL` are set.
+  entirely until `TANRIM_AGENCY_NAME` and `TANRIM_SENDER_EMAIL` are set.
 - **No contact route, no lead.** Probe's verdict is overridden to
   `disqualified` if it qualified a lead without an email.
 - **Previews are marked.** Courier injects `noindex` and an "unofficial
@@ -129,7 +129,7 @@ the alternative is publishing a confident wrong fact to the owner.
 
 ## The mailbox
 
-`agent_env/mailbox.py` polls IMAP on a slow clock (`MAIL_POLL_MINUTES`, default
+`tanrim/mailbox.py` polls IMAP on a slow clock (`MAIL_POLL_MINUTES`, default
 5) from the orchestrator tick. For each unread message whose sender matches a
 lead awaiting a reply, it stores the text, pulls every attachment straight into
 that lead's asset store, and hands the text to `echo.triage_inbound`. Mail that
@@ -346,7 +346,7 @@ unknown agent id, so hiring needs no new wire event; retiring emits
 A room grants skills to its agent via `skills:` in its manifest; they live under
 `<repo>/.claude/skills/<name>/` with provenance in
 `.claude/skills/sources.json` (which is what makes each skill chip in the room
-panel a link to its upstream repo). `agent_env/skills.py` resolves, describes
+panel a link to its upstream repo). `tanrim/skills.py` resolves, describes
 and installs them.
 
 The wiring has three non-obvious parts:
@@ -370,7 +370,7 @@ actually used it rather than inventing hex codes.
 ## Prompts live outside the source tree
 
 Every agent role, output schema and MCP tool description loads from
-`prompts/<module>/<NAME>.md` via `agent_env/prompts.py`. `prompts/` is
+`prompts/<module>/<NAME>.md` via `tanrim/prompts.py`. `prompts/` is
 **gitignored** — the prompts are the part of this project worth keeping
 private — and `prompts.example/` is committed with a stub per file describing
 what it is for, with no excerpt of the real text.
@@ -428,6 +428,45 @@ the entire site a second time, ran 11 minutes, and overwrote work Lens had
 already verified. Every agent with side effects passes `schema=`; Forge also
 carries a `max_budget_usd` ceiling.
 
+### Running out of turns is an interruption, not a crash
+
+`max_turns` is a backstop against a model that never stops polishing. It is not
+a budget and it says nothing about whether the work was good — but the SDK
+reports hitting it as a terminal error, so `run_agent` raised and every caller
+read it as a crash. On a build that is the most expensive possible reading:
+Forge wrote the whole site for Atelier Vermeil, reported it, hit the 58-turn ceiling
+one turn later, and `run_build`'s rollback restored the **previous** build over
+the finished one. Re-dispatching by hand did it again, because the same input
+reaches the same ceiling — a loop that destroyed its own work every time round.
+
+So a turn ceiling now **resumes** the run instead of ending it. `ResultError`
+carries `subtype == "error_max_turns"` and the `session_id`, so the
+continuation passes that session id to the CLI's own `--resume`: the model gets
+back everything it actually did, not a summary of it, plus a message saying why
+it stopped, what is on disk, and to finish rather than start again. It never
+re-sends the original brief — that is the mistake the schema retry already
+paid for.
+
+Three brakes, because this is a natural money fire:
+
+- **`MAX_TURN_CONTINUATIONS = 2`**, each with half the previous allowance
+  (58 → 29 → 14), so a run cannot be resumed indefinitely.
+- **The dollar budget carries across.** Each continuation is given
+  `max_budget_usd` minus what the run has spent so far, so a build with a
+  $9 ceiling cannot spend it three times. Below `MIN_CONTINUATION_BUDGET_USD`
+  it stops instead of starting a pass that would die on the budget.
+- **A budget stop is never continued.** That ceiling *is* the guard; only the
+  turn ceiling is treated as an interruption.
+
+Two details that matter: every pass is billed as it ends (`usage.record` per
+pass, token counts accumulated rather than assigned) or a resumed run reports
+a fraction of its real spend; and if the CLI refuses the resume — a pruned
+transcript, a session filed under another cwd — one further pass runs without
+it, carrying the recap, since the half-finished work is on disk either way.
+`RunResult.continuations` records how many were needed, and Forge reports it in
+`site.run_stats`: a build that needs one is a build whose ceiling is too low
+for what it was asked to make.
+
 ### Tool creation (agent → Ultron → Tinker)
 
 Unchanged from the original design: an agent emits `request_tool`, the
@@ -439,6 +478,78 @@ to that room's overrides in `state/room_tool_overrides.json`.
 Static tools shipped with the pivot: `osm_business_search` (Overpass, with
 mirror fallback), `site_audit` (fetch + defect scoring), `site_inspect`
 (structural checks + Playwright screenshots at 390px/1280px).
+
+### The transition table is law now, not documentation
+
+`state.PIPELINE` was read in exactly two places, both of them rendering, and
+`advance_lead` checked only that the target was a known stage. Measured across
+the real history: **23 declared edges, 44 actually taken, 182 transitions off
+the table.** The two biggest were designed paths that were never written down —
+`qa_passed → qa_failed` (35×, a rejected publish) and `drafted → published`
+(18×, a rejected send going back to the Copy Desk). Both are in the code and in
+this file. A table nothing checks drifts from the code the moment someone
+writes a new branch, which is exactly what happened.
+
+Now `advance_lead` refuses an undeclared edge and logs why, naming what WAS
+allowed from there. Three things make that survivable:
+
+- **The operator can always override.** The lead board's stage control passes
+  `by_hand=True`, which is the only way off the table. It is a deliberate human
+  decision and has been used as one ("i accidently said approved instead of
+  disapproved"). The history entry is stamped `off_table: True`, so "who moved
+  this, and was it a normal path" stays answerable.
+- **Terminal states are reachable from anywhere.** `ALWAYS_REACHABLE` covers
+  `disqualified` and `lost`: enumerating 15×2 edges would say nothing the stage
+  names do not, and refusing an agent the ability to give up is how a lead gets
+  stuck rather than closed.
+- **Replayed before shipping.** All 670 historical transitions were checked
+  against the new table: 613 pass, 49 are operator hand-moves that still work,
+  and exactly 8 agent moves would now be refused — 7 × `enriched → visualised`,
+  which predates the Ledger bench, and one `qa_failed → drafted` that was a bug.
+
+### A second kind of lead: porting a site someone already has
+
+A `port` lead is a business that already has a website and asked us to rebuild
+it on the editor so they can maintain it themselves. They are a customer before
+the lead exists, and that removes most of the front of the pipeline.
+
+```
+prospect:  sourced → … → appraised → visualised → built → qa_passed → published → drafted → contacted → replied → won
+port:      intake  → surveyed ─────→ visualised → built → qa_passed → published ──────────────────────────────────→ won
+```
+
+`lead.kind` is `prospect` (the default, and what every existing lead is) or
+`port`, and every `PIPELINE` edge declares which kinds it applies to. The
+manifests stay the router for anything a ROOM works; `state.roles_for(stage,
+kind)` adds the one thing they cannot express — a stage whose next move depends
+on which pipeline the lead is on. `published` is that stage: a prospect is
+waiting for Scribe to write a pitch, a port is waiting for the operator to
+confirm the client approved the rebuild.
+
+What a port does NOT get, and why:
+
+- **No qualification, no opportunity score, no appraisal.** They came to us and
+  the price was agreed outside this system. `needs_review` and the whole "an
+  existing site can't be condemned unseen" apparatus exists to stop us telling a
+  business their working site is broken — here they have told *us* they want it
+  replaced.
+- **No outreach, ever.** `echo.preflight` and `followup_due` refuse a port lead
+  outright. The outreach email is a cold pitch carrying a quote and an opt-out;
+  sending one to a customer mid-project reads as though we do not know who they
+  are.
+- **A different preview banner.** "Not affiliated with or endorsed by" is
+  simply false for someone who commissioned the work. A port preview says, in
+  French, that this is the new version in preparation and not yet the live site.
+
+What it does get is the best provenance this pipeline ever has: `run_port_survey`
+reads their own pages, and the source URL for a fact is the page they wrote it
+on. `profile.must_not_lose` is the list the rebuild may not drop — every
+service, every legal mention, every contact route — and anything that could not
+be extracted lands in `content_gaps` so the build marks it as a placeholder
+rather than losing it silently.
+
+Opened from the Throne panel (`POST /leads/port`), which is an operator action
+and nowhere near an agent: a port lead means somebody has agreed to pay us.
 
 ### How work actually moves between rooms
 
@@ -501,6 +612,74 @@ escalation is a new record with a fresh allowance. So there are two:
    the reruns and raises a `rerun_halted` card, because an agent stuck on one
    task needs the operator, not another attempt. The denied-tool rerun path
    shares the same ceiling.
+
+### One email was never the plan, it was just where it stopped
+
+Of the first 21 leads, every single one received exactly one message and
+nothing afterwards; `_expire_silence` then filed it as lost 21 days later. So
+the funnel only ever measured the response to a FIRST touch, and each abandoned
+lead was a site already built, already published and already paid for in
+compute — around $20 of it, against $1.30 for everything upstream of the build.
+A lead dropped after one message is the cheapest thing in this pipeline to
+waste.
+
+`Orchestrator._followup_sweep` now offers a follow-up to any `contacted` lead
+that has gone quiet: Scribe drafts it, Echo raises a `send_followup` card, and
+the operator approves it exactly like the first send. **Nothing about the
+second message is more automatic than the first.**
+
+The decisions worth keeping:
+
+- **It is a different prompt, not a "write it again" flag.** Asked to follow
+  up, a model restates the offer — and a second copy of the pitch is precisely
+  what makes an unsolicited sequence read as a mailshot.
+  `prompts/scribe/FOLLOWUP_TEMPLATE.md` forbids the bullet list, the terms and
+  any re-description of what is included, caps the note at three or four
+  sentences, and requires ONE ask. The schema makes the model assert
+  `repeats_the_pitch: false` about its own output.
+- **The price may not move between messages.** `quote_for` folds in the compute
+  a lead has consumed, which only grows, so recomputing at follow-up time would
+  quietly arrive higher than the number they were already given. The draft
+  carries the original figure and `followup_preflight` refuses a mismatch.
+- **The domain claim is re-checked or dropped.** The pitch said a name was
+  available; a fortnight later it may not be. It is re-checked at draft time,
+  and anything other than a clean "still free" tells the writer not to mention
+  a domain at all.
+- **A follow-up needs its OWN preflight.** `preflight` deliberately refuses to
+  email a business that has already been emailed — right for the pitch, wrong
+  here. Reusing it with the check switched off would make one function's safety
+  depend on which caller reached it, so the two are separate and the follow-up
+  one is stricter where it counts: the previous message must have actually been
+  an email (a DM has no thread to continue), nobody may have replied, nothing
+  may have bounced since, the touches must not be used up, and **the preview
+  link is fetched to confirm it still serves** — one lead was listed as
+  published with a URL that had stopped resolving entirely, and a note whose
+  whole content is "here is the link again" pointing at a dead host is worse
+  than not writing.
+- **No deadline, ever.** "I'll take the site down on the 30th" converts well
+  and would be a lie unless something actually took it down. The template bans
+  urgency and scarcity outright; the final note says only that it is the final
+  note, which is true because `MAX_FOLLOWUPS` makes it true.
+- **The easy no is mandatory.** One line inviting them to say no is what keeps
+  a second unsolicited email from reading as pressure — and a one-word refusal
+  is a better outcome than silence, because it closes the lead honestly and
+  immediately.
+- **Retry state lives on the lead, not in the orchestrator.** A rejected draft
+  is redrafted with the operator's note as the brief, bounded by
+  `MAX_FOLLOWUP_ATTEMPTS`; a draft that could not be raised backs off for
+  `FOLLOWUP_RETRY_SECONDS` rather than re-fetching a dead host every three
+  seconds. The orchestrator's memory is emptied by every restart, and a counter
+  that forgets itself on reboot is not a ceiling on anything that costs money.
+- **Threading.** `_send_smtp` now sets and returns a `Message-ID`, stored on
+  the `sent_log` entry, and a follow-up sets `In-Reply-To`/`References` from it
+  so it lands in the same conversation. Sends made before this existed go
+  unthreaded; the `Re:` subject still groups them in most clients.
+
+One bug this turned up and fixed: `_expire_silence` measured silence from
+`updated_ts`, which **any** write to the lead bumps. Drafting a follow-up —
+which reaches nobody — would therefore have bought the lead another three weeks
+of life, and so would any incidental patch. It now measures from the last entry
+in `sent_log`, which is the only clock the business itself is running on.
 
 ### The outreach email is a template, not a fresh invention
 
@@ -567,7 +746,7 @@ what the Launch Pad will need.
 
 ### Hosting, and where domains come from
 
-`agent_env/hosting.py` deploys an approved build to Cloudflare Pages, giving a
+`tanrim/hosting.py` deploys an approved build to Cloudflare Pages, giving a
 public `<slug>.pages.dev` URL. Before this, the "preview link" in an outreach
 email was `127.0.0.1` — unopenable by the person it was written for, which made
 the whole outreach step a dead end.
@@ -594,6 +773,65 @@ and the prompt insists on "available", never "reserved": someone can take it
 between the email and the reply, and promising a domain we do not hold is the
 kind of small dishonesty that loses a client at the worst moment.
 
+### Handing a sold site to its owner
+
+`won` used to be the end: a domain registered by hand, files sent, and that was
+the relationship. `site_editor` — the client-facing half, in the sibling
+checkout — changes what `won` means. The client gets an account, their site as
+a git repository, and the ability to change their own opening hours by writing
+a sentence in French.
+
+The contract is `../site_editor/docs/HANDOVER.md` and is deliberately **not
+copied here** — a second copy is a second version by the end of the month.
+`handover.py` builds the payload; `siteeditor.py` sends it to
+`POST /admin/handover`, which creates the client, imports the site, mints a
+first-login link and emails it. One call, idempotent on `lead_id`.
+
+**A new room, the Launch Pad, staffed by Porter — and it makes no model call.**
+Same reasoning as Courier's publish path and `hosting.py`: creating an account
+for a paying customer and emailing them their login is mechanical, exactly
+specified, and must not vary. Porter raises the gate; the operator's approval
+is what makes the call. A room rather than a bench on an existing one because
+this is the first work that happens *after* `won`, and a step that emails a
+paying client should be visible on the map rather than buried in an approval
+handler.
+
+Guards that are code, not judgement:
+
+- **Only `won`.** The runner's `_wrong_stage` and `porter.preflight` both
+  refuse anything earlier. An account is created for a business that has paid.
+- **Never email a loopback login link.** While `SITE_EDITOR_URL` is
+  `127.0.0.1` the account and the repository are still created — they are real
+  and useful — but `notify` is forced off and a `send_login_link` card is
+  raised instead. A customer who has just paid should not receive a link that
+  only opens on the operator's machine.
+- **The sandbox cannot become a client.** Blocked alongside email and
+  publishing, and this is the most durable of the three: it would be a row in
+  another application's database.
+- **A failure is triaged, not retried blindly.** The contract's own table says
+  a 409 or a 422 is a question for a person. `handover_failed` only offers a
+  retry for a timeout, which is the one case where another attempt can differ,
+  because the call is idempotent.
+- **`emailed: false` is never success.** The account exists and `login_url` is
+  on the lead either way, so it is a link to paste rather than a handover to
+  start again — but it raises a card, because a handover nobody received is a
+  sale nobody completed.
+
+What is shipped is decided in `siteeditor.build_tar`, member by member rather
+than by handing `tar.add` a folder, so a new directory appearing in a build
+cannot ride along unnoticed. Excluded: `.claude` (the skills symlink, which
+points at this repository's whole skills tree), `photos/` (harvested from
+review platforms, read-only for ever), the `shot-*.png` renders, and
+`.writer.json`. Symlinks are never added — the receiving end refuses them, and
+a refused archive creates no account, so one stray link would fail the whole
+handover.
+
+Verified rather than assumed: the payload `handover.build_payload` produces was
+validated against `site_editor`'s own `HandoverPayload` model, and the dossier
+allow-list was checked from the other side — `reputation_for_us_only`,
+`cost_usd`, `build_readiness` and `readiness_reason` are all present on a real
+`lead.profile` and all absent from what the client receives.
+
 ### Seeing a build before approving it
 
 `/staging/<lead_id>/` serves any build straight off disk, published or not, and
@@ -614,7 +852,7 @@ render and say so. "Does it have an `og:image`" is a fact, and asking a model
 to remember twenty facts on every build is how a rule quietly stops being
 applied — it will pass a page missing three of them and be confident about it.
 
-So `agent_env/sitecheck.py` holds everything checkable and `site_inspect` runs
+So `tanrim/sitecheck.py` holds everything checkable and `site_inspect` runs
 it on **every page**: the social preview tags, a directions link, image
 dimensions and lazy-loading, `<html lang>`, JSON-LD field completeness,
 `font-display`, a `prefers-reduced-motion` rule wherever the page animates,
@@ -739,6 +977,99 @@ What differs is purpose. A brand experience is explored, so the scroll is the
 content; a local business page answers a five-second question, so the first
 screen has to do the work and everything after it has to earn its place.
 
+### Forge can see its own work now
+
+Forge wrote blind. `site_inspect` — the Playwright tool that renders every page
+at 390px and 1280px — was granted to the Gallery only, so the loop was: Forge
+writes, Lens looks, Lens or the operator fails it, Forge rebuilds. That ran at
+**3.4 builds per lead**, and 71% of Forge's spend was rebuilds. Forge's own
+`ROLE.md` had referenced `inspect_site` in six places for weeks, as though it
+could call it.
+
+`rooms/factory.yaml` now grants `site_inspect`, and the closing line of the
+build prompt — the last thing the model reads, which is where an instruction
+survives a 7,000-token brief — tells Forge to screenshot itself, open the PNGs
+with `Read`, and fix what it finds before writing its final JSON.
+
+Measured against the reason it exists: **62% of rebuilds were operator
+rejections, not QA failures** (35 against 21). Lens passed every build on three
+separate leads that the operator then rejected. So the number to watch is
+rejections per lead, not QA failures.
+
+Two of those rejection classes were objective defects that no check could see,
+and both are now measured:
+
+- **Contrast against a background IMAGE was never computed.** `bgOf()` walked
+  ancestors for a `backgroundColor` and ignored `background-image` entirely, so
+  a white title over a pale photograph was judged against the dark colour
+  underneath the picture and passed. Reproduced: white `h1`, hero with
+  `background-color:#111` and a near-white image over it, reported *nothing*.
+  It now returns null the moment it meets an image, and the Python side samples
+  the rendered pixels out of the screenshot that was just taken — the **median**
+  luminance of the element's box, because the glyphs are a minority of the
+  pixels and a mean is dragged toward the text colour and flatters the result.
+  The same fixture now reports 1.14:1 against a needed 3.0. It is reported as
+  an estimate, because it is one.
+- **Distorted and oversized photographs were not checked at all.** `object-fit`
+  defaults to `fill`, which stretches a picture into whatever box the CSS gives
+  it, and nothing compared rendered geometry to `naturalWidth`/`naturalHeight`.
+  "the images are WAAAAY too big, and they are streched on phone" was invisible
+  to every check on the page and cost a rebuild to discover. Both are flagged
+  now; `cover` and `contain` are exempt, since they crop and letterbox rather
+  than distort.
+
+Neither carries a viewport prefix, because both are properties of the
+stylesheet and are found again at every width — the existing dedup collapses
+them to one line instead of three. **Vector is exempt from the oversize check:**
+an SVG's `naturalWidth` is a declared number rather than a pixel count, it
+scales losslessly and costs the same bytes at any size. The first real build
+tripped that twice on a 150px `logo.svg` drawn at 32px, and a check that cries
+wolf is how an agent learns to stop reading them — the same reason a false
+fabrication flag is worse than a missed one.
+
+First run against the sandbox, and this is the whole point of the change:
+Forge rendered its own build, opened the PNGs, and reported in
+`design_rationale` that it had *"fixed two real defects screenshot_site caught:
+the h1 overflowed a 390px viewport under nowrap, and the hero subtitle measured
+near-1:1 contrast against the photo, so it now sits in a solid dark chip."* The
+second of those is precisely the class the old check could not see. It also
+declined to act on the oversize finding, correctly, on the grounds that
+`images.responsive` owns that — which is the judgement the prompt asks for
+rather than thrashing to reach zero.
+
+### The sandbox lead
+
+`tanrim/sandbox.py` is a fake business, `Le Banc d'Essai`, kept at a fixed id so
+its staging URL is stable. Every experiment on the build used to be run against
+a real business's site — which is the wrong place to learn that a change made
+pages worse, because that directory is the one Courier ships from and a rebuild
+to try something out is indistinguishable from one that was asked for. One
+experiment on a real lead cost four builds and $60 before anything was learned.
+
+    PYTHONPATH=backend .venv/bin/python -m tanrim.sandbox        # create/reset
+    PYTHONPATH=backend .venv/bin/python -m tanrim.sandbox --keep # keep the files
+
+It sits at `visualised`, so the stage sweep dispatches Forge to it like any
+other lead, and the result is at `/staging/<id>/`.
+
+What makes it safe is that the guards are in code, not in a convention:
+
+- `echo.preflight` and `echo.followup_preflight` return the refusal and nothing
+  else; `echo.followup_due` returns None. Its address is also at `.invalid`, a
+  TLD RFC 6761 reserves so it can never resolve — two independent stops,
+  because one of them being edited away should not be enough.
+- `courier.request_publish` and `do_publish` both refuse, so a made-up business
+  never reaches a public URL where it could be taken for a real one. They hand
+  back the staging URL instead.
+- `_expire_silence` skips it, so it never ages into `lost`.
+
+The dossier is deliberately full and realistic — a priced menu, verified hours,
+a recorded hours **conflict**, a content gap, an `unverified` claim about a
+second location, a photo report with an observed palette and chalkboard text.
+A sandbox with three facts in it produces a page that tells you nothing about
+whether a change was an improvement, and the conflict and the unverified claim
+are exactly the cases a build has to handle well.
+
 ### Judging what is on the page
 
 Whoever checks a page for invented facts must hold the same evidence the builder
@@ -810,7 +1141,7 @@ decision is "does a stranger receive this email".
 uv venv .venv && uv pip install --python .venv/bin/python -e .
 .venv/bin/python -m playwright install chromium     # Lens needs a browser
 cp .env.example .env                                # ANTHROPIC_API_KEY at minimum
-PYTHONPATH=backend .venv/bin/python -m uvicorn agent_env.server:app --port 8765
+PYTHONPATH=backend .venv/bin/python -m uvicorn tanrim.server:app --port 8765
 # in another terminal:
 cd frontend && npm install && npm run dev           # http://localhost:5173
 ```

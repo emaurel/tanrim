@@ -2,7 +2,7 @@
  * Generic side-panel UI. A renderer per room is registered in panels/index.ts —
  * adding a new room panel = drop a file under panels/<id>.ts that exports `render`,
  * then register it in panels/index.ts. No backend handler is required for the
- * generic fallback; a backend handler in agent_env/handlers.py unlocks actions.
+ * generic fallback; a backend handler in tanrim/handlers.py unlocks actions.
  *
  * Panels poll while an agent is running, so a re-render is a frequent event, not
  * a rare one. `ctx.reload()` is therefore a SOFT refresh: it keeps the scroll

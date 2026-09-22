@@ -308,7 +308,7 @@
 <div class="wrap">
 
   <header class="masthead">
-    <p class="eyebrow">agent_environment · read out of the working tree</p>
+    <p class="eyebrow">Tanrim · read out of the working tree</p>
     <h1>Pipeline As Built</h1>
     <p class="standfirst">
       Every stage, every transition and both human gates, taken from
@@ -542,7 +542,7 @@ flowchart TD
         <h3>Silence is a loss, on a timer</h3>
         <p>
           A lead sitting at <span class="id">contacted</span> for
-          <span class="id">AGENT_ENV_NO_REPLY_DAYS</span> (21 by default) is moved to
+          <span class="id">TANRIM_NO_REPLY_DAYS</span> (21 by default) is moved to
           <span class="id">lost</span> by the sweep. Most businesses never answer, and
           a board full of leads that are neither won nor lost buries the ones still
           worth chasing.
@@ -579,8 +579,8 @@ flowchart TD
     <p>
       Raised by Echo for a lead at <span class="id">published</span> that has a draft, a
       recipient and a live preview. It refuses to raise at all while
-      <span class="id">AGENT_ENV_AGENCY_NAME</span> or
-      <span class="id">AGENT_ENV_SENDER_EMAIL</span> is unset, or while the draft contains
+      <span class="id">TANRIM_AGENCY_NAME</span> or
+      <span class="id">TANRIM_SENDER_EMAIL</span> is unset, or while the draft contains
       billing language. Rejecting <em>with</em> a reason returns it to the Copy Desk to
       rewrite; rejecting silently marks it <span class="id">lost</span>.
     </p>
@@ -614,7 +614,7 @@ flowchart TD
     domain work. Sources: <code>state.STAGES</code> and <code>state.DEAD_STAGES</code>;
     the <code>workbenches:</code> blocks in <code>rooms/*.yaml</code>;
     <code>rooms.role_for_stage()</code>; every <code>advance_lead()</code> call site in
-    <code>backend/agent_env/</code>; and the <code>accepts_stages</code> tuples in
+    <code>backend/tanrim/</code>; and the <code>accepts_stages</code> tuples in
     <code>handlers.py</code>. Nothing here is inferred from intent.
   </footer>
 

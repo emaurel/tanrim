@@ -5,6 +5,39 @@
     "version": "2.13.0",
     "license": "MIT",
     "vendored": "2026-09-01",
-    "subtree": ".claude/skills/ui-ux-pro-max"
+    "subtree": ".claude/skills/ui-ux-pro-max",
+    "note": "Kept vendored but NOT granted, so the variant-A build stays reproducible. Re-add it to rooms/factory.yaml skills: to switch back."
+  },
+  "design-taste-frontend": {
+    "url": "https://github.com/Leonxlnx/taste-skill",
+    "version": "v2 (experimental)",
+    "license": "see upstream",
+    "vendored": "2026-09-15",
+    "subtree": ".claude/skills/design-taste-frontend",
+    "note": "Anti-slop frontend skill. V2 is upstream's own default and is flagged experimental; a v1 is published alongside it. Trying V2 on the sandbox lead is exactly what the sandbox is for."
+  },
+  "high-end-visual-design": {
+    "url": "https://github.com/Leonxlnx/taste-skill",
+    "version": "bundled with taste-skill",
+    "license": "see upstream",
+    "vendored": "2026-09-15",
+    "subtree": ".claude/skills/high-end-visual-design",
+    "note": "Fonts, spacing, shadows and card structure; blocks the defaults that make generated pages look cheap."
+  },
+  "impeccable": {
+    "url": "https://github.com/pbakaus/impeccable",
+    "version": "npx skills add pbakaus/impeccable",
+    "license": "see upstream",
+    "vendored": "2026-09-15",
+    "subtree": ".claude/skills/impeccable",
+    "note": "Design-quality checks and a polish pass. Ships hooks and slash commands for interactive Claude Code; agent runs here set strict_mcp_config with setting_sources=[], so only the SKILL.md half is expected to apply."
+  },
+  "emil-design-eng": {
+    "url": "https://github.com/emilkowalski/skill",
+    "version": "npx skills add emilkowalski/skill",
+    "license": "see upstream",
+    "vendored": "2026-09-15",
+    "subtree": ".claude/skills/emil-design-eng",
+    "note": "Emil Kowalski's UI-polish philosophy. The primary skill only — its siblings are animation, React Native and Swift skills that do not apply to a static page."
   }
 }

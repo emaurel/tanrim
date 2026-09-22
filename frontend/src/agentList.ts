@@ -35,7 +35,7 @@ export function mount(): void {
   // Collapse the crew list so it isn't permanently over the map. The choice
   // persists, because someone who closed it once meant it.
   const collapseBtn = aside.querySelector(".crew-toggle") as HTMLButtonElement;
-  const KEY = "agent_env.crewCollapsed";
+  const KEY = "tanrim.crewCollapsed";
   const applyCollapsed = (collapsed: boolean) => {
     aside.classList.toggle("crew--collapsed", collapsed);
     collapseBtn.setAttribute("aria-expanded", String(!collapsed));

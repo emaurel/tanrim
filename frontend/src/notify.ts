@@ -14,8 +14,8 @@
  * the AudioContext is created lazily on the first real gesture.
  */
 
-const MUTE_KEY = "agent_env.muted";
-const DESKTOP_KEY = "agent_env.desktop";
+const MUTE_KEY = "tanrim.muted";
+const DESKTOP_KEY = "tanrim.desktop";
 
 let ctx: AudioContext | null = null;
 let unlocked = false;
@@ -111,7 +111,7 @@ function desktopNotify(title: string, body: string): void {
   // Only worth interrupting the desktop when the page isn't being watched.
   if (document.visibilityState === "visible") return;
   try {
-    new Notification(title, { body, tag: "agent-env-approval" });
+    new Notification(title, { body, tag: "tanrim-approval" });
   } catch {
     /* some platforms refuse constructor notifications; not worth handling */
   }

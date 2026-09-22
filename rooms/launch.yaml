@@ -1,0 +1,18 @@
+id: launch
+name: Launch Pad
+purpose: Porter hands a sold site to its owner — their account on the editor, so they can change it themselves.
+position: { x: 36, y: 20 }
+size: { w: 12, h: 8 }
+color: "#2b4a3a"
+max_workers: 10
+agents:
+  - id: porter
+    name: Porter
+    role: Handover. Creates the client's account on the editor and gives them the keys.
+    color: "#f2c14e"
+tools: []
+workbenches:
+  - id: keys
+    name: The Key Desk
+    job: Creating the client's account and importing the site they bought
+    stages: [won]

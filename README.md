@@ -1,4 +1,4 @@
-# agent_environment
+# Tanrim
 
 An agent-operated web agency, rendered as a pixel-art dungeon.
 
@@ -126,7 +126,7 @@ uv venv .venv && uv pip install --python .venv/bin/python -e .
 cp -r prompts.example prompts                       # then write the prompts
 cp .env.example .env                                # ANTHROPIC_API_KEY at minimum
 
-PYTHONPATH=backend .venv/bin/python -m uvicorn agent_env.server:app --port 8765
+PYTHONPATH=backend .venv/bin/python -m uvicorn tanrim.server:app --port 8765
 # in another terminal
 cd frontend && npm install && npm run dev            # http://localhost:5173
 ```
@@ -143,7 +143,7 @@ behaviour lives.
 
 ### Optional
 
-- `AGENT_ENV_AGENCY_NAME` and `AGENT_ENV_SENDER_EMAIL` — outreach is **blocked**
+- `TANRIM_AGENCY_NAME` and `TANRIM_SENDER_EMAIL` — outreach is **blocked**
   until these are set. Cold email without an identifiable sender and a working
   opt-out is both illegal in most places and undeliverable everywhere.
 - `SMTP_*` — without these, approving a send hands you the email to send
@@ -185,7 +185,7 @@ Nothing here removes your responsibility for what gets sent.
 ```
 rooms/               room + workbench manifests, read by both sides
 prompts/             agent prompts (gitignored; see prompts.example/)
-backend/agent_env/   orchestrator, agents, tools, FastAPI + WebSocket server
+backend/tanrim/   orchestrator, agents, tools, FastAPI + WebSocket server
 frontend/            Vite + TS + Phaser SPA
 state/               leads, generated sites, ledgers (gitignored)
 ```

@@ -18,6 +18,80 @@ const ROOM_FOR_STAGE: Record<string, { room: string; next: string }> = {
 
 let pollTimer: number | null = null;
 
+/** Open a PORT lead: a client who already has a site and wants it rebuilt.
+ *
+ * Deliberately an operator action and nowhere near an agent. A port lead means
+ * somebody has agreed to pay us, and that conversation happens outside this
+ * system — so this is a form, not a dispatch.
+ */
+function portIntake(reload: () => void): HTMLElement {
+  const box = document.createElement("details");
+  box.className = "rp-port-intake";
+  const sum = document.createElement("summary");
+  sum.textContent = "port an existing site →";
+  box.appendChild(sum);
+
+  const hint = document.createElement("div");
+  hint.className = "rp-form-hint";
+  hint.textContent =
+    "A client who already has a website and asked us to rebuild it on the "
+    + "editor. No qualification, no pitch, no quote — their site is the brief. "
+    + "Probe reads it, Lens looks at it, Forge rebuilds it, and you confirm "
+    + "they approved it before the handover.";
+  box.appendChild(hint);
+
+  const form = document.createElement("form");
+  form.className = "rp-form";
+  form.innerHTML = `
+    <input name="url" placeholder="their current site, e.g. boulangerie-martin.fr" required>
+    <input name="name" placeholder="business name" required>
+    <input name="email" type="email" placeholder="their email — the editor account is keyed to it" required>
+    <input name="phone" placeholder="phone (optional)">
+    <textarea name="notes" rows="2" placeholder="what they asked for, in their words (optional)"></textarea>
+    <div class="rp-row">
+      <span class="rp-form-hint">starts at 'intake'</span>
+      <button type="submit">open the lead</button>
+    </div>
+  `;
+  const submit = form.querySelector("button") as HTMLButtonElement;
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    submit.disabled = true;
+    submit.textContent = "opening…";
+    const res = await fetch("/leads/port", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: String(fd.get("url") ?? "").trim(),
+        name: String(fd.get("name") ?? "").trim(),
+        email: String(fd.get("email") ?? "").trim(),
+        phone: String(fd.get("phone") ?? "").trim() || null,
+        notes: String(fd.get("notes") ?? "").trim() || null,
+      }),
+    });
+    if (!res.ok) {
+      submit.disabled = false;
+      submit.textContent = "open the lead";
+      const bar = document.createElement("div");
+      bar.className = "rp-error";
+      let why = `HTTP ${res.status}`;
+      try { why = (await res.json()).detail ?? why; } catch { /* keep the code */ }
+      bar.textContent = why;
+      form.appendChild(bar);
+      return;
+    }
+    form.reset();
+    submit.disabled = false;
+    submit.textContent = "open the lead";
+    reload();
+  });
+  box.appendChild(form);
+  return box;
+}
+
+
+
 async function render({ roomId, data, body, reload }: PanelContext) {
   if (pollTimer !== null) {
     clearTimeout(pollTimer);
@@ -27,6 +101,7 @@ async function render({ roomId, data, body, reload }: PanelContext) {
   const board: Lead[] = data.board ?? [];
 
   body.appendChild(stageCounts(data.counts ?? {}));
+  body.appendChild(portIntake(reload));
 
   const form = document.createElement("form");
   form.className = "rp-form";

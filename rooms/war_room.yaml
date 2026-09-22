@@ -2,7 +2,7 @@ id: war_room
 name: War Room
 purpose: Where everyone gathers for the retro — what converted, what got ignored, what to change.
 position: { x: 24, y: 20 }
-size: { w: 24, h: 8 }
+size: { w: 12, h: 8 }
 color: "#4a1a1a"
 max_workers: 10
 agents: []

@@ -11,7 +11,7 @@ agents:
     color: "#e0a458"
 tools: ["domain_check"]
 # Cloudflare's MCP server is deliberately NOT attached. Deploying is done by
-# agent_env/hosting.py over plain HTTP — deterministic, and Courier makes no
+# tanrim/hosting.py over plain HTTP — deterministic, and Courier makes no
 # model call in the publish path, so these tools would never be reached.
 # Left here as the worked example of the mechanism: uncomment to enable.
 #

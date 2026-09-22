@@ -204,7 +204,7 @@ function renderGate(a: Approval, host: HTMLElement): boolean {
 
     // You are being asked to approve a website. Show it. Rendering it live at
     // phone width is the only way to form the opinion this gate is asking for.
-    if (p.staging_url) host.appendChild(sitePreview(p.staging_url));
+    if (p.staging_url) host.appendChild(sitePreview(p.staging_url, "the build", a.ts));
 
     if (p.qa_summary) host.appendChild(kv("Lens says", p.qa_summary));
     if (problems.length) {
@@ -274,6 +274,157 @@ function renderGate(a: Approval, host: HTMLElement): boolean {
       "leaves the lead alone. To drop the lead entirely, move it to 'lost' on " +
       "the lead board."));
 return true;
+  }
+
+  // A port client's rebuild is up. Did they say yes?
+  if (a.kind === "client_approved") {
+    host.appendChild(kv("Business", String(p.business ?? "?")));
+    if (p.old_site) host.appendChild(kv("Site they had", String(p.old_site)));
+    if (p.preview_url) {
+      host.appendChild(sitePreview(p.preview_url, "the rebuild they are approving"));
+    }
+    const keep: string[] = p.must_not_lose ?? [];
+    if (keep.length) {
+      const det = document.createElement("details");
+      const sum = document.createElement("summary");
+      sum.textContent = `What the rebuild had to keep (${keep.length})`;
+      det.appendChild(sum);
+      const pre = document.createElement("pre");
+      pre.className = "rp-email-body";
+      pre.textContent = keep.join("\n");
+      det.appendChild(pre);
+      host.appendChild(det);
+    }
+    host.appendChild(note(String(p.what_this_means ?? "")));
+    host.appendChild(note(
+      "approve marks the lead won and lets the Launch Pad create their " +
+      "account · reject sends it back to be rebuilt, using anything you type " +
+      "below as the brief · nothing is emailed either way."));
+    return true;
+  }
+
+  // The Launch Pad gate: the client gets the keys to their own site.
+  if (a.kind === "client_account") {
+    const problems: string[] = p.problems ?? [];
+    if (problems.length) {
+      host.appendChild(note(
+        "This cannot run yet: " + problems.join(" · ") +
+        ". Approving will fail the same way until it is fixed."));
+    }
+    if (p.loopback) {
+      host.appendChild(note(
+        `The editor is at ${p.editor_url} — a loopback address. The account ` +
+        `and the repository are created for real, but NO welcome email is ` +
+        `sent: that link only opens on this machine, and a customer who has ` +
+        `just paid should not receive one. The login link comes back here.`));
+    }
+    host.appendChild(kv("Business", String(p.business ?? "?")));
+    host.appendChild(kv("Account for", String(p.to ?? "— no email —")));
+    host.appendChild(kv("Editor", String(p.editor_url ?? "not configured")));
+    if (p.domain) host.appendChild(kv("Domain", String(p.domain)));
+    if (p.invoice) host.appendChild(kv("Invoice", String(p.invoice)));
+    host.appendChild(kv("Site files", `${p.file_count ?? 0} files`));
+    if (p.dossier_keys?.length) {
+      host.appendChild(kv("Dossier sent", (p.dossier_keys as string[]).join(", ")));
+    }
+    if (p.files?.length) {
+      const det = document.createElement("details");
+      const sum = document.createElement("summary");
+      sum.textContent = `Exactly what is shipped (${p.file_count} files)`;
+      det.appendChild(sum);
+      const pre = document.createElement("pre");
+      pre.className = "rp-email-body";
+      pre.textContent = (p.files as string[]).join("\n");
+      det.appendChild(pre);
+      host.appendChild(det);
+    }
+    host.appendChild(note(String(p.notify_note ?? "")));
+    host.appendChild(note(String(p.what_this_means ?? "")));
+    return true;
+  }
+
+  // The handover call failed. Approving retries ONLY where that can differ.
+  if (a.kind === "handover_failed") {
+    host.appendChild(note(String(p.error ?? "")));
+    host.appendChild(kv("Business", String(p.business ?? "?")));
+    if (p.status) host.appendChild(kv("HTTP", String(p.status)));
+    host.appendChild(note(String(p.what_this_means ?? "")));
+    host.appendChild(note(
+      p.retryable
+        ? "approve retries · the call is idempotent, so a repeat cannot create a second account"
+        : "approving does nothing here — this one needs a person. Dismiss it with ignore once you have fixed the cause."));
+    return true;
+  }
+
+  // The account exists but nobody told the client.
+  if (a.kind === "send_login_link") {
+    host.appendChild(kv("Business", String(p.business ?? "?")));
+    host.appendChild(kv("Send to", String(p.to ?? "?")));
+    const pre = document.createElement("pre");
+    pre.className = "rp-email-body";
+    pre.textContent = String(p.login_url ?? "");
+    host.appendChild(labelled("Their login link — single use, one week", pre));
+    host.appendChild(note(String(p.what_this_means ?? "")));
+    host.appendChild(note(
+      "approve once you have sent it · ignore leaves the card for later"));
+    return true;
+  }
+
+  // A second message to someone who never asked for the first one.
+  if (a.kind === "send_followup") {
+    host.appendChild(note(
+      `${p.business ?? "This business"} was emailed on ${p.first_sent_on} ` +
+      `(${p.days_since_first} days ago) and has not replied. This is ` +
+      (p.is_final
+        ? `the FINAL follow-up — nothing further is sent after it.`
+        : `follow-up ${p.touch} of ${p.of}.`)));
+    const ds: any = p.domain_status;
+    if (ds?.rechecked && ds.status && ds.status !== "available") {
+      host.appendChild(note(
+        `${ds.domain} is no longer available — the first email named it. The ` +
+        `note should not mention any domain; check that it doesn't.`));
+    }
+    host.appendChild(kv("To", `${p.business ?? ""} <${p.to ?? "?"}>`));
+    host.appendChild(kv("Subject", p.subject ?? ""));
+    if (p.the_one_ask && p.the_one_ask !== "none") {
+      host.appendChild(kv("Asks for", String(p.the_one_ask)));
+    }
+    if (p.quote?.amount) {
+      host.appendChild(kv("Price (unchanged)",
+        `${p.quote.amount} ${p.quote.currency ?? ""}`));
+    }
+    if (p.preview_url) {
+      host.appendChild(sitePreview(p.preview_url, "the page the link still opens"));
+    }
+    const fu = document.createElement("pre");
+    fu.className = "rp-email-body";
+    fu.textContent = p.body ?? "";
+    host.appendChild(labelled("The follow-up", fu));
+
+    // The original, collapsed. Judging whether a nudge repeats the pitch is
+    // impossible without the pitch in front of you, and it is the one failure
+    // mode this kind of message actually has.
+    if (p.original_body) {
+      const det = document.createElement("details");
+      const sum = document.createElement("summary");
+      sum.textContent = `What they already received — "${p.original_subject ?? ""}"`;
+      det.appendChild(sum);
+      const orig = document.createElement("pre");
+      orig.className = "rp-email-body";
+      orig.textContent = String(p.original_body);
+      det.appendChild(orig);
+      host.appendChild(det);
+    }
+
+    host.appendChild(note(
+      p.transport === "smtp"
+        ? "Approving sends this immediately, in the same thread as the first " +
+          "email. Read it as someone who never asked to hear from you."
+        : "No SMTP configured — approving hands you the text to send yourself."));
+    host.appendChild(note(
+      "approve sends it · reject redrafts it, using anything you type below as " +
+      "the brief · ignore drops this touch and leaves the lead alone."));
+    return true;
   }
 
   // Everything the build will be made from, before the most expensive run.
@@ -455,7 +606,7 @@ return true;
     if (p.qa_summary)
       host.appendChild(labelled("QA's own summary", note(String(p.qa_summary))));
     if (p.what_this_means) host.appendChild(note(String(p.what_this_means)));
-    if (p.lead_id) host.appendChild(sitePreview(`/staging/${p.lead_id}/`));
+    if (p.lead_id) host.appendChild(sitePreview(`/staging/${p.lead_id}/`, "the build", a.ts));
     host.appendChild(note(
       "approve = pass QA and publish (say so in the box if Lens was wrong) · " +
       "reject = back to Forge with your note as the instruction"
@@ -524,7 +675,12 @@ function note(text: string): HTMLElement {
  * which is how the recipient will open it. Approving a website you have not
  * seen is not a decision, it is a rubber stamp.
  */
-function sitePreview(url: string, label = "the build"): HTMLElement {
+function sitePreview(url: string, label = "the build", version?: number): HTMLElement {
+  // A rebuild writes the same paths, so the iframe src never changes and the
+  // browser is entitled to show what it already has. `version` changes with
+  // the build, which forces a real fetch of the page AND its stylesheet — the
+  // difference between reviewing this build and reviewing the last one.
+  if (version) url += (url.includes("?") ? "&" : "?") + "v=" + Math.round(version);
   const wrap = document.createElement("div");
   wrap.className = "rp-site-preview";
 

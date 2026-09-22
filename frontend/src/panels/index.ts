@@ -2,7 +2,7 @@
  * Per-room panel registry. To add a custom menu for a room:
  *   1. create panels/<id>.ts exporting `open(roomId): Promise<void>`
  *   2. register it below
- *   3. (optional) add a backend handler in agent_env/handlers.py to power actions
+ *   3. (optional) add a backend handler in tanrim/handlers.py to power actions
  *
  * Rooms not listed here fall back to the generic info panel. Most pipeline
  * rooms are built from the shared `leadRoom` factory — they differ only in how
@@ -15,6 +15,7 @@ import { open as openComms } from "./comms";
 import { open as openFactory } from "./factory";
 import { open as openGallery } from "./gallery";
 import { open as openGeneric } from "./generic";
+import { open as openLaunch } from "./launch";
 import { open as openListing } from "./listing";
 import { open as openPublish } from "./publish";
 import { open as openResearch } from "./research";
@@ -28,6 +29,7 @@ const REGISTRY: Record<string, (id: string) => Promise<void>> = {
   comms:    openComms,
   factory:  openFactory,
   gallery:  openGallery,
+  launch:   openLaunch,
   listing:  openListing,
   publish:  openPublish,
   research: openResearch,

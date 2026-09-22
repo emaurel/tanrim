@@ -39,7 +39,7 @@ async function render({ roomId, data, body, reload }: PanelContext) {
       `Charged on a guess: ${unpriced.join(", ")}. No rate is entered for `
       + `${unpriced.length > 1 ? "these models" : "this model"}, so the figures `
       + `above assume its family's tier. Add it to usage.PRICING, or set `
-      + `AGENT_ENV_PRICING, to bill it exactly.`;
+      + `TANRIM_PRICING, to bill it exactly.`;
     body.appendChild(warn);
   }
 
