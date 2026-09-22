@@ -16,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import agent_helpers
+from . import discovery
+from . import environment
 from . import buildlock
 from . import invoices as invoices_mod
 from . import secrets as secrets_store
@@ -30,12 +32,21 @@ from . import usage as usage_mod
 from .config import SITES_DIR
 from .handlers import build_handlers
 from .orchestrator import Orchestrator
-from .runners import AGENT_RUNNERS
 from .tools import registry as tool_registry
 from .world import World
 
 # Push stored secrets into os.environ before any tool tries to read them.
 secrets_store.load_into_environ()
+
+# Find the installed plugins and merge them into one environment, ONCE, before
+# anything asks it a question. The environment is empty until this runs: every
+# stage, room, agent, gate and tool arrives from a plugin, and an install with
+# none of them is a legitimate — if idle — environment rather than an error.
+_env = environment.boot(discovery.find())
+print(f"[boot] {len(_env.plugins)} plugin(s): "
+      + ", ".join(p.id for p in _env.plugins))
+for _problem in _env.check():
+    print(f"[boot] {_problem}")
 
 # Prompts live outside the source tree (see tanrim/prompts.py). Say so at
 # boot rather than letting the first agent run fail — or worse, letting an
@@ -266,7 +277,7 @@ async def run_next_step(lead_id: str):
     step = _next_step(lead)
     if not step["runnable"]:
         raise HTTPException(409, step["blocked_by"] or "nothing to run")
-    runner = AGENT_RUNNERS.get(step["role"])
+    runner = runners.agent_runners().get(step["role"])
     if runner is None:
         raise HTTPException(409, f"no runner for {step['role']}")
 
@@ -435,7 +446,12 @@ async def report_bounce(lead_id: str, body: dict[str, Any] | None = None):
     address = str(body.get("address") or lead.get("email") or "").strip()
     if not address:
         raise HTTPException(400, "no address to record as bounced")
-    return await _role("echo", "record_bounce")(
+    # A declared hook, not a reach into a named agent: which plugin handles a
+    # bounce is exactly what `inbound_bounce` is for.
+    handler = environment.current().hook("inbound_bounce")
+    if handler is None:
+        raise HTTPException(503, "no plugin handles inbound bounces")
+    return await handler(
         world, lead_id, address,
         permanent=bool(body.get("permanent", True)),
         detail=str(body.get("detail") or "reported by the operator"))
@@ -797,7 +813,7 @@ class WorkerCaps(BaseModel):
 @app.get("/rooms/workers")
 async def get_worker_caps() -> dict[str, Any]:
     """Per-room worker caps, with the ceiling and which rooms cannot change."""
-    from .workers import SINGLETON_ROLES
+    from .workers import is_singleton
 
     return {
         "cap": rooms_mod.MAX_WORKERS_CAP,
@@ -809,7 +825,7 @@ async def get_worker_caps() -> dict[str, Any]:
                 # Ultron dispatches against himself if there are two of him, so
                 # the Throne is shown but not editable rather than silently
                 # ignoring whatever is set.
-                "singleton": any(a.id in SINGLETON_ROLES for a in r.agents),
+                "singleton": any(is_singleton(a.id) for a in r.agents),
                 "busy": len([w for w in world.workers(r.agents[0].id)
                              if w.busy]) if r.agents else 0,
             }
@@ -820,12 +836,12 @@ async def get_worker_caps() -> dict[str, Any]:
 
 @app.put("/rooms/workers")
 async def put_worker_caps(caps: WorkerCaps) -> dict[str, Any]:
-    from .workers import SINGLETON_ROLES
+    from .workers import is_singleton
 
     wanted: dict[str, int] = {}
     if caps.default is not None:
         for r in rooms_mod.load_rooms():
-            if any(a.id in SINGLETON_ROLES for a in r.agents):
+            if any(is_singleton(a.id) for a in r.agents):
                 continue
             wanted[r.id] = caps.default
     wanted.update(caps.rooms or {})
@@ -1015,10 +1031,8 @@ async def get_plugins() -> dict[str, Any]:
     from here, so this is the honest answer to "why does the map look like
     that".
     """
-    from . import plugin as plugin_mod
-
     return {
-        "plugins": plugin_mod.describe(),
+        "plugins": environment.current().describe(),
         "stages": list(state.STAGES),
         "dead_stages": list(state.DEAD_STAGES),
         "lead_kinds": list(state.LEAD_KINDS),
@@ -1163,26 +1177,6 @@ async def health_domain_pricing(domain: str = "example-test-name.fr"):
     }
 
 
-def _role(role: str, fn_name: str):
-    """A role's entry point, from the plugin that supplies it.
-
-    The last of the core importing the domain. `server.py` called five agent
-    modules directly; it now knows only role names, and which plugin answers
-    to one is the registry's business.
-    """
-    runner = plugin_mod.runner_for(role)
-    if runner is None:
-        raise HTTPException(503, f"no plugin supplies role {role!r}")
-    return getattr(__import__(runner.__module__, fromlist=[fn_name]), fn_name)
-
-
-def _attr(role: str, name: str, default=None):
-    runner = plugin_mod.runner_for(role)
-    if runner is None:
-        return default
-    return getattr(__import__(runner.__module__, fromlist=[name]), name, default)
-
-
 @app.get("/health")
 async def health():
     return {
@@ -1227,7 +1221,7 @@ async def continue_pipeline(
     role = prefer_role or role_for_stage(stage or "")
     if role is None:
         return None
-    runner = AGENT_RUNNERS.get(role)
+    runner = runners.agent_runners().get(role)
     if runner is None:
         return None
     state.log_event(
@@ -1254,10 +1248,10 @@ def _decision_problem(approval: dict[str, Any], body: "ApprovalDecision") -> str
     """
     if body.decision != "approved":
         return None
-    spec = plugin_mod.approvals().get(approval["kind"])
-    if spec is None or not spec.validate:
+    gate = environment.current().gate(approval["kind"])
+    if gate is None or not gate.validate:
         return None
-    return plugin_mod.resolve(spec.validate)(approval, body.decision, body.reason)
+    return gate.validate(approval, body.decision, body.reason)
 
 
 @app.post("/approvals/{approval_id}")
@@ -1299,11 +1293,10 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
     # vocabulary — bounced addresses, thin dossiers, QA loops — in the file
     # that is supposed to know none of it. Each gate now declares
     # `on_decision`, and a plugin adding one touches only its own files.
-    spec = plugin_mod.approvals().get(rec["kind"])
-    if spec is not None and spec.on_decision:
-        await plugin_mod.resolve(spec.on_decision)(
-            world, rec, body.decision, body.reason)
-    elif spec is None:
+    gate = environment.current().gate(rec["kind"])
+    if gate is not None and gate.on_decision:
+        await gate.on_decision(world, rec, body.decision, body.reason)
+    elif gate is None:
         # An undeclared kind still resolves — the card clears and the operator
         # is not stuck — but it is worth saying, because the usual cause is a
         # gate raised by code whose plugin forgot to declare it.

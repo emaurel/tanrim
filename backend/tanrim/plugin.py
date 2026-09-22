@@ -200,12 +200,33 @@ def _discover(directory: Path) -> list[Plugin]:
         manifest = entry / "plugin.py"
         if not manifest.is_file():
             continue
+        # Loaded as a SUBMODULE of the plugin package, so a plugin's own
+        # `from . import approvals` resolves. The old flat name had no parent
+        # package, which worked only while every plugin was a single file of
+        # dotted strings.
+        mod_name = f"{PACKAGE_ROOT}.{entry.name}"
+        if mod_name in sys.modules:
+            # Already imported, possibly still IN FLIGHT — a contract plugin
+            # importing the core can re-enter this loader mid-import. Never
+            # re-execute it: doing so ran the module a second time against its
+            # own half-built namespace. Whatever it is, the new discovery owns
+            # it from here.
+            module = sys.modules[mod_name]
+            plugin = getattr(module, "PLUGIN", None)
+            if isinstance(plugin, Plugin):
+                found.append(Plugin(**{**plugin.__dict__, "root": entry}))
+            continue
         spec = importlib.util.spec_from_file_location(
-            f"tanrim_plugin_{entry.name}", manifest)
+            mod_name, manifest, submodule_search_locations=[str(entry)])
         if spec is None or spec.loader is None:
             raise PluginError(f"could not load {manifest}")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        sys.modules[mod_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(mod_name, None)
+            raise
         plugin = getattr(module, "PLUGIN", None)
         if plugin is None:
             raise PluginError(

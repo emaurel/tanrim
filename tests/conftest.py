@@ -17,8 +17,16 @@ import pytest
 
 
 def _reload_everything() -> None:
-    """Rebuild every cache that derives from the plugin registry."""
-    from tanrim import plugin, prompts, rooms, state
+    """Rebuild every cache that derives from the plugin registry.
+
+    The environment is dropped first. `state`, `rooms` and `prompts` all
+    prefer a booted environment over the old registry, so a synthetic-plugin
+    test running after one that booted the real plugins would silently assert
+    against the real stage table. Tests that want the environment take the
+    `real_env` fixture, which boots it explicitly.
+    """
+    from tanrim import environment, plugin, prompts, rooms, state
+    environment.reset()
     plugin.load(force=True)
     plugin._resolved.clear()
     prompts._cache.clear()
@@ -82,3 +90,24 @@ def real_plugins():
     _reload_everything()
     yield
     _reload_everything()
+
+
+@pytest.fixture
+def real_env():
+    """The installed plugins, booted as the current environment.
+
+    Installed as `environment.current()` rather than merely returned, because
+    the things that read it — the prompt loader most of all — go through the
+    singleton, and a test holding a private copy would not exercise the path
+    the server uses.
+    """
+    from tanrim import discovery, environment
+
+    previous = environment.current() if environment.booted() else None
+    env = environment.boot(discovery.find())
+    try:
+        yield env
+    finally:
+        environment.reset()
+        if previous is not None:
+            environment.boot(previous.plugins)

@@ -233,6 +233,19 @@ def room_dirs(directory: Path | None = None) -> list[Path]:
 
 
 def load_rooms(directory: Path | None = None) -> list[RoomSpec]:
+    """Every room, patched and laid out.
+
+    Served from the booted environment when there is one: the plugins have
+    already been asked for their rooms and their patches already merged, so
+    re-reading the directories here would be a second, disagreeing answer to
+    a question the environment has settled. The directory scan below remains
+    for the pre-contract path and for a caller that names a directory.
+    """
+    from . import environment
+
+    if directory is None and environment.booted():
+        return _from_environment(environment.current())
+
     dirs = room_dirs(directory)
     key = "|".join(str(d) for d in dirs)
     stamp = tuple(x for d in dirs for x in _manifest_stamp(d))
@@ -270,6 +283,48 @@ def load_rooms(directory: Path | None = None) -> list[RoomSpec]:
     for room in rooms:
         _layout_workbenches(room)
     _ROOMS_CACHE[key] = (stamp, rooms)
+    return rooms
+
+
+def _from_environment(env: "Any") -> list[RoomSpec]:
+    """The environment's rooms as the `RoomSpec`s the rest of the core uses.
+
+    A translation, not a second source of truth. The contract's `Room` is a
+    plain dataclass with no layout arithmetic and no agent list — geometry is
+    this module's job, and who staffs a room is DERIVED from the agents rather
+    than restated in the manifest, so a room and its crew cannot disagree.
+    """
+    rooms: list[RoomSpec] = []
+    for room in env.rooms():
+        spec = RoomSpec(
+            id=room.id,
+            name=room.name,
+            purpose=room.purpose,
+            position=Vec2(x=room.position[0], y=room.position[1]),
+            size=Size(w=room.size[0], h=room.size[1]),
+            color=room.color,
+            tools=list(room.tools),
+            skills=list(room.skills),
+            max_workers=room.max_workers,
+            mcp_servers=[McpServerSpec(id=m.id, url=m.url, auth_env=m.auth_env,
+                                       tools=list(m.tools), deny=list(m.deny))
+                         for m in room.mcp_servers],
+            agents=[AgentSpec(id=a.role, name=a.name, role=a.role,
+                              color=a.color, station=a.station or None)
+                    for a in env.agents_in(room.id)],
+            workbenches=[
+                WorkbenchSpec(
+                    id=b.id, name=b.name, job=b.job,
+                    stages=list(b.stages), tasks=list(b.tasks),
+                    position=(Vec2(x=b.position[0], y=b.position[1])
+                              if b.position else None),
+                    size=(Size(w=b.size[0], h=b.size[1]) if b.size else None),
+                )
+                for b in room.workbenches
+            ],
+        )
+        _layout_workbenches(spec)
+        rooms.append(spec)
     return rooms
 
 

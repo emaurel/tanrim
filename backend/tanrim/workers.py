@@ -24,8 +24,16 @@ from .rooms import load_rooms
 if TYPE_CHECKING:
     from .world import World
 
-# Roles that are never duplicated, whatever the manifest says.
-SINGLETON_ROLES = {"ultron"}
+def is_singleton(role: str) -> bool:
+    """May this role ever have a second worker?
+
+    Declared by the plugin on its `AgentSpec`, not held as a set here. It was
+    `{"ultron"}` in this file — the core naming one plugin's overseer, and no
+    way for another plugin to say the same about its own.
+    """
+    from . import environment
+
+    return environment.booted() and environment.current().is_singleton(role)
 
 # Stages at which a lead's journey is over, so any worker hired for it can go.
 DONE_STAGES = {"disqualified", "contacted", "replied", "won", "lost"}
@@ -43,7 +51,7 @@ class RoomAtCapacity(RuntimeError):
 
 
 def max_workers(role: str, room_id: str | None = None) -> int:
-    if role in SINGLETON_ROLES:
+    if is_singleton(role):
         return 1
     for room in load_rooms():
         if room_id is not None and room.id != room_id:

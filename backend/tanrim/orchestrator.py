@@ -7,7 +7,7 @@ from typing import Any
 from . import plugin
 from . import rooms as rooms_mod
 from . import state, workers
-from .runners import AGENT_RUNNERS
+from . import runners as _runners
 from .world import World
 
 MAX_RERUNS = 2  # safety cap so a request_tool loop can't run forever
@@ -449,7 +449,7 @@ class Orchestrator:
 
             if role is None:
                 continue  # terminal, or nobody works this stage
-            runner = AGENT_RUNNERS.get(role)
+            runner = _runners.agent_runners().get(role)
             if runner is None:
                 continue
             self._dispatched.add((lead_id, stage))
@@ -644,7 +644,7 @@ class Orchestrator:
                     task = esc.get("original_task")
                     if not task:
                         continue
-                    runner = AGENT_RUNNERS.get(esc["agent"])
+                    runner = _runners.agent_runners().get(esc["agent"])
                     if runner is None:
                         continue
 

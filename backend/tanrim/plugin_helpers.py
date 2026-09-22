@@ -22,9 +22,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable
 
+import importlib.util
+
 import yaml
 
-from .contract import McpServer, Room, RoomPatch, Workbench
+from .contract import McpServer, Room, RoomPatch, Tool, Workbench
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +127,50 @@ def _pair(value: Any, keys: tuple[str, str]) -> tuple[int, int] | None:
     if a not in value or b not in value:
         return None
     return int(value[a]), int(value[b])
+
+
+# ---------------------------------------------------------------------------
+# Tools from a directory of Python modules
+# ---------------------------------------------------------------------------
+
+def py_tools(directory: Path) -> list[Tool]:
+    """Every `*.py` in a directory that exports a top-level `mcp_server`.
+
+    Called BY the plugin, like `yaml_rooms`. The core used to glob every
+    plugin's `tools/` itself, which made "a directory with this name" part of
+    the contract — a plugin building a tool in Python, or wrapping a remote
+    service, had nowhere to put it.
+
+    A module that fails to import is reported rather than raised: one broken
+    tool should cost that tool, not the whole environment.
+    """
+    directory = Path(directory)
+    out: list[Tool] = []
+    if not directory.is_dir():
+        return out
+    for path in sorted(directory.glob("*.py")):
+        if path.name.startswith("_"):
+            continue
+        name = path.stem
+        spec = importlib.util.spec_from_file_location(
+            f"tanrim_tool_{name}", path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:  # noqa: BLE001
+            out.append(Tool(name=name, server=None,
+                            description=f"failed to import: {exc}"))
+            continue
+        server = getattr(module, "mcp_server", None)
+        if server is None:
+            out.append(Tool(name=name, server=None,
+                            description="module has no top-level `mcp_server`"))
+            continue
+        out.append(Tool(name=name, server=server,
+                        description=(module.__doc__ or "").strip().split("\n")[0]))
+    return out
 
 
 # ---------------------------------------------------------------------------

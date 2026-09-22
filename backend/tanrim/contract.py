@@ -48,6 +48,7 @@ functions and real objects. Nothing is stringly typed, and a typo is an
 """
 from __future__ import annotations
 
+from pathlib import Path
 from abc import ABC
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Mapping
@@ -405,6 +406,10 @@ class Plugin(ABC):
     #: Other plugin ids that must load first. An extension declares what it
     #: extends, and that is what orders them; a cycle is a configuration error.
     requires: tuple[str, ...] = ()
+    #: The plugin's own directory, set by discovery when it is loaded from
+    #: one. A plugin built in a test, or one that keeps nothing on disk, has
+    #: None here and never needs it.
+    root: "Path | None" = None
 
     # -- the machine --------------------------------------------------------
 

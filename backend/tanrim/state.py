@@ -506,13 +506,20 @@ def update_escalation(esc_id: str, **fields: Any) -> dict[str, Any] | None:
 # install has no stages at all, and `plugins/web_agency` is what puts the
 # original thirteen back. See `tanrim/plugin.py`.
 #
-# Read once at import, like everything else derived from a manifest: a stage
-# list changing underneath a run in flight is a debugging nightmare, and adding
-# a plugin is a restart either way.
-STAGES = _plugin.stage_ids()
-#: Terminal states a unit of work can fall into from anywhere.
-DEAD_STAGES = _plugin.terminal_ids()
-ALL_STAGES = STAGES + DEAD_STAGES
+# Computed ONCE, on first use, and cached — not at import.
+#
+# Reading them at import made importing `state` discover and import every
+# installed plugin, and a plugin that imports anything from the core then
+# closes a cycle: `state` -> plugins -> `runners` -> `agent_helpers` ->
+# `state`. That held only while a plugin was a single file of dotted strings
+# with no imports of its own, which is not what a plugin is.
+#
+# Still frozen for the life of the process: a stage list changing underneath
+# a run in flight is a debugging nightmare, and installing a plugin is a
+# restart either way. `reload_machine()` is the deliberate exception.
+#
+# `STAGES`, `DEAD_STAGES`, `ALL_STAGES`, `LEAD_KINDS`, `PROSPECT`, `BOTH` and
+# `PIPELINE` are all served by `__getattr__` at the foot of this module.
 
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
@@ -622,8 +629,9 @@ def add_lead(
     """Create a lead at stage `sourced`. `fields` may carry anything Scout
     already knows (address, phone, website, category, raw payload)."""
     _ensure()
-    kind = fields.pop("kind", PROSPECT)
-    if kind not in LEAD_KINDS:
+    m = _machine()
+    kind = fields.pop("kind", m["PROSPECT"])
+    if kind not in m["LEAD_KINDS"]:
         raise ValueError(f"unknown lead kind: {kind}")
     rec: dict[str, Any] = {
         "id": str(uuid.uuid4()),
@@ -704,7 +712,7 @@ def advance_lead(
     """Move a lead to a new stage, append to its history, and patch fields in
     the same write. This is the ONLY way stage should change, so the history
     is always a complete record of who moved the lead and why."""
-    if stage not in ALL_STAGES:
+    if stage not in _machine()["ALL_STAGES"]:
         raise ValueError(f"unknown stage: {stage}")
     _current = get_lead(lead_id) or {}
 
@@ -1026,21 +1034,84 @@ def list_lead_rows(
 
 #: Every pipeline the installed plugins define. An environment with no plugins
 #: has none, which is the point.
-LEAD_KINDS = tuple(_plugin.lead_kinds())
-#: The first one declared is what a record without an explicit kind is taken to
-#: be, so leads written before kinds existed keep working.
-PROSPECT = LEAD_KINDS[0] if LEAD_KINDS else "prospect"
+#: The first kind declared is what a record without an explicit kind is taken
+#: to be, so leads written before kinds existed keep working.
 PORT = "port"
-BOTH = frozenset(LEAD_KINDS)
 
 #: The transition table, assembled from every plugin's declared edges. It is
 #: LAW: `advance_lead` refuses anything not on it, and only the operator's
 #: explicit hand-move goes around it.
 #:
 #: (from_stage, to_stage, role, kind_of_edge, which lead kinds it applies to)
-PIPELINE: tuple[tuple[str, str, str, str, frozenset[str]], ...] = tuple(
-    (e.frm, e.to, e.role, e.kind, e.kinds) for e in _plugin.edges()
-)
+#: Filled by `_machine()` on first access. Empty means "not yet asked".
+_MACHINE: dict[str, Any] = {}
+
+
+def _machine() -> dict[str, Any]:
+    """The stage tables, built once from the installed plugins.
+
+    From the booted environment when there is one — it is the thing that has
+    already merged every plugin's pipelines, and a second assembly here would
+    be a second answer to the same question.
+    """
+    if not _MACHINE:
+        from . import environment
+
+        if environment.booted():
+            _MACHINE.update(_from_environment(environment.current()))
+        else:
+            stages = _plugin.stage_ids()
+            dead = _plugin.terminal_ids()
+            kinds = tuple(_plugin.lead_kinds())
+            _MACHINE.update(
+                STAGES=stages,
+                DEAD_STAGES=dead,
+                ALL_STAGES=stages + dead,
+                LEAD_KINDS=kinds,
+                PROSPECT=kinds[0] if kinds else "prospect",
+                BOTH=frozenset(kinds),
+                PIPELINE=tuple((e.frm, e.to, e.role, e.kind, e.kinds)
+                               for e in _plugin.edges()),
+            )
+    return _MACHINE
+
+
+def _from_environment(env: Any) -> dict[str, Any]:
+    """The environment's pipelines in this module's older table shape.
+
+    One PIPELINE row per (edge, kind). The old shape carried a set of kinds
+    per edge because one declaration could name several; pipelines are
+    declared separately now, so the same edge in two pipelines is two rows,
+    and every reader of this table asks `any(...)` over it.
+    """
+    kinds = tuple(env.kinds())
+    stages = tuple(env.stages())
+    dead = tuple(env.terminal_stages())
+    rows = tuple(
+        (t.frm, t.to, t.role, t.kind, frozenset({kind}))
+        for kind in kinds
+        for t in env.transitions(kind)
+    )
+    return {
+        "STAGES": stages,
+        "DEAD_STAGES": dead,
+        "ALL_STAGES": stages + dead,
+        "LEAD_KINDS": kinds,
+        # The first pipeline declared. `web_agency` loads before the
+        # extensions that require it, so records written before kinds existed
+        # still resolve to `prospect`.
+        "PROSPECT": kinds[0] if kinds else "prospect",
+        "BOTH": frozenset(kinds),
+        "PIPELINE": rows,
+    }
+
+
+def __getattr__(name: str) -> Any:
+    """Serve the stage tables lazily. See the note beside `STAGES` above."""
+    if name in ("STAGES", "DEAD_STAGES", "ALL_STAGES", "LEAD_KINDS",
+                "PROSPECT", "BOTH", "PIPELINE"):
+        return _machine()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def reload_machine() -> None:
@@ -1052,35 +1123,31 @@ def reload_machine() -> None:
     same thing: the tests swap plugin sets, and a future hot-install would want
     this too. Nothing in the running server calls it.
     """
-    global STAGES, DEAD_STAGES, ALL_STAGES, LEAD_KINDS, PROSPECT, BOTH, PIPELINE
     _plugin.load(force=True)
-    STAGES = _plugin.stage_ids()
-    DEAD_STAGES = _plugin.terminal_ids()
-    ALL_STAGES = STAGES + DEAD_STAGES
-    LEAD_KINDS = tuple(_plugin.lead_kinds())
-    PROSPECT = LEAD_KINDS[0] if LEAD_KINDS else "prospect"
-    BOTH = frozenset(LEAD_KINDS)
-    PIPELINE = tuple(
-        (e.frm, e.to, e.role, e.kind, e.kinds) for e in _plugin.edges())
+    _MACHINE.clear()
+    _machine()
 
 
 def lead_kind(lead: dict[str, Any] | None) -> str:
     """Which pipeline a lead runs on. Absent means the original one."""
-    kind = (lead or {}).get("kind") or PROSPECT
-    return kind if kind in LEAD_KINDS else PROSPECT
+    m = _machine()
+    kind = (lead or {}).get("kind") or m["PROSPECT"]
+    return kind if kind in m["LEAD_KINDS"] else m["PROSPECT"]
 
 
-def allowed_targets(from_stage: str, kind: str = PROSPECT) -> set[str]:
+def allowed_targets(from_stage: str, kind: str = "") -> set[str]:
     """Every stage this one may legally move to, for this kind of lead."""
-    return {to for f, to, _r, _k, kinds in PIPELINE
+    kind = kind or _machine()["PROSPECT"]
+    return {to for f, to, _r, _k, kinds in _machine()["PIPELINE"]
             if f == from_stage and kind in kinds}
 
 
-def edge_allowed(from_stage: str, to_stage: str, kind: str = PROSPECT) -> bool:
-    if from_stage == to_stage and from_stage in DEAD_STAGES:
+def edge_allowed(from_stage: str, to_stage: str, kind: str = "") -> bool:
+    kind = kind or _machine()["PROSPECT"]
+    if from_stage == to_stage and from_stage in _machine()["DEAD_STAGES"]:
         return True
     return any(f == from_stage and t == to_stage and kind in kinds
-               for f, t, _r, _k, kinds in PIPELINE)
+               for f, t, _r, _k, kinds in _machine()["PIPELINE"])
 
 
 #: Terminal states are reachable from anywhere by an agent that has genuinely
@@ -1090,7 +1157,7 @@ def edge_allowed(from_stage: str, to_stage: str, kind: str = PROSPECT) -> bool:
 ALWAYS_REACHABLE = frozenset({"disqualified", "lost"})
 
 
-def roles_for(stage: str, kind: str = PROSPECT) -> set[str]:
+def roles_for(stage: str, kind: str = "") -> set[str]:
     """Who has an outgoing edge from this stage, for this kind of lead.
 
     `rooms.role_for_stage` stays the router for anything a ROOM works — the
@@ -1100,7 +1167,8 @@ def roles_for(stage: str, kind: str = PROSPECT) -> set[str]:
     lead at `published` is waiting for the operator to say the client approved
     it; a `prospect` at the same stage is waiting for Scribe to write a pitch.
     """
-    return {r for f, _t, r, _k, kinds in PIPELINE
+    kind = kind or _machine()["PROSPECT"]
+    return {r for f, _t, r, _k, kinds in _machine()["PIPELINE"]
             if f == stage and kind in kinds}
 
 
@@ -1112,9 +1180,9 @@ def pipeline_steps(only_kind: str | None = None) -> list[dict[str, Any]]:
     to the step and not to one edge: the operator is asked BEFORE the run, when
     which edge it will take is not yet known.
     """
-    order = {s: i for i, s in enumerate(STAGES)}
+    order = {s: i for i, s in enumerate(_machine()["STAGES"])}
     steps: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for frm, to, role, edge, kinds in PIPELINE:
+    for frm, to, role, edge, kinds in _machine()["PIPELINE"]:
         for lk in sorted(kinds):
             if only_kind and lk != only_kind:
                 continue
@@ -1154,7 +1222,7 @@ def stage_gates() -> dict[str, bool]:
 
 def set_stage_gate(stage: str, on: bool) -> dict[str, bool]:
     """Tick or untick one step. Permanent gates cannot be turned off."""
-    if stage not in STAGES:
+    if stage not in _machine()["STAGES"]:
         raise ValueError(f"unknown stage: {stage}")
     gates = dict(get_meta("stage_gates", {}) or {})
     if on:

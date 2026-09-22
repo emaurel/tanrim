@@ -40,6 +40,8 @@ def tool_dirs() -> list[Path]:
 
 
 def reload() -> None:
+    global _loaded
+    _loaded = True
     SERVERS.clear()
     LOAD_ERRORS.clear()
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
@@ -73,16 +75,35 @@ def reload() -> None:
             log.exception("failed to load tool %s", name)
 
 
+#: Whether `reload()` has run. Not `bool(SERVERS)`: an install with no tools
+#: at all is a legitimate state and would otherwise re-scan on every lookup.
+_loaded = False
+
+
+def _ensure() -> None:
+    """Load on first use.
+
+    `reload()` ran at import, which made importing this module discover and
+    import every installed plugin — and a plugin that imports the core closes
+    a cycle through `agent_helpers`, which is what imports this. Deferring to
+    first use costs nothing: nothing asks for a tool during boot.
+    """
+    global _loaded
+    if not _loaded:
+        _loaded = True
+        reload()
+
+
 def get(name: str) -> Any | None:
+    _ensure()
     return SERVERS.get(name)
 
 
 def list_tools() -> list[str]:
+    _ensure()
     return sorted(SERVERS)
 
 
 def list_errors() -> dict[str, str]:
+    _ensure()
     return dict(LOAD_ERRORS)
-
-
-reload()

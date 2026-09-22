@@ -77,6 +77,20 @@ def load(module: str, name: str, kind: str | None = None) -> str:
     if key in _cache:
         return _cache[key]
 
+    # Ask the installed plugins first. A plugin OWNS its prompts and answers
+    # for them however it likes — from files, generated, from a database — and
+    # the environment asks the plugins that own this kind of work before the
+    # ones that do not, which is how an extension overrides one prompt without
+    # shipping the rest. The directory search below remains for the
+    # pre-contract path and for anything not supplied by a plugin.
+    from . import environment
+
+    if environment.booted():
+        text = environment.current().prompt(module, name, kind)
+        if text:
+            _cache[key] = text
+            return text
+
     path = path_for(module, name, kind)
     if not path.is_file():
         from . import plugin

@@ -18,47 +18,11 @@ from . import secrets as secrets_store
 from . import config
 from . import invoices, state, usage
 from .agent_helpers import AgentBusy, every_in_flight, in_flight_for_role
-from .runners import AGENT_RUNNERS
 from .workers import RoomAtCapacity, crew_status, max_workers
 from .tools import registry as tool_registry
 
 if TYPE_CHECKING:
     from .world import World
-
-
-def _attr(role: str, name: str, default=None):
-    """A constant off a role's module — its MODEL, say.
-
-    Separate from `_role` because these are read in CLASS BODIES, which run at
-    import time when no plugin may be loaded yet. A missing role gives the
-    default rather than raising: a room whose plugin is not installed should
-    show as unstaffed, not stop the server booting.
-    """
-    from . import plugin
-
-    try:
-        runner = plugin.runner_for(role)
-        if runner is None:
-            return default
-        return getattr(__import__(runner.__module__, fromlist=[name]), name, default)
-    except Exception:  # noqa: BLE001
-        return default
-
-
-def _role(role: str, fn_name: str):
-    """One of a role's entry points, resolved from the plugin that supplies it.
-
-    `handlers.py` keeps the BASE classes — the queue, the one-run-at-a-time
-    guard, the error surface — which are machinery. Which room gets which
-    handler, and what its agent is called, is domain.
-    """
-    from . import plugin
-
-    runner = plugin.runner_for(role)
-    if runner is None:
-        raise RuntimeError(f"no plugin supplies role {role!r}")
-    module = __import__(runner.__module__, fromlist=[fn_name])
-    return getattr(module, fn_name)
 
 
 class RoomHandler:
@@ -175,7 +139,7 @@ def build_handlers(world: "World") -> dict[str, RoomHandler]:
     A room with no declared handler is not an error: it falls back to the
     generic info panel, which is what an unstaffed room should look like.
     """
-    from . import plugin
+    from . import environment
 
     return {room_id: cls(world)
-            for room_id, cls in plugin.all_room_handlers().items()}
+            for room_id, cls in environment.current().room_handlers().items()}

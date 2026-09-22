@@ -11,25 +11,12 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-from . import plugin
 from .agent_helpers import AgentBusy
 from .rooms import stages_for_role
 from .workers import RoomAtCapacity
 from .world import World
 
 Runner = Callable[[World, dict[str, Any]], Awaitable[Any]]
-
-
-def _role(role: str, fn_name: str):
-    """One of a role's entry points, from whichever plugin supplies the role.
-
-    The runners used to import every agent module. That is the core importing
-    the domain, and it is the last of it: a role is now a dotted path a plugin
-    declares, resolved when it is actually called.
-    """
-    runner = plugin.runner_for(role)
-    module = __import__(runner.__module__, fromlist=[fn_name])
-    return getattr(module, fn_name)
 
 
 def _needs_lead(name: str) -> dict[str, Any]:
@@ -57,152 +44,55 @@ def _wrong_stage(role: str, lead: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-async def _by_stage(role: str, world: World, lead: dict[str, Any],
-                    task: dict[str, Any]) -> Any:
-    """Run whichever job this role does at the lead's current stage.
+async def _dispatch(role: str, world: World, task: dict[str, Any]) -> Any:
+    """Run whichever job this role does at this record's stage.
 
-    This used to be an if/elif per role, which meant a plugin adding a stage
-    had to edit a file it does not own — `intake` went into Probe's chain and
-    `surveyed` into Lens's, and the next plugin would have done the same again.
-    The pairing now lives in the plugin that declares the stage, and later
-    plugins override earlier ones for the same (role, stage).
+    One dispatcher for every role. There used to be one function per role,
+    each repeating the same four steps and differing only in ways the
+    environment can now express: which stages a role works (its `jobs` keys),
+    whether it needs a record at all (Nova does not), and what varies within a
+    stage (Scribe's two benches, which now travels in the task and is read by
+    the plugin). A core that names `probe`, `lens`, `scribe`, `courier`,
+    `echo`, `forge`, `nova` and `porter` is a core that knows the domain.
     """
-    stage = lead.get("stage") or ""
-    fn = plugin.handler_for(role, stage)
-    if fn is None:
-        return {"ok": False,
-                "error": f"no plugin declares what {role} does at '{stage}'. "
-                         f"Installed: {[p.id for p in plugin.load()]}"}
-    return await fn(world, lead["id"], task.get("prompt", ""))
+    from . import environment, state
 
+    env = environment.current()
+    agent = env.agent(role)
+    if agent is None:
+        return {"ok": False, "error": f"no plugin supplies role {role!r}"}
 
-async def _run_probe(world: World, task: dict[str, Any]) -> Any:
-    """Probe has three jobs, and the lead's stage decides which — never the
-    dispatcher. `sourced` = qualify, `qualified` = research the dossier,
-    `enriched` = appraise it at the Ledger and set the price."""
-    lead_id = task.get("lead_id")
-    if not lead_id:
-        return _needs_lead("probe")
-    from . import state
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        return {"ok": False, "error": f"no such lead: {lead_id}"}
-    wrong = _wrong_stage("probe", lead)
+    # A role with no stage jobs is dispatched with whatever it was given —
+    # Nova takes a place to search and creates records rather than moving one.
+    if not agent.jobs and agent.default_job is not None:
+        return await agent.default_job(world, task)
+
+    record_id = task.get("record_id") or task.get("lead_id")
+    if not record_id:
+        return _needs_lead(role)
+    record = state.get_lead(record_id)
+    if record is None:
+        return {"ok": False, "error": f"no such lead: {record_id}"}
+
+    wrong = _wrong_stage(role, record)
     if wrong:
         return wrong
-    return await _by_stage("probe", world, lead, task)
 
+    stage = record.get("stage") or ""
+    job = env.job_for(role, stage)
+    if job is None:
+        # Not an error. A room whose benches cover a stage it has no job at is
+        # ordinary: the Inbox works `contacted` and `replied`, where there is
+        # nothing to dispatch because replies arrive on the mailbox poll.
+        # Calling the send path for all three asked every contacted lead to be
+        # sent again, was refused, and logged a failure on every restart.
+        return {"ok": True,
+                "skipped": f"{role} has no job at '{stage}'"}
 
-async def _run_forge(world: World, task: dict[str, Any]) -> Any:
-    lead_id = task.get("lead_id")
-    if not lead_id:
-        return _needs_lead("forge")
-    from . import state
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        return {"ok": False, "error": f"no such lead: {lead_id}"}
-    wrong = _wrong_stage("forge", lead)
-    if wrong:
-        return wrong
-    return await _role("forge", "run_build")(world, lead_id, task.get("prompt", ""))
-
-
-async def _run_lens(world: World, task: dict[str, Any]) -> Any:
-    """Lens has three jobs, all of them looking at pictures; which one runs is
-    decided by the lead's stage, never by the dispatcher. `needs_review` = judge
-    THEIR site, `enriched` = read their photographs, `built` = judge ours."""
-    lead_id = task.get("lead_id")
-    if not lead_id:
-        return _needs_lead("lens")
-    from . import state
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        return {"ok": False, "error": f"no such lead: {lead_id}"}
-    return await _by_stage("lens", world, lead, task)
-
-
-async def _run_scribe(world: World, task: dict[str, Any]) -> Any:
-    lead_id = task.get("lead_id")
-    if not lead_id:
-        return _needs_lead("scribe")
-    from . import state
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        return {"ok": False, "error": f"no such lead: {lead_id}"}
-    wrong = _wrong_stage("scribe", lead)
-    if wrong:
-        return wrong
-    if task.get("mode") == "copy":
-        return await _role("scribe", "run_copy")(world, lead_id, task.get("prompt", ""))
-    return await _role("scribe", "run_outreach")(world, lead_id, task.get("prompt", ""))
-
-
-async def _run_courier(world: World, task: dict[str, Any]) -> Any:
-    lead_id = task.get("lead_id")
-    if not lead_id:
-        return _needs_lead("courier")
-    from . import state
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        return {"ok": False, "error": f"no such lead: {lead_id}"}
-    wrong = _wrong_stage("courier", lead)
-    if wrong:
-        return wrong
-    # Courier never publishes on an agent's say-so — it raises the gate.
-    return await _role("courier", "request_publish")(world, lead_id)
-
-
-async def _run_echo(world: World, task: dict[str, Any]) -> Any:
-    lead_id = task.get("lead_id")
-    if not lead_id:
-        return _needs_lead("echo")
-    from . import state
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        return {"ok": False, "error": f"no such lead: {lead_id}"}
-    wrong = _wrong_stage("echo", lead)
-    if wrong:
-        return wrong
-    # Communications has two benches and they do different jobs. The Outbox
-    # works `drafted` — raise the send gate for the operator. The Inbox works
-    # `contacted` and `replied`, where there is nothing to dispatch: replies
-    # arrive on the mailbox poll, not on a tick.
-    #
-    # Calling request_send for all three meant every contacted lead was asked
-    # to send again, refused with "this lead has already been contacted", and
-    # logged as a failure — on every stage change and after every restart. The
-    # refusal is right; asking was not.
-    stage = lead.get("stage")
-    if stage != "drafted":
-        return {"ok": True, "skipped": f"nothing to send at '{stage}' — "
-                                       "the Inbox waits on the mailbox poll"}
-    # Echo raises the send gate, the operator passes it.
-    return await _role("echo", "request_send")(world, lead_id)
-
-
-async def _run_porter(world: World, task: dict[str, Any]) -> Any:
-    """The Launch Pad works `won`, and only `won`.
-
-    Porter never creates anything on its own: it raises the gate and the
-    operator's approval is what makes the call. An account is created for a
-    business that has paid, so the stage guard here is the substantive check
-    and not a formality.
-    """
-    lead_id = task.get("lead_id")
-    if not lead_id:
-        return _needs_lead("porter")
-    from . import state
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        return {"ok": False, "error": f"no such lead: {lead_id}"}
-    wrong = _wrong_stage("porter", lead)
-    if wrong:
-        return wrong
-    return await _role("porter", "request_account")(world, lead_id)
-
-
-async def _run_nova(world: World, task: dict[str, Any]) -> Any:
-    return await _role("nova", "run_scout")(world, task["prompt"])
+    return await job(world, {**task,
+                             "record_id": record_id,
+                             "instruction": task.get("instruction",
+                                                     task.get("prompt", ""))})
 
 
 def _skip_if_busy(name: str, runner: Runner) -> Runner:
@@ -287,29 +177,21 @@ def _crashed(name: str, task: dict[str, Any], exc: Exception) -> dict[str, Any]:
 
 def _build() -> dict[str, "Runner"]:
     """Every role any plugin declares, wrapped in the busy/crash guards."""
-    local = {
-        "probe":   _run_probe,
-        "lens":    _run_lens,
-        "scribe":  _run_scribe,
-        "courier": _run_courier,
-        "echo":    _run_echo,
-        "forge":   _run_forge,
-        "nova":    _run_nova,
-        "porter":  _run_porter,
-    }
-    return {
-        role: _skip_if_busy(role, local.get(role, _generic(role)))
-        for role in plugin.all_runners()
-    }
+    from . import environment
+
+    # Only roles that actually have work. Ultron declares no jobs — it is
+    # dispatched by the Throne with a prompt, never with a record — and a
+    # runner that exists only to refuse would turn `AGENT_RUNNERS.get(role)`
+    # from "nobody does that" into a failed run.
+    return {agent.role: _skip_if_busy(agent.role, _runner(agent.role))
+            for agent in environment.current().agents()
+            if agent.jobs or agent.default_job}
 
 
-def _generic(role: str) -> Runner:
-    """A role with no special dispatch: hand it the task and let it run."""
+def _runner(role: str) -> Runner:
     async def wrapped(world: World, task: dict[str, Any]) -> Any:
-        fn = plugin.runner_for(role)
-        if fn is None:
-            return {"ok": False, "error": f"no plugin supplies role {role!r}"}
-        return await fn(world, task)
+        return await _dispatch(role, world, task)
+    wrapped.__name__ = f"run_{role}"
     return wrapped
 
 
