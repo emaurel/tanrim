@@ -1,119 +1,70 @@
 """Prompt loading.
 
-Every agent's role and output schema lives in `prompts/<module>/<NAME>.md`
-rather than inline in Python, so the prompts can be kept out of a public
-repository. `prompts/` is gitignored, so each plugin DECLARES the prompts it
-needs and `check_all` reports at boot which are missing — the declaration is
-what survives a checkout when the text does not.
+Every agent's role and output schema is TEXT a plugin owns, not a constant in
+the core. `load()` asks the installed plugins and takes the first real answer.
 
-Prompts are read once and cached. Edit a file and restart the server to pick it
-up — they are not hot-reloaded, because a prompt changing underneath a run in
-flight is a debugging nightmare.
+The environment never opens a file here. A plugin answers `prompt()` however
+it likes — `plugin_helpers.file_prompts` reads `<plugin>/prompts/<module>/
+<NAME>.md` because that is pleasant to write, but a plugin that generates its
+prompts, or fetches them per tenant, answers the same question and works just
+as well. This module used to glob every plugin's `prompts/` directory itself,
+which made "a directory with this name" part of the contract.
+
+Prompts are read once and cached. Edit a file and restart the server to pick
+it up — they are not hot-reloaded, because a prompt changing underneath a run
+in flight is a debugging nightmare.
 """
 from __future__ import annotations
-
-from pathlib import Path
-
-from .config import ROOT
-
-#: The environment keeps no prompts of its own — every one belongs to a
-#: plugin. These remain as a LAST-RESORT search path so a bare checkout with a
-#: `prompts/` directory still works, and so the error message for a missing
-#: prompt has somewhere to point when no plugin claims it.
-PROMPTS_DIR = ROOT / "prompts"
 
 _cache: dict[tuple[str, str, str | None], str] = {}
 
 
 class MissingPrompt(RuntimeError):
-    """A prompt file the code needs is not on disk."""
-
-
-def _shown(path: Path) -> str:
-    """A path for an error message, whether or not it is inside the repo.
-
-    `relative_to(ROOT)` raises for a plugin installed anywhere else — and a
-    plugin system whose plugins must live inside the application is not much
-    of one. A ValueError raised while building the message for a different
-    error is the worst possible way to find that out.
-    """
-    try:
-        return str(path.relative_to(ROOT))
-    except ValueError:
-        return str(path)
-
-
-def prompt_dirs(kind: str | None = None) -> list[Path]:
-    """Every tree a prompt may live in, most specific first for `kind`.
-
-    The ordering is the plugin registry's — see `plugin.prompt_dirs_for`. The
-    environment's own `prompts/` is always last, so a plugin that ships nothing
-    for a given prompt falls through to it rather than failing.
-    """
-    from . import plugin
-
-    dirs = plugin.prompt_dirs_for(kind)
-    if PROMPTS_DIR.is_dir() and PROMPTS_DIR not in dirs:
-        dirs.append(PROMPTS_DIR)
-    return dirs
-
-
-def path_for(module: str, name: str, kind: str | None = None) -> Path:
-    for base in prompt_dirs(kind):
-        candidate = base / module / f"{name}.md"
-        if candidate.is_file():
-            return candidate
-    return PROMPTS_DIR / module / f"{name}.md"
+    """A prompt the code needs, that no installed plugin can supply."""
 
 
 def load(module: str, name: str, kind: str | None = None) -> str:
-    """Return the prompt text for `<module>/<name>`.
+    """The prompt text for `<module>/<name>`, for this kind of work.
 
-    Raises `MissingPrompt` with a useful message rather than silently running an
-    agent with an empty role — an agent with no instructions does not fail, it
-    improvises, which is far worse.
+    Raises `MissingPrompt` rather than returning an empty string. An agent
+    with no instructions does not fail — it improvises, which is far worse.
     """
     key = (module, name, kind)
     if key in _cache:
         return _cache[key]
 
-    # Ask the installed plugins first. A plugin OWNS its prompts and answers
-    # for them however it likes — from files, generated, from a database — and
-    # the environment asks the plugins that own this kind of work before the
-    # ones that do not, which is how an extension overrides one prompt without
-    # shipping the rest. The directory search below remains for the
-    # pre-contract path and for anything not supplied by a plugin.
     from . import environment
 
-    if environment.booted():
-        text = environment.current().prompt(module, name, kind)
-        if text:
-            _cache[key] = text
-            return text
-
-    path = path_for(module, name, kind)
-    if not path.is_file():
-        from . import plugin
-
-        # Name the plugin that wants it, and where it should go. There is no
-        # stub tree any more: one worked example plugin explains the shape
-        # rather than 88 files repeating it.
-        wanting = [p for p in plugin.load()
-                   if f"{module}/{name}" in p.prompts]
-        hint = ""
-        if wanting:
-            owner = wanting[0]
-            where = owner.dir_for("prompts") or (owner.root or Path(".")) / "prompts"
-            hint = (f"\n\nPlugin '{owner.id}' declares it. Write it at "
-                    f"{_shown(where / module / f'{name}.md')}.")
+    if not environment.booted():
         raise MissingPrompt(
-            f"missing prompt: {_shown(path)}{hint}"
-        )
-    text = path.read_text(encoding="utf-8").strip()
-    if not text:
-        raise MissingPrompt(f"empty prompt: {_shown(path)}")
-    _cache[key] = text
-    return text
+            f"asked for the prompt {module}/{name} before any plugin was "
+            f"installed. Nothing owns it yet.")
+
+    env = environment.current()
+    # The plugins that OWN this kind of work are asked first, and later
+    # plugins before earlier ones, so an extension overrides one prompt
+    # without shipping the rest.
+    text = env.prompt(module, name, kind)
+    if text:
+        _cache[key] = text
+        return text
+
+    raise MissingPrompt(f"missing prompt: {module}/{name}{_hint(env, module, name)}")
+
+
+def _hint(env, module: str, name: str) -> str:
+    """Name the plugin that declared it, if one did.
+
+    Prompt text is usually gitignored — it is the private part of a plugin —
+    so a fresh checkout has the code and none of the words. Saying WHO wants
+    it is most of the answer to "where do I put this".
+    """
+    wanted = f"{module}/{name}"
+    for p in env.plugins:
+        if wanted in tuple(p.declares_prompts()):
+            where = f" (its root is {p.root})" if p.root else ""
+            return f"\n\nPlugin '{p.id}' declares it{where}."
+    return ""
 
 
 def loader(module: str):
@@ -123,11 +74,11 @@ def loader(module: str):
 
 
 def kind_loader(module: str):
-    """Like `loader`, but takes the LEAD and resolves for its kind.
+    """Like `loader`, but takes the RECORD and resolves for its kind.
 
     `_PK("ROLE", lead)` in a `_build_*_prompt` is the whole change an agent
     module needs: it keeps knowing nothing about which plugins exist, and the
-    registry decides whose prompt answers.
+    environment decides whose prompt answers.
     """
     short = module.rsplit(".", 1)[-1]
 
@@ -143,30 +94,14 @@ def kind_loader(module: str):
 
 
 def check_all() -> list[str]:
-    """Every prompt an installed plugin declares but does not have on disk.
+    """Every prompt an installed plugin declares but cannot produce.
 
-    `prompts/` is gitignored — the text is the private part of this project —
-    so a fresh checkout has the code and none of the prompts. Each plugin
-    therefore DECLARES what it needs and this checks the declaration, which is
-    what lets the server say at boot which are missing rather than failing on
-    the first run that reaches one. An agent with no instructions does not
-    fail, it improvises, which is far worse than not starting.
+    The declaration is what survives a checkout when the text does not, and
+    it is what lets the server say at BOOT which prompts are missing rather
+    than failing on the first run that reaches one.
     """
-    from . import plugin
+    from . import environment
 
-    missing: list[str] = []
-    for p in plugin.load():
-        base = p.dir_for("prompts")
-        for entry in p.prompts:
-            module, _, name = entry.partition("/")
-            if not name:
-                missing.append(f"{p.id}: malformed prompt name {entry!r}")
-                continue
-            if base is not None and (base / module / f"{name}.md").is_file():
-                continue
-            # A plugin may legitimately rely on one another plugin ships.
-            try:
-                load(module, name)
-            except MissingPrompt:
-                missing.append(f"{p.id}: {entry}")
-    return missing
+    if not environment.booted():
+        return []
+    return environment.current().check()

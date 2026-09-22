@@ -1,9 +1,14 @@
-"""Rooms merge across plugins, and a plugin can extend one it does not own."""
+"""Rooms merge across plugins, and a plugin can extend one it does not own.
+
+These go through `discovery` + `environment.boot` + `rooms.load_rooms`, which
+is the path the server takes. The earlier version tested a YAML loader that
+production no longer calls.
+"""
 from __future__ import annotations
 
 import pytest
 
-from tanrim import rooms
+from tanrim import environment, rooms
 
 BASE_ROOM = """
 id: workshop
@@ -14,10 +19,6 @@ size: { w: 12, h: 8 }
 color: "#111111"
 max_workers: 3
 tools: ["hammer"]
-agents:
-  - id: maker
-    name: Maker
-    role: makes things
 workbenches:
   - id: main
     name: Main Bench
@@ -25,26 +26,57 @@ workbenches:
     stages: [todo]
 """
 
+BASE = """
+    class Base(Plugin):
+        id, name = "base", "Base"
+        def pipelines(self):
+            return [Pipeline("normal", stages=(Stage("todo"), Stage("extra")),
+                             transitions=(Transition("todo", "extra", "maker"),))]
+        def rooms(self):
+            return yaml_rooms(HERE / "rooms")
+        def agents(self):
+            # The roster lives on the AgentSpec, not in the manifest: who
+            # staffs a room is DERIVED, so a room and its crew cannot disagree.
+            return [AgentSpec(role="maker", name="Maker", room="workshop",
+                              description="makes things", color="#abcdef",
+                              # Only `todo`: the `extra` bench arrives with
+                              # the extension, and boot refuses a job at a
+                              # stage no bench in the room declares.
+                              jobs={"todo": _job})]
+
+    async def _job(world, task):
+        return {"ok": True}
+
+    PLUGIN = Base()
+"""
+
+EXTENSION = """
+    class Ext(Plugin):
+        id, name, requires = "extension", "Ext", ("base",)
+        def pipelines(self):
+            return [Pipeline("special", stages=(Stage("extra"),))]
+        def rooms(self):
+            return yaml_rooms(HERE / "rooms")
+
+    PLUGIN = Ext()
+"""
+
 
 @pytest.fixture
-def workshop(plugin_env):
-    plugin_env.install({
-        "base": """
-            PLUGIN = Plugin(id="base", name="Base", lead_kinds=("normal",),
-                            stages=(Stage("todo"),), rooms_dir="rooms")
-        """,
-        "extension": """
-            PLUGIN = Plugin(id="extension", name="Ext", requires=("base",),
-                            lead_kinds=("special",),
-                            stages=(Stage("extra"),), rooms_dir="rooms")
-        """,
-    })
-    plugin_env.write("base/rooms/workshop.yaml", BASE_ROOM)
-    return plugin_env
+def workshop(plugins):
+    plugins.install({"base": BASE, "extension": EXTENSION}, boot=False)
+    plugins.write("base/rooms/workshop.yaml", BASE_ROOM)
+    plugins.boot()
+    return plugins
 
 
 def _room(room_id: str):
     return next(r for r in rooms.load_rooms() if r.id == room_id)
+
+
+def _patch(workshop, body: str):
+    workshop.write("extension/rooms/patch.yaml", body)
+    workshop.boot()
 
 
 def test_a_plugin_contributes_its_rooms(workshop):
@@ -52,8 +84,15 @@ def test_a_plugin_contributes_its_rooms(workshop):
     assert _room("workshop").name == "The Workshop"
 
 
+def test_a_room_is_staffed_from_the_agent_declarations(workshop):
+    room = _room("workshop")
+    assert [(a.id, a.name, a.color) for a in room.agents] == \
+        [("maker", "Maker", "#abcdef")]
+    assert room.agents[0].role == "makes things"
+
+
 def test_an_extension_adds_a_bench_without_restating_the_room(workshop):
-    workshop.write("extension/rooms/patch.yaml", """
+    _patch(workshop, """
         id: workshop_extra_bench
         extends: workshop
         workbenches:
@@ -69,7 +108,7 @@ def test_an_extension_adds_a_bench_without_restating_the_room(workshop):
 
 
 def test_a_patch_does_not_become_a_room_of_its_own(workshop):
-    workshop.write("extension/rooms/patch.yaml", """
+    _patch(workshop, """
         id: workshop_extra_bench
         extends: workshop
         workbenches:
@@ -82,7 +121,7 @@ def test_a_patch_does_not_become_a_room_of_its_own(workshop):
 
 def test_stages_on_an_existing_bench_are_unioned_not_replaced(workshop):
     """'This bench also works my stage' is why an extension touches one."""
-    workshop.write("extension/rooms/patch.yaml", """
+    _patch(workshop, """
         id: workshop_more_stages
         extends: workshop
         workbenches:
@@ -96,7 +135,7 @@ def test_stages_on_an_existing_bench_are_unioned_not_replaced(workshop):
 
 
 def test_tools_and_skills_are_unioned(workshop):
-    workshop.write("extension/rooms/patch.yaml", """
+    _patch(workshop, """
         id: workshop_tools
         extends: workshop
         tools: ["chisel", "hammer"]
@@ -109,12 +148,15 @@ def test_tools_and_skills_are_unioned(workshop):
 
 def test_a_patch_may_override_a_scalar(workshop):
     """Two plugins disagreeing about where a room sits must give one answer."""
-    workshop.write("extension/rooms/patch.yaml", """
+    _patch(workshop, """
         id: workshop_moved
         extends: workshop
         purpose: a different description
+        max_workers: 7
     """)
-    assert _room("workshop").purpose == "a different description"
+    room = _room("workshop")
+    assert room.purpose == "a different description"
+    assert room.max_workers == 7
 
 
 def test_extending_a_room_nobody_declares_is_an_error(workshop):
@@ -126,12 +168,12 @@ def test_extending_a_room_nobody_declares_is_an_error(workshop):
           - id: x
             name: X
     """)
-    with pytest.raises(ValueError, match="no_such_room"):
-        rooms.load_rooms()
+    with pytest.raises(environment.EnvironmentError, match="no_such_room"):
+        workshop.boot()
 
 
 def test_stage_routing_follows_the_merged_benches(workshop):
-    workshop.write("extension/rooms/patch.yaml", """
+    _patch(workshop, """
         id: workshop_extra_bench
         extends: workshop
         workbenches:
@@ -145,8 +187,13 @@ def test_stage_routing_follows_the_merged_benches(workshop):
 
 
 def test_uninstalling_the_extension_leaves_the_base_room_untouched(workshop):
-    """The isolation that makes plugins worth having."""
-    workshop.write("extension/rooms/patch.yaml", """
+    """The isolation that makes plugins worth having.
+
+    And the bug this caught for real: `_apply` assigned to the bench it found,
+    which edited the BASE plugin's own object — so the base room still carried
+    the extension's stages after it was removed.
+    """
+    _patch(workshop, """
         id: workshop_extra_bench
         extends: workshop
         workbenches:
@@ -156,9 +203,8 @@ def test_uninstalling_the_extension_leaves_the_base_room_untouched(workshop):
     """)
     assert len(_room("workshop").workbenches) == 2
 
-    import shutil
-    shutil.rmtree(workshop.dir / "extension")
-    workshop.reload()
+    workshop.remove("extension")
+    workshop.boot()
 
     room = _room("workshop")
     assert [b.id for b in room.workbenches] == ["main"]

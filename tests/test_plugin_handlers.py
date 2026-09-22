@@ -1,93 +1,180 @@
-"""(role, stage) -> handler: lazy resolution and override."""
+"""(role, stage) -> job: declaration, override, and laziness.
+
+Under the contract a job is a real callable on an `AgentSpec`, not a dotted
+string the core resolves. That removes two whole failure classes — a path that
+does not import, and a path that is malformed — and replaces them with one
+property worth testing instead: declaring a job must not IMPORT anything.
+"""
 from __future__ import annotations
 
 import pytest
 
-from tanrim import plugin
+from tanrim import environment
 
-HANDLER_MODULE = """
-def base_job(world, lead_id, instruction=""):
+#: A module a plugin's job can reach, written to disk so importing it is a
+#: real, observable event.
+JOB_MODULE = """
+IMPORTED = True
+
+async def base_job(world, task):
     return {"who": "base"}
 
-def override_job(world, lead_id, instruction=""):
+async def override_job(world, task):
     return {"who": "override"}
+"""
 
-def boom(world, lead_id, instruction=""):
-    raise AssertionError("must not be imported unless actually used")
+ROOM_AND_AGENT = """
+        def rooms(self):
+            return [Room(id="shop", name="Shop",
+                         workbenches=(Workbench(id="b", stages=("s",)),))]
 """
 
 
 @pytest.fixture
-def handlers(plugin_env, monkeypatch, tmp_path):
-    """A real importable module for handlers to point at."""
-    mod = tmp_path / "handler_mod.py"
-    mod.write_text(HANDLER_MODULE)
+def jobs_module(tmp_path, monkeypatch):
+    mod = tmp_path / "job_mod.py"
+    mod.write_text(JOB_MODULE)
     monkeypatch.syspath_prepend(str(tmp_path))
-    return plugin_env
+    return mod
 
 
-def test_a_handler_is_looked_up_by_role_and_stage(handlers):
-    handlers.install({"alpha": """
-        PLUGIN = Plugin(id="alpha", name="A", stages=(Stage("s"),),
-                        handlers={("worker", "s"): "handler_mod:base_job"})
+def test_a_job_is_looked_up_by_role_and_stage(plugins, jobs_module):
+    env = plugins.install({"alpha": """
+        import job_mod
+
+        class A(Plugin):
+            id, name = "alpha", "A"
+            def pipelines(self):
+                return [Pipeline("k", stages=(Stage("s"),))]
+            def rooms(self):
+                return [Room(id="shop", name="Shop",
+                             workbenches=(Workbench(id="b", stages=("s",)),))]
+            def agents(self):
+                return [AgentSpec(role="worker", name="W", room="shop",
+                                  jobs={"s": job_mod.base_job})]
+
+        PLUGIN = A()
     """})
-    fn = plugin.handler_for("worker", "s")
-    assert fn is not None and fn(None, "x") == {"who": "base"}
+    assert env.job_for("worker", "s") is not None
+    assert env.job_for("worker", "nowhere") is None
+    assert env.job_for("nobody", "s") is None
 
 
-def test_an_unclaimed_stage_has_no_handler(handlers):
-    handlers.install({"alpha": 'PLUGIN = Plugin(id="alpha", name="A", stages=(Stage("s"),))'})
-    assert plugin.handler_for("worker", "s") is None
-    assert plugin.handler_for("nobody", "nowhere") is None
+def test_an_extension_overrides_a_job_without_replacing_the_role(plugins,
+                                                                jobs_module):
+    """`AgentPatch`, and the trap it exists for.
 
+    Returning a whole `AgentSpec(role="worker", ...)` would boot just as
+    cleanly and silently drop every job the role already had.
+    """
+    import asyncio
 
-def test_a_later_plugin_overrides_an_earlier_one(handlers):
-    """How an extension takes over a stage without editing the base plugin."""
-    handlers.install({
-        "alpha": """
-            PLUGIN = Plugin(id="alpha", name="A", stages=(Stage("s"),),
-                            handlers={("worker", "s"): "handler_mod:base_job"})
+    env = plugins.install({
+        "base": """
+            import job_mod
+
+            class B(Plugin):
+                id, name = "base", "B"
+                def pipelines(self):
+                    return [Pipeline("k", stages=(Stage("s"), Stage("t")))]
+                def rooms(self):
+                    return [Room(id="shop", name="Shop",
+                                 workbenches=(Workbench(id="b",
+                                                        stages=("s", "t")),))]
+                def agents(self):
+                    return [AgentSpec(role="worker", name="W", room="shop",
+                                      jobs={"s": job_mod.base_job,
+                                            "t": job_mod.base_job})]
+
+            PLUGIN = B()
         """,
-        "beta": """
-            PLUGIN = Plugin(id="beta", name="B", requires=("alpha",),
-                            handlers={("worker", "s"): "handler_mod:override_job"})
+        "ext": """
+            import job_mod
+
+            class E(Plugin):
+                id, name, requires = "ext", "E", ("base",)
+                def agents(self):
+                    return [AgentPatch(extends="worker",
+                                       jobs={"s": job_mod.override_job})]
+
+            PLUGIN = E()
         """,
     })
-    assert plugin.handler_for("worker", "s")(None, "x") == {"who": "override"}
+    assert asyncio.run(env.job_for("worker", "s")(None, {})) == {"who": "override"}
+    # the job it did NOT mention is still there
+    assert asyncio.run(env.job_for("worker", "t")(None, {})) == {"who": "base"}
 
 
-def test_handlers_are_not_imported_until_used(handlers):
-    """The reason handlers are strings: importing at load time is a cycle.
+def test_a_job_at_a_stage_with_no_bench_is_refused_at_boot(plugins, jobs_module):
+    """Two independent truths, reconciled.
 
-    A plugin declaring a handler must not drag its module in merely by being
-    installed — `plugin.describe()` and stage routing have to work before any
-    agent module is importable.
+    `runners._wrong_stage` reads BENCHES; dispatch reads JOBS. A job at a
+    stage no bench in that room declares boots clean and is then refused on
+    every single dispatch — which is exactly the trap `AgentPatch` closes one
+    level up.
     """
-    handlers.install({"alpha": """
-        PLUGIN = Plugin(id="alpha", name="A", stages=(Stage("s"),),
-                        handlers={("worker", "s"): "handler_mod:boom"})
+    with pytest.raises(environment.EnvironmentError, match="no workbench"):
+        plugins.install({"alpha": """
+            import job_mod
+
+            class A(Plugin):
+                id, name = "alpha", "A"
+                def pipelines(self):
+                    return [Pipeline("k", stages=(Stage("s"), Stage("t")))]
+                def rooms(self):
+                    return [Room(id="shop", name="Shop",
+                                 workbenches=(Workbench(id="b", stages=("s",)),))]
+                def agents(self):
+                    return [AgentSpec(role="worker", name="W", room="shop",
+                                      jobs={"t": job_mod.base_job})]
+
+            PLUGIN = A()
+        """})
+
+
+def test_declaring_a_job_does_not_import_the_module_that_runs_it(plugins):
+    """The reason every real plugin resolves its agents lazily.
+
+    An agent module reads its prompts as it imports, from the environment
+    that is still being built — so merely ASKING a plugin what its jobs are
+    must not drag the application in. This caught a real one: reading `MODEL`
+    off an agent module in a handler class body imported all ten of them at
+    boot, and every room panel silently said "(unknown)".
+    """
+    import sys
+
+    plugins.install({"alpha": """
+        import importlib
+
+        def _lazy():
+            cache = []
+            def resolve():
+                if not cache:
+                    cache.append(importlib.import_module("late_mod").job)
+                return cache[0]
+            return resolve
+
+        _job = _lazy()
+
+        async def run(world, task):
+            return await _job()(world, task)
+
+        class A(Plugin):
+            id, name = "alpha", "A"
+            def pipelines(self):
+                return [Pipeline("k", stages=(Stage("s"),))]
+            def rooms(self):
+                return [Room(id="shop", name="Shop",
+                             workbenches=(Workbench(id="b", stages=("s",)),))]
+            def agents(self):
+                return [AgentSpec(role="worker", name="W", room="shop",
+                                  jobs={"s": run})]
+
+        PLUGIN = A()
     """})
-    # Describing and routing touch the declaration, never the module.
-    assert plugin.describe()[0]["id"] == "alpha"
-    assert plugin.stage_ids() == ["s"]
-    # Only resolving it raises, which proves nothing imported it earlier.
-    with pytest.raises(AssertionError, match="must not be imported"):
-        plugin.handler_for("worker", "s")(None, "x")
-
-
-def test_a_handler_pointing_nowhere_says_so(handlers):
-    handlers.install({"alpha": """
-        PLUGIN = Plugin(id="alpha", name="A", stages=(Stage("s"),),
-                        handlers={("worker", "s"): "handler_mod:does_not_exist"})
-    """})
-    with pytest.raises(plugin.PluginError, match="no attribute"):
-        plugin.handler_for("worker", "s")
-
-
-def test_a_malformed_handler_path_says_so(handlers):
-    handlers.install({"alpha": """
-        PLUGIN = Plugin(id="alpha", name="A", stages=(Stage("s"),),
-                        handlers={("worker", "s"): "no_colon_here"})
-    """})
-    with pytest.raises(plugin.PluginError, match="module:function"):
-        plugin.handler_for("worker", "s")
+    # Booting, describing and routing all touch the declaration, never the
+    # module the job will reach.
+    assert "late_mod" not in sys.modules
+    assert environment.current().describe()[0]["id"] == "alpha"
+    assert environment.current().job_for("worker", "s") is not None
+    assert "late_mod" not in sys.modules

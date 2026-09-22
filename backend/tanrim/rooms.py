@@ -4,7 +4,6 @@ import math
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import BaseModel, Field
 
 from .config import ROOMS_DIR
@@ -200,87 +199,30 @@ def _layout_workbenches(room: RoomSpec) -> None:
 # Cached on the manifests' own mtimes, so editing a YAML still takes effect on
 # the next call and the "adding a room is a YAML change" contract holds —
 # including while the server is running.
-_ROOMS_CACHE: dict[str, tuple[tuple[tuple[str, int, int], ...], list[RoomSpec]]] = {}
-
-
-def _manifest_stamp(directory: Path) -> tuple[tuple[str, int, int], ...]:
-    """Name, mtime and size of every manifest — cheap, and catches edits."""
-    out = []
-    for path in sorted(directory.glob("*.yaml")):
-        try:
-            st = path.stat()
-        except OSError:
-            continue
-        out.append((path.name, st.st_mtime_ns, st.st_size))
-    return tuple(out)
-
-
-def room_dirs(directory: Path | None = None) -> list[Path]:
-    """Every directory a manifest may come from, in plugin order.
-
-    An explicit `directory` wins outright — that is the test hook. Otherwise
-    the environment has no rooms of its own and takes them from the installed
-    plugins, so an empty install shows an empty map.
-    """
-    if directory is not None:
-        return [directory]
-    from . import plugin
-
-    dirs = plugin.dirs("rooms")
-    return dirs or ([ROOMS_DIR] if ROOMS_DIR.is_dir() else [])
+#: Cleared by `environment.boot`, which is the only moment the answer can
+#: change. Keyed so it stays a plain dict rather than a module global that
+#: something might rebind.
+_ROOMS_CACHE: dict[str, list[RoomSpec]] = {}
 
 
 def load_rooms(directory: Path | None = None) -> list[RoomSpec]:
-    """Every room, patched and laid out.
+    """Every room, patched and laid out, from the installed plugins.
 
-    Served from the booted environment when there is one: the plugins have
-    already been asked for their rooms and their patches already merged, so
-    re-reading the directories here would be a second, disagreeing answer to
-    a question the environment has settled. The directory scan below remains
-    for the pre-contract path and for a caller that names a directory.
+    A translation of what the environment already merged, not a second reader
+    of anyone's files. This used to glob `<plugin>/rooms/*.yaml` itself, which
+    made "a directory with this name" part of the contract — a plugin
+    generating its rooms, or holding them in a database, had nowhere to put
+    them. `plugin_helpers.yaml_rooms` is now a convenience a PLUGIN calls.
     """
     from . import environment
 
-    if directory is None and environment.booted():
-        return _from_environment(environment.current())
-
-    dirs = room_dirs(directory)
-    key = "|".join(str(d) for d in dirs)
-    stamp = tuple(x for d in dirs for x in _manifest_stamp(d))
-    hit = _ROOMS_CACHE.get(key)
-    if hit is not None and hit[0] == stamp:
-        return hit[1]
-    rooms: list[RoomSpec] = []
-    patches: list[RoomSpec] = []
-    seen: set[str] = set()
-    for path in sorted((q for d in dirs for q in d.glob("*.yaml")),
-                       key=lambda q: q.name):
-        data: dict[str, Any] = yaml.safe_load(path.read_text())
-        room = RoomSpec.model_validate(data)
-        # A later plugin may replace an earlier one's room by using its id;
-        # two plugins shipping the same room by accident is a collision worth
-        # noticing, so the last one loaded wins and nothing is silently merged.
-        if room.extends:
-            patches.append(room)
-            continue
-        if room.id in seen:
-            rooms = [r for r in rooms if r.id != room.id]
-        seen.add(room.id)
-        rooms.append(room)
-
-    for patch in patches:
-        target = next((r for r in rooms if r.id == patch.extends), None)
-        if target is None:
-            # A patch with nothing to patch is a configuration error worth
-            # seeing: the plugin that owns the room is probably not installed.
-            raise ValueError(
-                f"a plugin extends room {patch.extends!r}, which no installed "
-                f"plugin declares. Rooms available: {sorted(r.id for r in rooms)}")
-        _apply_patch(target, patch)
-
-    for room in rooms:
-        _layout_workbenches(room)
-    _ROOMS_CACHE[key] = (stamp, rooms)
+    if not environment.booted():
+        return []
+    key = "env"
+    rooms = _ROOMS_CACHE.get(key)
+    if rooms is None:
+        rooms = _from_environment(environment.current())
+        _ROOMS_CACHE[key] = rooms
     return rooms
 
 

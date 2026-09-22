@@ -113,8 +113,10 @@ class Pipeline:
     """
 
     kind: str
-    stages: tuple[Stage, ...]
-    transitions: tuple[Transition, ...]
+    stages: tuple[Stage, ...] = ()
+    #: Empty is legitimate: a single-stage pipeline, or one whose moves an
+    #: extension supplies.
+    transitions: tuple[Transition, ...] = ()
     #: Where a newly created record starts.
     entry: str = ""
     #: Shown wherever the operator picks a pipeline.

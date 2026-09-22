@@ -13,7 +13,6 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from . import plugin as _plugin
 from .config import ROOT
 
 STATE_DIR = ROOT / "state"
@@ -499,7 +498,7 @@ def update_escalation(esc_id: str, **fields: Any) -> dict[str, Any] | None:
 # The stages are no longer written here. Each plugin declares the states its
 # own pipeline has, and the environment is the union of them — so an empty
 # install has no stages at all, and `plugins/web_agency` is what puts the
-# original thirteen back. See `tanrim/plugin.py`.
+# original sixteen back. See `tanrim/contract.py`.
 #
 # Computed ONCE, on first use, and cached — not at import.
 #
@@ -1020,23 +1019,12 @@ def _machine() -> dict[str, Any]:
         if environment.booted():
             _MACHINE.update(_from_environment(environment.current()))
         else:
-            # Tuples on both paths. The fallback returned lists, so
-            # `state.STAGES` changed type depending on whether an environment
-            # was booted, and a test asserting `== [...]` passed only because
-            # it happened to take the fallback.
-            stages = tuple(_plugin.stage_ids())
-            dead = tuple(_plugin.terminal_ids())
-            kinds = tuple(_plugin.lead_kinds())
-            _MACHINE.update(
-                STAGES=stages,
-                DEAD_STAGES=dead,
-                ALL_STAGES=stages + dead,
-                LEAD_KINDS=kinds,
-                PROSPECT=kinds[0] if kinds else "prospect",
-                BOTH=frozenset(kinds),
-                PIPELINE=tuple((e.frm, e.to, e.role, e.kind, e.kinds)
-                               for e in _plugin.edges()),
-            )
+            # No plugins, no machine. Not an error: an environment with
+            # nothing installed genuinely has no stages, and saying so
+            # honestly is better than inventing a default nobody declared.
+            _MACHINE.update(STAGES=(), DEAD_STAGES=(), ALL_STAGES=(),
+                            LEAD_KINDS=(), PROSPECT="", BOTH=frozenset(),
+                            PIPELINE=())
     return _MACHINE
 
 
@@ -1079,15 +1067,13 @@ def __getattr__(name: str) -> Any:
 
 
 def reload_machine() -> None:
-    """Rebuild the stage list and transition table from the plugin registry.
+    """Rebuild the stage tables from the installed plugins.
 
-    These are module constants because a stage list changing underneath a run
-    in flight is a debugging nightmare, and installing a plugin is a restart
-    either way. But "frozen at import" and "impossible to rebuild" are not the
-    same thing: the tests swap plugin sets, and a future hot-install would want
-    this too. Nothing in the running server calls it.
+    These are cached for the life of the process because a stage list changing
+    underneath a run in flight is a debugging nightmare, and installing a
+    plugin is a restart either way. `environment.boot` calls this; nothing in
+    the running server does.
     """
-    _plugin.load(force=True)
     _MACHINE.clear()
     _machine()
 

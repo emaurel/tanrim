@@ -656,7 +656,13 @@ class Environment:
         for p in self.plugins:
             for wanted in self._answers.get(p.id, {}).get("declares_prompts", ()):
                 module, _, name = wanted.partition("/")
-                if not name or not p.prompt(module, name, None):
+                if not name:
+                    out.append(f"{p.id}: malformed prompt name {wanted!r}")
+                    continue
+                # Asked of EVERY plugin, not just the one that declared it: a
+                # plugin may legitimately rely on a prompt another one ships,
+                # which is how an extension reuses its base's text.
+                if not self.prompt(module, name, None):
                     out.append(f"{p.id}: missing prompt {wanted}")
             out.extend(f"{p.id}: {m}" for m in p.check())
         return out

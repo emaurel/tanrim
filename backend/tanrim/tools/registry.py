@@ -32,18 +32,11 @@ log = logging.getLogger(__name__)
 def tool_dirs() -> list[Path]:
     """Directories still scanned for tool modules.
 
-    Only the runtime drop now. A plugin's tools arrive through
-    `Plugin.tools()`; reaching into `<plugin>/tools/` from here was the core
-    reading a plugin's files, which is precisely what the contract removed.
+    Only the runtime drop. A plugin's tools arrive through `Plugin.tools()`;
+    reaching into `<plugin>/tools/` from here was the core reading a plugin's
+    files, which is precisely what the contract removed.
     """
-    from .. import environment, plugin
-
-    dirs: list[Path] = []
-    if not environment.booted():
-        dirs.extend(plugin.dirs("tools"))
-    if TOOLS_DIR not in dirs:
-        dirs.append(TOOLS_DIR)
-    return dirs
+    return [TOOLS_DIR]
 
 
 def reload() -> None:
