@@ -46,6 +46,28 @@ class _MapViewState extends State<MapView>
 
   bool get _far => _zoom < WorldPainter.farZoom;
 
+  /// For tests: the camera's current zoom.
+  @visibleForTesting
+  double get debugZoom => _zoom;
+
+  /// For tests: whether a camera move is in flight.
+  @visibleForTesting
+  bool get debugFlying => _flight != null;
+
+  @visibleForTesting
+  String? debugCastleAt(Offset local, Size size) =>
+      _castleAt(local, size)?.pluginId;
+
+  @visibleForTesting
+  double get debugTick => _tick;
+
+  @visibleForTesting
+  Offset debugScreenOf(double x, double y, Size size) {
+    final w = _iso.toScreen(x, y);
+    return Offset(w.dx * _zoom + size.width / 2 + _camera.dx,
+        w.dy * _zoom + size.height / 3 + _camera.dy);
+  }
+
   Offset _camera = Offset.zero;
   double _zoom = 1;
   String? _hovered;
@@ -55,7 +77,11 @@ class _MapViewState extends State<MapView>
   /// it rather than teleport: the jump is what makes an operator lose track of
   /// where they were.
   _Flight? _flight;
-  late final Ticker _ticker = Ticker(_onTick)..start();
+  /// NOT `late final … ..start()`: that is lazy, and the only other mention
+  /// of the field is in `dispose`, so it was never initialised and the clock
+  /// never ran. The sprites did not breathe and a camera flight never moved —
+  /// it was created correctly and then simply never advanced.
+  final Ticker _ticker = Ticker();
   double _tick = 0;
 
   // Pinch/drag bookkeeping.
@@ -109,6 +135,14 @@ class _MapViewState extends State<MapView>
       fromCamera: _camera,
       toCamera: Offset(-centre.dx * z, -centre.dy * z),
     );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker
+      ..onTick = _onTick
+      ..start();
   }
 
   @override
@@ -275,33 +309,41 @@ class _MapViewState extends State<MapView>
   }
 }
 
-/// A frame ticker without pulling in the scheduler binding boilerplate.
+/// A frame ticker.
+///
+/// It reports the FRAME's timestamp — the `Duration` the scheduler hands the
+/// post-frame callback — and not a `Stopwatch`. That is the difference
+/// between an animation that can be tested and one that cannot: `pump()`
+/// advances the binding's clock and leaves wall time alone, so a stopwatch
+/// sits still while the test believes a second has passed. The camera flight
+/// looked broken for exactly that reason.
 class Ticker {
-  Ticker(this.onTick);
-  final void Function(Duration) onTick;
+  /// Deliberately takes NO callback. A constructor that wants one invites
+  /// `late final Ticker _t = Ticker(_onTick)..start()`, and that is the bug
+  /// this comment exists because of: `late final` is lazy, nothing else read
+  /// the field, so it was never built and the clock never started. Assign
+  /// [onTick] from `initState`, where it cannot be skipped.
+  Ticker();
+
+  void Function(Duration)? onTick;
   bool _running = false;
-  final _watch = Stopwatch();
 
   void start() {
     if (_running) return;
     _running = true;
-    _watch.start();
     _schedule();
   }
 
   void _schedule() {
     if (!_running) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((elapsed) {
       if (!_running) return;
-      onTick(_watch.elapsed);
+      onTick?.call(elapsed);
       _schedule();
     });
   }
 
-  void dispose() {
-    _running = false;
-    _watch.stop();
-  }
+  void dispose() => _running = false;
 }
 
 /// A camera move in progress: where it started, where it is going, and when.
