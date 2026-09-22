@@ -10,13 +10,20 @@ from __future__ import annotations
 import pytest
 
 from tanrim import environment
-from tanrim.contract import (AgentSpec, Gate, Pipeline, Plugin, Room, RoomPatch,
-                             Stage, Tool, Transition, Workbench)
+from tanrim.contract import (AgentSpec, Gate, McpServer, Pipeline, Plugin, Room,
+                             RoomPatch, Stage, StepGate, Tool, Transition,
+                             Workbench)
 from tanrim.environment import Environment, EnvironmentError
 
 
-async def _job(world, record_id, instruction=""):
-    return {"ok": True}
+async def _job(world, task):
+    """The documented `Job` shape: `(world, task_dict)`.
+
+    This took three positional arguments while the contract's `Job` alias said
+    two — so the suite was asserting a signature the environment does not
+    call, and would have passed while every real dispatch raised TypeError.
+    """
+    return {"ok": True, "task": task}
 
 
 def pipe(kind, stages, transitions, entry=""):
@@ -322,15 +329,49 @@ def test_one_failing_listener_does_not_stop_the_others():
     assert heard == ["b"], "the second plugin's listener must still have run"
 
 
-def test_a_veto_hook_refuses_and_the_first_refusal_wins():
+@pytest.mark.asyncio
+async def test_a_veto_hook_refuses_and_the_first_refusal_wins():
     class A(Base):
         def hooks(self):
             return {"before_stage_change":
                     lambda rec, frm, to: "they are holding our email" if to == "doing" else None}
 
     env = Environment.boot([A()])
-    assert env.veto("before_stage_change", {}, "new", "doing") == "they are holding our email"
-    assert env.veto("before_stage_change", {}, "new", "done") is None
+    assert await env.veto("before_stage_change", {}, "new", "doing") == "they are holding our email"
+    assert await env.veto("before_stage_change", {}, "new", "done") is None
+
+
+@pytest.mark.asyncio
+async def test_an_async_veto_listener_is_awaited_not_taken_as_a_refusal():
+    """The failure this exists for: a coroutine is truthy.
+
+    A veto that has to look anything up must be `async def`, and a sync
+    `veto()` took the returned coroutine as a refusal — so a plugin objecting
+    to NOTHING refused every move in the machine, with
+    `<coroutine object ...>` as the reason shown to the operator.
+    """
+    seen = []
+
+    class A(Base):
+        def hooks(self):
+            async def objects_to_nothing(rec, frm, to):
+                seen.append(to)
+                return None
+            return {"before_stage_change": objects_to_nothing}
+
+    env = Environment.boot([A()])
+    assert await env.veto("before_stage_change", {}, "new", "doing") is None
+    assert seen == ["doing"], "the listener was never actually run"
+
+    class B(Base):
+        def hooks(self):
+            async def refuses(rec, frm, to):
+                return "not while they are reading it"
+            return {"before_stage_change": refuses}
+
+    env = Environment.boot([B()])
+    assert await env.veto("before_stage_change", {}, "new", "doing") == \
+        "not while they are reading it"
 
 
 def test_a_supplier_hook_takes_the_last_plugin():
@@ -435,3 +476,195 @@ def test_summary_fields_are_the_plugins_choice():
         def summary_fields(self): return ("email", "domain")
     env = Environment.boot([A(), B()])
     assert env.summary_fields() == ["name", "email", "domain"]   # union, ordered
+
+
+# ---------------------------------------------------------------------------
+# What a second review found, each pinned so it cannot come back quietly
+# ---------------------------------------------------------------------------
+
+def test_a_patch_does_not_mutate_the_plugins_own_objects():
+    """A plugin's rooms are usually module-level constants.
+
+    `_apply` assigned to the bench it found, which edited the OTHER plugin's
+    object: booting twice in one process applied the patch to an
+    already-patched room, and booting the base plugin alone still carried the
+    extension's stages.
+    """
+    bench = Workbench(id="bench", name="Bench", stages=("new",))
+    rooms = [Room(id="shop", name="Shop", workbenches=(bench,))]
+
+    class Base2(Plugin):
+        id, name = "base", "Base"
+        def pipelines(self):
+            return [pipe("work", ["new", "extra"], [Transition("new", "extra", "w")])]
+        def rooms(self):
+            return rooms
+
+    class Ext(Plugin):
+        id, name, requires = "ext", "Ext", ("base",)
+        def rooms(self):
+            return [RoomPatch(extends="shop",
+                              workbenches=(Workbench(id="bench", stages=("extra",)),))]
+
+    env = Environment.boot([Base2(), Ext()])
+    assert env.room("shop").workbenches[0].stages == ("new", "extra")
+    assert bench.stages == ("new",), "the plugin's own Workbench was mutated"
+
+    alone = Environment.boot([Base2()])
+    assert alone.room("shop").workbenches[0].stages == ("new",)
+
+
+def test_a_patch_merges_servers_colour_and_crew_size():
+    """All three were declared on `RoomPatch` and silently dropped — the room
+    booted clean, unchanged, and nothing said so."""
+    class Base2(Plugin):
+        id, name = "base", "Base"
+        def pipelines(self):
+            return [pipe("work", ["new"], [])]
+        def rooms(self):
+            return [Room(id="shop", name="Shop", color="#111111", max_workers=1,
+                         mcp_servers=(McpServer("a", "https://a.example"),))]
+
+    class Ext(Plugin):
+        id, name, requires = "ext", "Ext", ("base",)
+        def rooms(self):
+            return [RoomPatch(extends="shop", color="#222222", max_workers=3,
+                              mcp_servers=(McpServer("b", "https://b.example"),))]
+
+    room = Environment.boot([Base2(), Ext()]).room("shop")
+    assert room.max_workers == 3
+    assert room.color == "#222222"
+    assert [s.id for s in room.mcp_servers] == ["a", "b"]
+
+
+def test_a_plugin_is_asked_everything_exactly_once():
+    """`describe` re-asked, which re-read the disk under `yaml_rooms` and
+    handed an exhausted generator to the second reader."""
+    calls = {"rooms": 0, "pipelines": 0}
+
+    class A(Plugin):
+        id, name = "a", "A"
+        def pipelines(self):
+            calls["pipelines"] += 1
+            return (p for p in [pipe("work", ["new"], [])])   # a generator
+        def rooms(self):
+            calls["rooms"] += 1
+            return (r for r in [Room(id="shop", name="Shop")])
+
+    env = Environment.boot([A()])
+    env.describe(); env.describe()
+    assert calls == {"rooms": 1, "pipelines": 1}
+    assert env.room("shop") is not None, "a generator answer was consumed twice"
+
+
+def test_a_pipelines_terminal_states_do_not_leak_into_another():
+    class A(Plugin):
+        id, name = "a", "A"
+        def pipelines(self):
+            return [pipe("alpha", ["new", Stage("lost", terminal=True)], []),
+                    pipe("beta", ["new", "done"], [Transition("new", "done", "w")])]
+
+    env = Environment.boot([A()])
+    assert env.can_advance("new", "lost", "alpha") is True
+    assert env.can_advance("new", "lost", "beta") is False, \
+        "another pipeline's ending was reachable with no edge declaring it"
+
+
+def test_no_role_is_returned_for_a_stage_this_pipeline_cannot_leave():
+    """The bench mentions the stage; this pipeline has no move from it.
+
+    Falling back to the bench list dispatched a record to a room that had
+    nothing to do with it — looser than the orchestrator code it replaces.
+    """
+    class A(Plugin):
+        id, name = "a", "A"
+        def pipelines(self):
+            return [pipe("alpha", ["new", "done"],
+                         [Transition("new", "done", "worker")]),
+                    pipe("beta", ["new", "done"], [])]
+        def rooms(self):
+            return [Room(id="shop", name="Shop",
+                         workbenches=(Workbench(id="b", stages=("new",)),))]
+        def agents(self):
+            return [AgentSpec(role="worker", name="W", room="shop",
+                              jobs={"new": _job})]
+
+    env = Environment.boot([A()])
+    assert env.role_for_stage("new", "alpha") == "worker"
+    assert env.role_for_stage("new", "beta") is None
+
+
+def test_an_extension_can_override_a_step_gate_it_inherited():
+    class Base2(Plugin):
+        id, name = "base", "Base"
+        def pipelines(self):
+            return [pipe("work", ["new", "done"], [Transition("new", "done", "w")])]
+        def gates(self):
+            return [Gate(kind="ask", means="?")]
+        def step_gates(self):
+            return [StepGate(stage="new", gate="ask", build=lambda w, r: {},
+                             reason="base")]
+
+    class Ext(Plugin):
+        id, name, requires = "ext", "Ext", ("base",)
+        def step_gates(self):
+            return [StepGate(stage="new", gate="ask", build=lambda w, r: {},
+                             reason="ext")]
+
+    assert Environment.boot([Base2(), Ext()]).step_gate("new", "work").reason == "ext"
+
+
+def test_a_misspelt_hook_is_refused_at_boot():
+    """It is never called and never complains, which is the worst shape a
+    mistake can take."""
+    class A(Base):
+        def hooks(self):
+            return {"before_stage_changed": lambda *a: None}   # not a hook name
+
+    with pytest.raises(EnvironmentError, match="unknown hook"):
+        Environment.boot([A()])
+
+
+@pytest.mark.parametrize("what", ["gate", "tool"])
+def test_two_plugins_cannot_quietly_claim_the_same_name(what):
+    class A(Base):
+        def gates(self):
+            return [Gate(kind="ask", means="a")] if what == "gate" else []
+        def tools(self):
+            return [Tool(name="dig", server=object(), description="a")] \
+                if what == "tool" else []
+
+    class B(A):
+        id, name = "b", "B"
+        def pipelines(self):
+            return []          # collide on the name under test, nothing else
+
+    with pytest.raises(EnvironmentError, match="two plugins declare"):
+        Environment.boot([A(), B()])
+
+
+def test_a_declared_prompt_that_is_missing_is_reported_at_boot():
+    class A(Base):
+        def declares_prompts(self):
+            return ("greeter/ROLE", "greeter/SCHEMA")
+        def prompt(self, module, name, kind):
+            return "the role" if name == "ROLE" else None
+
+    assert Environment.boot([A()]).check() == \
+        ["base: missing prompt greeter/SCHEMA"]
+
+
+def test_setup_does_not_run_when_the_environment_is_invalid():
+    """`setup` opens things. Running it and then refusing the boot leaves them
+    open with nothing left to close them."""
+    opened = []
+
+    class A(Base):
+        def setup(self, env):
+            opened.append(env)
+        def agents(self):
+            return [AgentSpec(role="w", name="W", room="nowhere")]
+
+    with pytest.raises(EnvironmentError):
+        Environment.boot([A()])
+    assert opened == []

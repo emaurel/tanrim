@@ -45,6 +45,7 @@ from typing import Any, Callable, Iterable
 
 from .contract import (
     BROADCAST_HOOKS,
+    HOOKS,
     SUPPLIER_HOOKS,
     VETO_HOOKS,
     AgentPatch,
@@ -135,24 +136,61 @@ class Environment:
     #: ONCE; `describe()` calling them again broke that, and with `yaml_rooms`
     #: it re-read the disk on every `/plugins` request.
     _described: list[dict[str, Any]] = field(default_factory=list)
+    #: Every plugin's answers, asked ONCE. Each collect pass and `describe`
+    #: read this rather than the plugin, which is what makes the
+    #: called-once promise true instead of aspirational — and is why a
+    #: plugin may answer with a generator without its second reader getting
+    #: an empty one.
+    _answers: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # -- building -----------------------------------------------------------
 
     @classmethod
     def boot(cls, plugins: Iterable[Plugin]) -> "Environment":
         env = cls(plugins=tuple(order(plugins)))
+        env._ask()
         env._collect_pipelines()
         env._collect_world()
         env._collect_rest()
         env._describe()
+        # Validated BEFORE any `setup`. `setup` is where a plugin opens things
+        # — a mailbox poller, a directory, a client — and running those and
+        # then refusing the boot leaves them open with nothing to close them.
+        env._validate()
         for p in env.plugins:
             p.setup(env)
-        env._validate()
         return env
+
+    def _ask(self) -> None:
+        """Ask every plugin everything, once, and keep the answers.
+
+        The contract says a plugin's methods are called once at boot. Calling
+        them again is not merely wasteful: `yaml_rooms` re-reads the disk, and
+        a plugin that answers with a generator hands the second caller an
+        exhausted one — a room silently vanishing rather than erroring.
+        """
+        for p in self.plugins:
+            self._answers[p.id] = {
+                "pipelines": list(p.pipelines()),
+                "record_model": p.record_model(),
+                "rooms": list(p.rooms()),
+                "agents": list(p.agents()),
+                "gates": list(p.gates()),
+                "tools": list(p.tools()),
+                "hooks": dict(p.hooks()),
+                "step_gates": list(p.step_gates()),
+                "room_handlers": dict(p.room_handlers()),
+                "summary_fields": list(p.summary_fields()),
+                "declares_prompts": tuple(p.declares_prompts()),
+            }
+
+    def _said(self, p: Plugin, key: str) -> Any:
+        return self._answers[p.id][key]
 
     def _collect_pipelines(self) -> None:
         for p in self.plugins:
-            for pipe in p.pipelines():
+            declared = self._said(p, "pipelines")
+            for pipe in declared:
                 if pipe.kind in self._pipelines:
                     raise EnvironmentError(
                         f"two plugins define the pipeline {pipe.kind!r}; an "
@@ -163,15 +201,15 @@ class Environment:
                     if stage.id not in self._stages:
                         self._stages[stage.id] = stage
                         self._stage_order.append(stage.id)
-            model = p.record_model()
+            model = self._said(p, "record_model")
             if model is not None:
-                for pipe in p.pipelines():
+                for pipe in declared:
                     self._models[pipe.kind] = model
 
     def _collect_world(self) -> None:
         patches: list[RoomPatch] = []
         for p in self.plugins:
-            for item in p.rooms():
+            for item in self._said(p, "rooms"):
                 if isinstance(item, RoomPatch):
                     patches.append(item)
                 else:
@@ -187,20 +225,35 @@ class Environment:
     def _collect_rest(self) -> None:
         patches: list[AgentPatch] = []
         for p in self.plugins:
-            for item in p.agents():
+            for item in self._said(p, "agents"):
                 if isinstance(item, AgentPatch):
                     patches.append(item)
                 else:
                     self._agents[item.role] = item
-            for gate in p.gates():
+            for gate in self._said(p, "gates"):
+                if gate.kind in self._gates:
+                    raise EnvironmentError(
+                        f"two plugins declare the gate {gate.kind!r}; a gate "
+                        f"is what an operator decision MEANS, and two "
+                        f"meanings for one card is a silent coin-toss")
                 self._gates[gate.kind] = gate
-            for tool in p.tools():
+            for tool in self._said(p, "tools"):
+                if tool.name in self._tools:
+                    raise EnvironmentError(
+                        f"two plugins declare the tool {tool.name!r}; rename "
+                        f"one, because a room granting it would get whichever "
+                        f"plugin happened to load last")
                 self._tools[tool.name] = tool
-            for name, fn in p.hooks().items():
+            for name, fn in self._said(p, "hooks").items():
+                if name not in HOOKS:
+                    raise EnvironmentError(
+                        f"plugin {p.id!r} registers an unknown hook {name!r}. "
+                        f"A misspelt hook is never called and never complains. "
+                        f"Known: {', '.join(sorted(HOOKS))}")
                 self._hooks.setdefault(name, []).append(fn)
-            self._step_gates.extend(p.step_gates())
-            self._room_handlers.update(p.room_handlers())
-            for f in p.summary_fields():
+            self._step_gates.extend(self._said(p, "step_gates"))
+            self._room_handlers.update(self._said(p, "room_handlers"))
+            for f in self._said(p, "summary_fields"):
                 if f not in self._summary_fields:
                     self._summary_fields.append(f)
 
@@ -222,8 +275,8 @@ class Environment:
 
     def _describe(self) -> None:
         for p in self.plugins:
-            rooms = list(p.rooms())
-            agents = list(p.agents())
+            rooms = self._said(p, "rooms")
+            agents = self._said(p, "agents")
             self._described.append({
                 "id": p.id, "name": p.name, "description": p.description,
                 "requires": list(p.requires),
@@ -234,11 +287,11 @@ class Environment:
                 "agents": [a.role for a in agents if isinstance(a, AgentSpec)],
                 "agent_patches": [a.extends for a in agents
                                   if isinstance(a, AgentPatch)],
-                "step_gates": [g.stage for g in p.step_gates()],
-                "room_handlers": sorted(p.room_handlers()),
-                "gates": [g.kind for g in p.gates()],
-                "tools": [t.name for t in p.tools()],
-                "hooks": sorted(p.hooks()),
+                "step_gates": [g.stage for g in self._said(p, "step_gates")],
+                "room_handlers": sorted(self._said(p, "room_handlers")),
+                "gates": [g.kind for g in self._said(p, "gates")],
+                "tools": [t.name for t in self._said(p, "tools")],
+                "hooks": sorted(self._said(p, "hooks")),
             })
 
     def _validate(self) -> None:
@@ -261,6 +314,12 @@ class Environment:
             if sg.stage not in self._stages:
                 problems.append(
                     f"a step gate names stage {sg.stage!r}, which nothing defines")
+            for k in sg.kinds:
+                if k not in self._pipelines:
+                    problems.append(
+                        f"a step gate at {sg.stage!r} is scoped to pipeline "
+                        f"{k!r}, which no plugin declares — so it would never "
+                        f"fire, silently")
         for room_id in self._room_handlers:
             if room_id not in self._rooms:
                 problems.append(
@@ -310,10 +369,19 @@ class Environment:
         return [t for p in self._pipelines.values() for t in p.transitions]
 
     def can_advance(self, frm: str, to: str, kind: str) -> bool:
-        """Is this move legal? Terminal states are reachable from anywhere."""
-        if to in self.terminal_stages():
+        """Is this move legal? A pipeline's OWN terminals are always reachable.
+
+        Scoped to the pipeline rather than the global stage table: `lost` is a
+        web-agency ending and means nothing in another plugin's machine, and a
+        global list let any record be moved to any plugin's terminal state
+        without an edge saying so.
+        """
+        pipe = self._pipelines.get(kind)
+        if pipe is None:
+            return False
+        if any(s.id == to and s.terminal for s in pipe.stages):
             return True
-        return any(t.frm == frm and t.to == to for t in self.transitions(kind))
+        return any(t.frm == frm and t.to == to for t in pipe.transitions)
 
     def targets(self, frm: str, kind: str) -> set[str]:
         return {t.to for t in self.transitions(kind) if t.frm == frm}
@@ -357,13 +425,28 @@ class Environment:
                                  if self.room(agent.room) else ()))
         ]
         if kind is not None:
+            # The transition table decides, not the benches. A stage a bench
+            # merely MENTIONS is not work this pipeline has at that stage:
+            # falling back to the bench list when the table said nothing sent
+            # records to a room whose pipeline has no move from there — which
+            # is exactly the misrouting the old orchestrator code got right,
+            # so this must not be looser than what it replaces.
             allowed = self.roles_at(stage, kind)
             narrowed = [r for r in candidates if r in allowed]
             if narrowed:
                 return narrowed[0]
-            if allowed and allowed <= {"operator", "system"}:
-                return None
+            return None
         return candidates[0] if candidates else None
+
+    def is_singleton(self, role: str) -> bool:
+        """May this role ever have a second worker?
+
+        Declared per agent rather than held as a set in the worker pool, where
+        it was a hardcoded `{"ultron"}` that no plugin could add to — a
+        plugin whose overseer must not be duplicated had no way to say so.
+        """
+        agent = self._agents.get(role)
+        return bool(agent and agent.singleton)
 
     def job_for(self, role: str, stage: str) -> Job | None:
         """What this role does at this stage, or its default."""
@@ -426,15 +509,24 @@ class Environment:
         if errors:
             raise ExceptionGroup(f"hook {name!r} failed", errors)  # noqa: F821
 
-    def veto(self, name: str, *args: Any, **kw: Any) -> str | None:
+    async def veto(self, name: str, *args: Any, **kw: Any) -> str | None:
         """Consult every veto listener; the first refusal wins.
 
         This is where domain law that a generic write cannot hold belongs —
         "do not rebuild underneath a business that is holding our email" is a
         rule about businesses and email, and `advance` knows about neither.
+
+        A coroutine. The first version was sync, so a plugin supplying an
+        `async def` veto — the natural thing to write, and what any veto
+        needing a lookup must be — returned a coroutine object, which is
+        truthy, and EVERY move was refused with `<coroutine object ...>` as
+        the stated reason. A hook that fails closed on the whole machine is
+        not a hook worth having, so both forms are awaited properly here.
         """
         for fn in self.listeners(name):
             refusal = fn(*args, **kw)
+            if hasattr(refusal, "__await__"):
+                refusal = await refusal
             if refusal:
                 return str(refusal)
         return None
@@ -448,10 +540,13 @@ class Environment:
         pipeline) and not by a transition: at that moment which edge the room
         will take is not yet known.
         """
-        for sg in self._step_gates:
-            if sg.stage == stage and (not sg.kinds or kind in sg.kinds):
-                return sg
-        return None
+        # Later plugins first, so an extension can override a gate on a stage
+        # it inherited; and a gate naming this kind beats a catch-all, so
+        # narrowing one pipeline does not require restating the others.
+        matches = [sg for sg in reversed(self._step_gates)
+                   if sg.stage == stage and (not sg.kinds or kind in sg.kinds)]
+        specific = [sg for sg in matches if sg.kinds]
+        return (specific or matches or [None])[0]
 
     def step_gates(self) -> list[StepGate]:
         return list(self._step_gates)
@@ -486,7 +581,8 @@ class Environment:
             return f"{n} is outside 1..{MAX_WORKERS}"
         room.max_workers = n
         for p in self.plugins:
-            if any(getattr(r, "id", None) == room_id for r in p.rooms()):
+            if any(getattr(r, "id", None) == room_id
+                   for r in self._said(p, "rooms")):
                 p.persist_room(room)
         return None
 
@@ -511,8 +607,22 @@ class Environment:
         return [*reversed(owners), *rest]
 
     def check(self) -> list[str]:
-        """Every plugin's self-reported problems, prefixed with who said so."""
-        return [f"{p.id}: {m}" for p in self.plugins for m in p.check()]
+        """Problems worth starting up with, from each plugin, attributed.
+
+        Two sources: what a plugin says about itself, and the prompts it
+        DECLARED it needs but cannot produce. The second is asked here rather
+        than left to each plugin's own `check` so that a plugin listing its
+        prompts gets the check for free — a fresh checkout has the code and,
+        because prompts are usually gitignored, none of the text.
+        """
+        out: list[str] = []
+        for p in self.plugins:
+            for wanted in self._answers.get(p.id, {}).get("declares_prompts", ()):
+                module, _, name = wanted.partition("/")
+                if not name or not p.prompt(module, name, None):
+                    out.append(f"{p.id}: missing prompt {wanted}")
+            out.extend(f"{p.id}: {m}" for m in p.check())
+        return out
 
     def describe(self) -> list[dict[str, Any]]:
         """What is installed, for `/plugins` and for the operator."""
@@ -521,27 +631,45 @@ class Environment:
 
 def _apply(room: Room, patch: RoomPatch) -> Room:
     """Merge a patch into a room. See `RoomPatch` for why it is asymmetric."""
+    # `replace`, never assignment: the room and its benches belong to the
+    # plugin that declared them, and the natural way to declare them is a
+    # module-level constant. Mutating one in place edited the plugin's own
+    # object, so booting twice in a process — a test suite, a reload — found
+    # the patch already applied and applied it again, and a plugin loaded
+    # WITHOUT its extension still had the extension's stages.
     benches = list(room.workbenches)
     for incoming in patch.workbenches:
-        existing = next((b for b in benches if b.id == incoming.id), None)
-        if existing is None:
+        at = next((i for i, b in enumerate(benches) if b.id == incoming.id), None)
+        if at is None:
             benches.append(incoming)
             continue
-        existing.stages = tuple(dict.fromkeys([*existing.stages, *incoming.stages]))
-        existing.tasks = tuple(dict.fromkeys([*existing.tasks, *incoming.tasks]))
-        if incoming.name:
-            existing.name = incoming.name
-        if incoming.job:
-            existing.job = incoming.job
+        existing = benches[at]
+        benches[at] = replace(
+            existing,
+            stages=tuple(dict.fromkeys([*existing.stages, *incoming.stages])),
+            tasks=tuple(dict.fromkeys([*existing.tasks, *incoming.tasks])),
+            name=incoming.name or existing.name,
+            job=incoming.job or existing.job,
+            position=incoming.position or existing.position,
+            size=incoming.size or existing.size,
+        )
     return replace(
         room,
         workbenches=tuple(benches),
         tools=tuple(dict.fromkeys([*room.tools, *patch.tools])),
         skills=tuple(dict.fromkeys([*room.skills, *patch.skills])),
+        # Unioned, not overridden: a room's servers are cumulative the same
+        # way its tools are, and dropping these silently was a regression on
+        # what the YAML loader already did.
+        mcp_servers=tuple({s.id: s for s in [*room.mcp_servers,
+                                             *patch.mcp_servers]}.values()),
         name=patch.name or room.name,
         purpose=patch.purpose or room.purpose,
+        color=patch.color or room.color,
         position=patch.position or room.position,
         size=patch.size or room.size,
+        max_workers=(patch.max_workers if patch.max_workers is not None
+                     else room.max_workers),
     )
 
 

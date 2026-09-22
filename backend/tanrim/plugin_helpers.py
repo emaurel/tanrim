@@ -24,7 +24,7 @@ from typing import Any, Iterable
 
 import yaml
 
-from .contract import Room, RoomPatch, Workbench
+from .contract import McpServer, Room, RoomPatch, Workbench
 
 
 # ---------------------------------------------------------------------------
@@ -45,10 +45,15 @@ def room_from_dict(data: dict[str, Any]) -> Room | RoomPatch:
         )
         for b in (data.get("workbenches") or [])
     )
+    servers = _servers(data.get("mcp_servers"))
     if data.get("extends"):
         return RoomPatch(
             extends=data["extends"],
             workbenches=benches,
+            mcp_servers=servers,
+            color=data.get("color", ""),
+            max_workers=(int(data["max_workers"])
+                         if data.get("max_workers") is not None else None),
             tools=tuple(data.get("tools") or ()),
             skills=tuple(data.get("skills") or ()),
             name=data.get("name", ""),
@@ -67,7 +72,27 @@ def room_from_dict(data: dict[str, Any]) -> Room | RoomPatch:
         tools=tuple(data.get("tools") or ()),
         skills=tuple(data.get("skills") or ()),
         max_workers=int(data.get("max_workers", 1)),
-        mcp_servers=tuple(data.get("mcp_servers") or ()),
+        mcp_servers=servers,
+    )
+
+
+def _servers(raw: Any) -> tuple[McpServer, ...]:
+    """Manifest dicts as `McpServer`s.
+
+    The environment's type says `McpServer`; handing it dicts type-checked
+    fine and only failed wherever something read an attribute. `auth_env`
+    names an environment variable and never holds the value — manifests are
+    committed and secrets are not.
+    """
+    return tuple(
+        McpServer(
+            id=item["id"],
+            url=item["url"],
+            auth_env=item.get("auth_env", ""),
+            tools=tuple(item.get("tools") or ()),
+            deny=tuple(item.get("deny") or ()),
+        )
+        for item in (raw or [])
     )
 
 
