@@ -298,21 +298,48 @@ def test_a_business_holding_our_email_is_not_rebuilt_underneath(real_env):
 
 def test_the_permanent_gates_come_from_the_plugin(real_env):
     """`state.PERMANENT_GATES` hardcoded the same two stages with the same
-    prose as `web_agency.STEP_GATES` — two copies of one policy."""
-    from tanrim import state
+    prose as `web_agency.STEP_GATES` — two copies of one policy.
+
+    Asserted by PROVENANCE rather than against a fixed list. The list was
+    `{"qa_passed", "drafted"}`, which is one plugin's two stages, so installing
+    a second plugin with a permanent gate of its own failed this test — for
+    exactly the behaviour it exists to encourage.
+    """
+    from tanrim import environment, state
 
     gates = state.permanent_gates()
-    assert set(gates) == {"qa_passed", "drafted"}
+    declared = {g.stage: g.reason for g in environment.current().step_gates()
+                if g.permanent}
+
+    assert set(gates) == set(declared), \
+        "a permanent gate the core invented, or one a plugin declared and lost"
     assert all(v for v in gates.values()), "a permanent gate with no reason"
-    assert state.step_is_gated("qa_passed") and state.step_is_gated("drafted")
+    assert all(state.step_is_gated(stage) for stage in gates)
+    # The plugin that produced the original list must still be in it.
+    assert {"qa_passed", "drafted"} <= set(gates)
 
 
 def test_worker_release_is_declared_not_hardcoded(real_env):
-    """`workers.DONE_STAGES` was five of one plugin's stage names in the core."""
-    from tanrim import workers
+    """`workers.DONE_STAGES` was five of one plugin's stage names in the core.
 
-    assert workers.done_stages() == {
-        "disqualified", "contacted", "replied", "won", "lost"}
+    Checked against what the installed plugins actually DECLARE, not against
+    those five names: repeating them here would put the same hardcoded list
+    back, one layer up, and it would fail the moment a second plugin declared
+    a releasing stage of its own.
+    """
+    from tanrim import environment, workers
+
+    env = environment.current()
+    declared = {
+        stage.id
+        for kind in env.kinds()
+        for stage in (env.pipeline(kind).stages if env.pipeline(kind) else ())
+        if stage.releases_worker or stage.terminal
+    }
+    assert workers.done_stages() == declared, \
+        "the core is releasing workers at a stage no plugin declared, or missing one"
+    # The five that produced the original hardcoded list are still among them.
+    assert {"disqualified", "contacted", "replied", "won", "lost"} <= declared
 
 
 def test_an_ending_of_one_pipeline_is_not_an_ending_of_another(real_env):

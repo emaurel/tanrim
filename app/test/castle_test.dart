@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -168,6 +171,69 @@ void main() {
       expect(find.text('A'), findsOneWidget);
       expect(find.text('B'), findsOneWidget);
       expect(find.text('3'), findsOneWidget);
+    });
+  });
+
+  group('the real installation', () {
+    // Captured from a running server with three plugins installed:
+    // web_agency (12 rooms), job_hunt (5) and website_recreation, which
+    // declares none of its own. Regenerate with the snippet in tool/README.md.
+    List<Room> rooms() => (jsonDecode(
+            File('test/rooms_fixture.json').readAsStringSync()) as List)
+        .map((r) => Room.fromJson((r as Map).cast<String, dynamic>()))
+        .toList();
+
+    List<Map<String, dynamic>> plugins() =>
+        ((jsonDecode(File('test/plugins_fixture.json').readAsStringSync())
+                as Map)['plugins'] as List)
+            .map((p) => (p as Map).cast<String, dynamic>())
+            .toList();
+
+    List<Castle> build() {
+      final list = plugins();
+      return Castle.group(
+        rooms(),
+        {for (final p in list)
+          p['id'] as String: ((p['rooms'] ?? []) as List).cast<String>()},
+        {for (final p in list)
+          p['id'] as String: (p['name'] ?? p['id']) as String},
+      );
+    }
+
+    test('two plugins with rooms make two castles, and nothing is orphaned', () {
+      final castles = build();
+      expect(castles.map((c) => c.pluginId).toSet(), {'web_agency', 'job_hunt'});
+      expect(castles.any((c) => c.pluginId.isEmpty), isFalse,
+          reason: 'an unclaimed room means a plugin lost one');
+      final counted = castles.fold<int>(0, (n, c) => n + c.rooms.length);
+      expect(counted, rooms().length, reason: 'every room lives in a castle');
+    });
+
+    test('the castles do not overlap on the map', () {
+      // Room positions are absolute tiles, and nothing allocates them — a new
+      // plugin picks its own corner. Two castles sharing tiles would draw one
+      // through the other, and the estate view would put two labels in one
+      // place.
+      final castles = build();
+      for (var i = 0; i < castles.length; i++) {
+        for (var j = i + 1; j < castles.length; j++) {
+          final a = castles[i].bounds, b = castles[j].bounds;
+          final apart = a.$1 + a.$3 <= b.$1 ||
+              b.$1 + b.$3 <= a.$1 ||
+              a.$2 + a.$4 <= b.$2 ||
+              b.$2 + b.$4 <= a.$2;
+          expect(apart, isTrue,
+              reason: '${castles[i].pluginId} overlaps ${castles[j].pluginId}');
+        }
+      }
+    });
+
+    test('an extension lives inside the castle it extends', () {
+      // `website_recreation` adds benches to the web agency's rooms and
+      // declares none of its own, so it is not a castle — it is part of one.
+      expect(plugins().where((p) => p['id'] == 'website_recreation').single['rooms'],
+          isEmpty);
+      expect(build().map((c) => c.pluginId), isNot(contains('website_recreation')));
     });
   });
 }

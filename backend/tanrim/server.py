@@ -16,7 +16,6 @@ from . import agent_helpers
 from . import discovery
 from . import environment
 from . import secrets as secrets_store
-from . import prompts as prompts_mod
 from . import skills as skills_mod
 from . import rooms as rooms_mod
 from . import state
@@ -35,20 +34,26 @@ secrets_store.load_into_environ()
 _env = environment.boot(discovery.find())
 print(f"[boot] {len(_env.plugins)} plugin(s): "
       + ", ".join(p.id for p in _env.plugins))
-for _problem in _env.check():
-    print(f"[boot] {_problem}")
 
-# Prompts live outside the source tree (see tanrim/prompts.py). Say so at
-# boot rather than letting the first agent run fail — or worse, letting an
-# agent run with no instructions, which doesn't fail, it improvises.
-_missing_prompts = prompts_mod.check_all()
-if _missing_prompts:
-    print(
-        "\n[prompts] missing "
-        f"{len(_missing_prompts)} prompt file(s) under prompts/:\n  "
-        + "\n  ".join(_missing_prompts)
-        + "\n\n  Copy prompts.example/ to prompts/ and write the real text.\n"
-    )
+# What the plugins say is wrong with their own installation. Reported at boot
+# rather than discovered: a missing prompt does not fail an agent run, it lets
+# the agent improvise, and a missing key fails it much later than it should.
+#
+# Printed ONCE. There were two blocks here, and the second called
+# `prompts.check_all()` — which is `environment.check()`, the same list — under
+# a heading that said "missing prompt file(s)". That was true only because the
+# one installed plugin reported nothing else; the contract has always said
+# `check()` covers unset variables and broken tools too, so the second plugin
+# to arrive had its configuration warnings printed as missing prompts.
+_problems = _env.check()
+if _problems:
+    print(f"\n[boot] {len(_problems)} problem(s) reported by plugins:")
+    for _problem in _problems:
+        print(f"  {_problem}")
+    if any("prompt" in _problem for _problem in _problems):
+        print("\n  Prompts live outside the source tree — see tanrim/prompts.py.\n"
+              "  Each plugin keeps its own under plugins/<id>/prompts/.")
+    print()
 
 world = World.boot()
 orchestrator = Orchestrator(world)

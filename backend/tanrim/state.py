@@ -916,7 +916,7 @@ def _machine() -> dict[str, Any]:
             # nothing installed genuinely has no stages, and saying so
             # honestly is better than inventing a default nobody declared.
             _MACHINE.update(STAGES=(), DEAD_STAGES=(), ALL_STAGES=(),
-                            KINDS=(), DEFAULT_KIND="",
+                            KINDS=(), DEFAULT_KIND="", STAGE_OWNERS={},
                             PIPELINE=())
     return _MACHINE
 
@@ -937,18 +937,28 @@ def _from_environment(env: Any) -> dict[str, Any]:
         for kind in kinds
         for t in env.transitions(kind)
     )
+    # Which pipelines claim each stage. This is what lets a record that
+    # predates kinds resolve to the RIGHT one instead of to whichever plugin
+    # happened to load first — see `record_kind`.
+    owners: dict[str, list[str]] = {}
+    for kind in kinds:
+        pipe = env.pipeline(kind)
+        for stage in (pipe.stages if pipe else ()):
+            owners.setdefault(stage.id, []).append(kind)
+
     return {
         "STAGES": stages,
         "DEAD_STAGES": dead,
         "ALL_STAGES": stages + dead,
         "KINDS": kinds,
-        # The first pipeline declared. `web_agency` loads before the
-        # extensions that require it, so records written before kinds existed
-        # still resolve to `prospect`.
-        # The first pipeline declared. Empty when nothing is installed —
-        # it used to fall back to `"prospect"`, which is one plugin's kind
-        # name sitting in the ledger as a default.
+        # The first pipeline declared, and a LAST resort only. It is load-order
+        # dependent — discovery walks `plugins/` alphabetically — so it must
+        # never be the thing that decides what an existing record is. It was:
+        # installing a plugin whose id sorted first silently reassigned 69
+        # live records to its pipeline, where none of their stages existed and
+        # every subsequent move would have been refused.
         "DEFAULT_KIND": kinds[0] if kinds else "",
+        "STAGE_OWNERS": {k: tuple(v) for k, v in owners.items()},
         "PIPELINE": rows,
     }
 
@@ -1003,10 +1013,34 @@ def _veto(record: dict[str, Any], frm: str, to: str) -> str | None:
 
 
 def record_kind(record: dict[str, Any] | None) -> str:
-    """Which pipeline a record runs on. Absent means the original one."""
+    """Which pipeline a record runs on.
+
+    A record that names its kind gets it. One that does not — every record
+    written before kinds existed — is resolved by the STAGE it is sitting at,
+    because a stage almost always belongs to exactly one pipeline and that is
+    real evidence about what the record is.
+
+    Falling back to the first-declared pipeline is the last resort, and it used
+    to be the only one. That made the answer depend on the alphabetical order
+    of directory names, so installing a second plugin moved every kind-less
+    record onto ITS pipeline — one that shared the first stage name and nothing
+    after it. Nothing errored at the point of damage; the work simply stopped
+    moving.
+    """
     m = _machine()
-    kind = (record or {}).get("kind") or m["DEFAULT_KIND"]
-    return kind if kind in m["KINDS"] else m["DEFAULT_KIND"]
+    kind = (record or {}).get("kind")
+    if kind:
+        return kind if kind in m["KINDS"] else m["DEFAULT_KIND"]
+    owners = m.get("STAGE_OWNERS", {}).get((record or {}).get("stage") or "")
+    if owners:
+        # One owner is certainty. Several is still far better than the global
+        # default: a record belongs to one of the pipelines that HAS its stage,
+        # and the first of those is the older one, since kinds are in
+        # declaration order and an extension loads after what it extends.
+        # Choosing between two pipelines that share the stage is a guess;
+        # choosing one that has no such stage is simply a mistake.
+        return owners[0]
+    return m["DEFAULT_KIND"]
 
 
 def allowed_targets(from_stage: str, kind: str = "") -> set[str]:

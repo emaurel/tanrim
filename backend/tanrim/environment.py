@@ -379,11 +379,24 @@ class Environment:
     def kinds(self) -> list[str]:
         return list(self._pipelines)
 
-    def default_kind(self) -> str:
-        """What a record with no explicit kind is taken to be.
+    def pipeline(self, kind: str) -> Pipeline | None:
+        """One pipeline as its plugin declared it, terminal stages included.
 
-        The first pipeline declared, so records written before a second one
-        existed keep working.
+        `stages()` filters the terminal ones out, which is right for a board
+        and wrong for asking which pipeline a stage BELONGS to — `lost` and
+        `passed_over` are exactly the kind of name two plugins will not share.
+        """
+        return self._pipelines.get(kind)
+
+    def default_kind(self) -> str:
+        """What a record with no explicit kind is taken to be, as a LAST resort.
+
+        The first pipeline declared — which means the first plugin discovered,
+        which means alphabetical directory order. That is not evidence about
+        anything, so `state.record_kind` resolves by the record's stage first
+        and only falls back here. It used to fall back here immediately, so
+        installing a plugin whose directory sorted first silently moved every
+        kind-less record onto the new plugin's pipeline.
         """
         return next(iter(self._pipelines), "")
 

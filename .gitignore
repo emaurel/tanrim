@@ -47,3 +47,11 @@ app/build/
 app/.dart_tool/
 app/linux/flutter/ephemeral/
 app/android/.gradle/
+
+# A plugin's personal data. `plugins/*/prompts/` above covers the prompt text;
+# this covers the rest of what a plugin is given ABOUT a person rather than
+# about the work. `job_hunt`'s profile holds a phone number, an address and a
+# tax id, and it sits next to a committed `profile.example.yaml` that shows the
+# shape — which is exactly the arrangement where the wrong one gets added.
+plugins/*/profile/profile.yaml
+plugins/*/profile/*.pdf
