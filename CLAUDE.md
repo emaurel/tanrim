@@ -10,6 +10,13 @@ plugins has no stages, no rooms, no agents and nothing to do, which is the
 correct empty state rather than an error. There is a test that asserts exactly
 that.
 
+Four nouns this file uses from here on. A **record** is one unit of work. A
+**room** is a place on the map, and a **workbench** within it declares which
+stages are worked there — that is the routing table. A **castle** is one
+running instance of a plugin, with its own rooms, sprites and records; a
+plugin never sees one. A **gate** is something the operator decides before
+anything irreversible happens. All four get a section of their own below.
+
 This file is about the environment. If you are working on a plugin, its own
 repository documents it; if you are writing one, start at
 [docs/CONTRACT.md](docs/CONTRACT.md).
@@ -17,10 +24,13 @@ repository documents it; if you are writing one, start at
 ## Layout
 
 ```
-backend/tanrim/     the environment — 9,700 lines, 25 modules
-app/                the operator's app — Flutter, 7,400 lines
+backend/tanrim/     the environment — ~9,700 lines across 26 modules
+app/                the operator's app — Flutter, ~7,400 lines in app/lib
+frontend/           the retired Vite web client. Not served; app/ replaced it
 plugins/            installed plugins (gitignored; clone them in)
-plugins.example/    a worked example, deliberately NOT installed
+plugins.example/    a worked example, deliberately NOT installed. Covered by
+                    tests/test_example_plugin.py, which boots it and RUNS its
+                    job, because it rotted once and nothing noticed
 state/              JSON ledgers and whatever plugins write
 docs/               the plugin contract, in full
 ```
@@ -50,9 +60,16 @@ Boot prints what is installed and what each plugin serves:
 
 ```
 [boot] 3 plugin(s): job_hunt, web_agency, website_recreation
-[boot] job_hunt: /applications, /applications/{record_id}
-[boot] web_agency: /invoices, /leads, /preview, /staging, …
+[boot] 2 problem(s) reported by plugins:
+[boot] job_hunt: /applications, /applications/{record_id}, …
+[boot] web_agency: /health/domain-pricing, /health/google, /invoices, …
+[boot] website_recreation: /leads/port
 ```
+
+Elided with `…`; the real lines print every path. The problem count is
+`check()` from each plugin — a missing prompt, an unset key — and is **not**
+fatal: a half-configured environment you can see is more useful than one that
+will not start.
 
 Installing a plugin is putting a directory in `plugins/`. Removing one removes
 its stages, rooms, agents, gates, tools and routes with it.
@@ -443,8 +460,9 @@ Every agent role, output schema and tool description loads from
 # Tools and skills
 
 A tool is a module exporting `mcp_server`, returned from `Plugin.tools()` and
-granted to a room by name in its manifest. `state/tools/` survives as a
-runtime drop that belongs to no plugin.
+granted to a room by name in its manifest. `state/tools/` is a runtime drop
+for a tool that belongs to no plugin; it is empty by design, and every tool in
+use today ships with the plugin that needs it.
 
 There was once an Armory: an agent emitted `request_tool`, an overseer
 reviewed it, and another agent wrote a module and hot-reloaded the registry.

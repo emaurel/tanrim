@@ -474,9 +474,12 @@ class Plugin(ABC):
         operator's decision. It does not own the SCHEMA: it has no opinion
         about opening hours or bounced addresses.
 
-        Returning a model buys validation on write and typed access on read
-        without the environment learning what a field means. Returning None
-        means "any JSON object", which is what an early plugin wants.
+        Declarative TODAY, and this docstring used to oversell it: nothing
+        validates a write against the model, nothing in the core reads
+        `Environment.record_model`, and it is not served over HTTP. It
+        documents the record for whoever reads the plugin, and it is the hook
+        validation would hang off if it were added. Returning None means "any
+        JSON object", which is what an early plugin wants.
         """
         return None
 

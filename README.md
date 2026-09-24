@@ -37,10 +37,11 @@ Built on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk).
 ## Running it
 
 ```bash
-uv venv .venv && uv pip install --python .venv/bin/python -e .
-cp .env.example .env                       # ANTHROPIC_API_KEY at minimum
+uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]"
+.venv/bin/python -m playwright install chromium   # a reviewing agent LOOKS
+cp .env.example .env                              # ANTHROPIC_API_KEY at minimum
 
-PYTHONPATH=backend .venv/bin/python -m uvicorn tanrim.server:app --port 8765
+.venv/bin/python -m uvicorn tanrim.server:app --port 8765
 ```
 
 Then the app:
@@ -52,6 +53,10 @@ flutter run -d linux --release
 
 `--release` matters — a debug build is un-optimised JIT, and this draws an
 animated map.
+
+`.env.example` carries plugin settings as well as the environment's own. It
+has to: a plugin's variables are read from the same process, and one file you
+can see beats three you cannot. Nothing in `backend/tanrim/` reads them.
 
 The app can start the server for you: point it at this checkout in
 **Settings → Server**. It guesses the path from where it was built.
@@ -70,7 +75,9 @@ Or use **Settings → Plugins** in the app, which clones, reloads, and lets you
 switch a plugin off without deleting it.
 
 Removing a plugin removes its stages, rooms, agents, gates, tools and routes
-with it. There is a test that asserts exactly that.
+with it. There is a test that asserts exactly that — and the suite runs with
+`plugins/` empty, skipping about sixty tests that have nothing to assert
+against, because a checkout with no plugins is a legitimate state.
 
 ## Writing a plugin
 
@@ -78,23 +85,32 @@ Start with **[docs/CONTRACT.md](docs/CONTRACT.md)** — what a plugin IS, every
 question the environment asks, and what the answers mean.
 
 `plugins.example/` is a complete worked plugin kept small enough to read in
-one sitting: a pipeline, a room, an agent, a gate, a hook, a record
-schema, prompts and a self-check. Copy the directory into `plugins/` to run
-it.
+one sitting: a pipeline, a room with two benches, an agent, a gate, a step
+gate, two kinds of hook, a record schema, prompts and a self-check. Copy the
+directory into `plugins/` to run it — and rename its `id` and its stages
+first, or its generic stage names will collide with an installed plugin's.
 
-Or start from **[tanrim-plugin-template](https://github.com/emaurel/tanrim-plugin-template)**,
-which is the same example plus tests that run and a walkthrough:
+`tests/test_example_plugin.py` boots it and runs its job with the model
+stubbed, so it cannot quietly rot again: it spent a while calling two `state`
+functions that do not exist, booting perfectly and dying the first time
+anybody pressed Run.
+
+Or start from **[tanrim-plugin-template](https://github.com/emaurel/tanrim-plugin-template)**
+— the same example plus tests that run and a walkthrough. It is a **private**
+repository today, so the link 404s unless you have been given access:
 
 ```bash
-gh repo create my-plugin --private --template emaurel/tanrim-plugin-template
-git clone git@github.com:you/my-plugin.git plugins/my_plugin
+gh repo create my-plugin --private --clone \
+   --template emaurel/tanrim-plugin-template
+mv my-plugin /path/to/agent_environment/plugins/my_plugin
 ```
 
 ## Layout
 
 ```
-backend/tanrim/     the environment — 9,750 lines, 26 modules
-app/                the operator's app — Flutter
+backend/tanrim/     the environment — ~9,700 lines across 26 modules
+app/                the operator's app — Flutter, ~7,400 lines in app/lib
+frontend/           the retired Vite web client. Not served; app/ replaced it
 plugins/            installed plugins (gitignored; clone them in)
 plugins.example/    the worked example, deliberately not installed
 state/              JSON ledgers and whatever plugins write
@@ -111,6 +127,10 @@ may not serve a route about the work.
 ```bash
 .venv/bin/python -m pytest -q
 ```
+
+Bare, with no path: `pytest.ini` sets `testpaths = tests plugins/*/tests`, and
+naming a path overrides it — `pytest tests/` silently skips every plugin's
+suite.
 
 Runs the environment's suite plus every installed plugin's own — a plugin's
 tests travel with it and still run by default.

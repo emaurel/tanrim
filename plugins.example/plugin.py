@@ -85,7 +85,7 @@ async def write_greeting(world, task: dict[str, Any]) -> dict[str, Any]:
 
     record_id = task["record_id"]
     instruction = task.get("instruction", "")
-    record = state.get_lead(record_id)
+    record = state.get_record(record_id)
     if record is None:
         return {"ok": False, "error": f"no such record: {record_id}"}
 
@@ -106,7 +106,7 @@ async def write_greeting(world, task: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "nothing was written"}
 
     # `drafting -> written` is declared below; anything else is refused.
-    state.advance_lead(record_id, "written", agent="greeter",
+    state.advance_record(record_id, "written", agent="greeter",
                        note=written["greeting"][:120], **written)
     return {"ok": True, **written}
 
@@ -121,10 +121,10 @@ async def on_approved(world, card: dict[str, Any], decision: str,
     if not record_id:
         return
     if decision == "approved":
-        state.advance_lead(record_id, "sent", agent="operator",
+        state.advance_record(record_id, "sent", agent="operator",
                            note=reason or "approved")
     else:
-        state.advance_lead(record_id, "drafting", agent="operator",
+        state.advance_record(record_id, "drafting", agent="operator",
                            note=f"rewrite: {reason or 'no reason given'}")
 
 
@@ -185,7 +185,11 @@ class ExamplePlugin(Plugin):
             stages=(
                 Stage("drafting", "waiting for the agent to write it"),
                 Stage("written", "written; waiting on you"),
-                Stage("sent", "done"),
+                # `releases_worker` hands the worker back the moment a record
+                # lands here, rather than waiting for the idle sweep. Not
+                # `terminal`: a terminal stage is reachable from ANYWHERE,
+                # which is right for giving up and wrong for succeeding.
+                Stage("sent", "done", releases_worker=True),
                 Stage("abandoned", "dropped", terminal=True),
             ),
             transitions=(
@@ -231,6 +235,11 @@ class ExamplePlugin(Plugin):
         return [StepGate(
             stage="written",
             gate="greeting_ready",
+            # Where the card is filed and who is shown as waiting. Leave them
+            # out and the core files it against "any room" — survivable here
+            # with one room, wrong the moment there are two.
+            room="hall",
+            agent="greeter",
             permanent=True,
             reason="a greeting reaches a person and cannot be taken back",
             build=lambda world, record: {

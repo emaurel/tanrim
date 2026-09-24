@@ -32,6 +32,10 @@ prompts and a self-check — kept small enough to read in one sitting.
 
 ## Installing
 
+Before any of this, you need Tanrim itself installed and importable — the
+README's "Running it" section, which ends with `tanrim` on the path and a
+server on :8765. Everything below assumes it.
+
 A plugin is a directory in `plugins/` containing `plugin.py` that exposes
 `PLUGIN`. Restart the server, or reload without one:
 
@@ -105,9 +109,14 @@ production.
 
 ### `record_model() -> type[BaseModel] | None`
 
-The shape of one unit of work. Declarative today: it documents the record and
-is available to readers, but the store writes what it is given. Returning None
-means "any JSON object", which is what an early plugin wants.
+The shape of one unit of work. **Purely declarative today** — nothing
+validates a write against it, nothing in the core reads `env.record_model`,
+and it is not served over HTTP. It documents the record for a human and is
+there for whatever comes to read it. Returning None means "any JSON object",
+which is what an early plugin wants.
+
+`contract.py`'s docstring used to claim it "buys validation on write"; it was
+corrected rather than left to mislead the next reader of either file.
 
 ### `summary_fields()` and `bulk_fields()`
 
@@ -236,7 +245,10 @@ class HallHandler(RecordRoomHandler):
         record_id = payload.get("lead_id")     # the wire name
         if not record_id:
             return {"ok": False, "error": "lead_id required"}
-        return await _role("greeter", "run_greeting")(self.world, record_id)
+        # `_agent` from "Importing lazily" above. A `Job` takes (world, task),
+        # so build the task dict rather than passing arguments positionally.
+        return await _agent("greeter", "run_greeting")()(
+            self.world, {"record_id": record_id})
 ```
 
 One handler is built **per room on the map**, not per room you declare — two
@@ -291,9 +303,20 @@ runs, when which edge it will take is not yet known.
 irreversible or outward-facing should be — those must never depend on a
 checkbox.
 
+`room` and `agent` say where the card is filed and who shows as waiting.
+Leave them out and it is filed against "any room", which survives a
+one-room plugin and is wrong the moment there are two.
+
 `build` makes the card's payload, so the operator sees what they are deciding
-about rather than a JSON dump. Put a `what_this_means` in it: it is the only
-part written for the person deciding.
+about rather than a JSON dump. Two keys in it are special:
+
+- **`what_this_means`** — the only part written for the person deciding.
+- **`summary`** — lifted out of the payload to become the card's headline.
+  Without it the card is titled `"<name> is at '<stage>'"`, which tells the
+  operator nothing they did not already know.
+
+And remember the bench: a step gate at a stage no workbench declares is never
+raised at all. See `pipelines()`.
 
 ---
 
@@ -410,7 +433,12 @@ def record_view(self, record, kind):
     ]
 ```
 
-Blocks: `section`, `text`, `fields`, `list`, `table`, `images`, `raw`. Value
+Blocks: `section`, `text`, `fields`, `list`, `table`, `images`, `raw` — plus
+`timeline`, which the core builds for every kind from the record's history and
+which you should not emit yourself.
+
+The builder for a `list` block is `view.listing(items, title, style)`;
+`view.list` would shadow the builtin. Value
 formats: `text`, `money`, `bytes`, `colour`, `url`, `datetime`, `percent`.
 
 `source` and `conflict` are properties of a ROW, a list item or a table row —
@@ -481,3 +509,54 @@ Two habits worth copying from the environment's tests:
 - **Assert provenance, not a fixed list.** A test asserting the core's gates
   EQUAL your plugin's exact set fails the moment a second plugin is installed
   — for doing the thing the test exists to encourage.
+
+---
+
+## Saving what a job produced
+
+The one thing every job must do, and the reference used not to name it:
+
+```python
+from tanrim import state
+
+record = state.get_record(record_id)                   # read
+state.update_record(record_id, **fields)               # patch, no stage move
+state.advance_record(record_id, "written",             # move AND patch,
+                     agent="greeter", note="…",        #   in one write
+                     **fields)
+state.add_record("Ada", kind="greeting", recipient="Ada")   # open a new one
+```
+
+`advance_record` is the ONLY way a stage may change. It appends to the
+record's history in the same write — the move, the agent, the note, whether it
+was an operator hand-move, and which fields the step actually changed (names
+only, compared rather than listed, because a step that rewrites a field
+identically has produced nothing).
+
+**It refuses an edge your pipeline does not declare**, logging what WAS
+allowed from there, and returns `None`. It does not raise — so a job that
+ignores the return value reports success having moved nothing, which is a
+real class of bug in this codebase's own history.
+
+`add_record` starts a record at its pipeline's `entry` stage. There is no
+generic HTTP route for it: what a unit of work IS belongs to you, so opening
+one does too. Serve it from `routes()` or create them from a sourcing agent.
+
+## Words this reference uses
+
+- **record** — one unit of work. Stored in `state/leads.json`, which keeps its
+  old name because renaming it would be a migration with nothing to gain;
+  `"lead_id"` survives as a dict key for the same reason. It is the wire
+  format.
+- **room** — a place on the map. **workbench** — a job within it, and the
+  routing table: declaring a stage on a bench is what makes that stage
+  reachable.
+- **role** vs **worker** — a room's agent is a role, which owns memory and
+  context. Workers are hired against it, and own the lock, the sprite and the
+  log line. You address a role; you never name a worker.
+- **castle** — one running instance of your plugin, with its own rooms,
+  sprites and records. You never see one: the environment scopes ids to the
+  current castle for the duration of a run, and your plugin says
+  `run_agent(role="greeter")` either way.
+- **gate** — something the operator decides. A `Gate` says what a decision
+  MEANS; a `StepGate` stops before a step and asks.
