@@ -83,6 +83,13 @@ class Castle {
     return (minX, minY, maxX - minX, maxY - minY);
   }
 
+  /// The same castle, with its rooms attached.
+  ///
+  /// Every field has to be repeated here, which is a trap: `status` and
+  /// `waiting` were added to the constructor and to `fromJson` and forgotten
+  /// HERE, so every castle the app drew had silently reverted to `idle` with
+  /// nothing waiting — the server was reporting `working` the whole time.
+  /// `castle_test.dart` now checks that a castle survives this intact.
   Castle withRooms(List<Room> all) => Castle(
         id: id,
         pluginId: pluginId,
@@ -94,6 +101,8 @@ class Castle {
         span: span,
         records: records,
         installed: installed,
+        status: status,
+        waiting: waiting,
         // A room with no castle belongs to every castle only when there is
         // exactly one — an install that predates castles serves unscoped
         // rooms, and they have to land somewhere.

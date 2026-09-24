@@ -411,4 +411,52 @@ void main() {
           reason: 'a camera pointed at nothing should draw nearly nothing');
     });
   });
+
+  group('withRooms', () {
+    test('a castle survives it intact', () {
+      // `withRooms` repeats every field, which is a trap: `status` and
+      // `waiting` were added to the constructor and to `fromJson` and
+      // forgotten here, so every castle the app drew reverted to `idle` with
+      // nothing waiting — while the server reported `working` throughout.
+      // Nothing failed; the dot and the block were simply never green.
+      final before = Castle.fromJson({
+        'id': 'c1',
+        'plugin': 'web_agency',
+        'plugin_name': 'Web agency',
+        'name': 'Nimes office',
+        'ring': 2,
+        'slot': 5,
+        'x': 111.0,
+        'y': -222.0,
+        'span': 52,
+        'records': 77,
+        'installed': false,
+        'status': 'working',
+        'waiting': 4,
+      });
+      final after = before.withRooms(const []);
+
+      expect(after.id, before.id);
+      expect(after.pluginId, before.pluginId);
+      expect(after.pluginName, before.pluginName);
+      expect(after.name, before.name);
+      expect(after.ring, before.ring);
+      expect(after.slot, before.slot);
+      expect(after.centre, before.centre);
+      expect(after.span, before.span);
+      expect(after.records, before.records);
+      expect(after.installed, before.installed);
+      expect(after.status, before.status);
+      expect(after.waiting, before.waiting);
+      expect(after.working, isTrue);
+    });
+
+    test('and picks up only its own rooms', () {
+      final c = _castle('aaa', 'p').withRooms([
+        _room('hall', 0, 0, 4, 4, 'aaa'),
+        _room('hall', 0, 0, 4, 4, 'bbb'),
+      ]);
+      expect(c.rooms.single.castleId, 'aaa');
+    });
+  });
 }
