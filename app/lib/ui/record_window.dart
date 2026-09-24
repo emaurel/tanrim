@@ -83,22 +83,85 @@ class _RecordWindowState extends State<RecordWindow> {
         .map((b) => (b as Map).cast<String, dynamic>())
         .toList();
 
+    // The history is its own tab, not the last card. It is the one part of a
+    // record that always exists and always grows, so left in line it ends up
+    // being the thing you scroll past to reach anything else.
+    final history =
+        blocks.where((b) => b['block'] == 'timeline').toList();
+    final rest = blocks.where((b) => b['block'] != 'timeline').toList();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _header(view),
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
-            children: [
-              if (blocks.isEmpty)
-                const Text('nothing recorded yet',
-                    style: TextStyle(color: Colors.white38, fontSize: 12)),
-              Blocks(blocks: blocks, onOpenRoom: widget.onOpenRoom),
-            ],
-          ),
-        ),
+        _tabs(history),
+        Expanded(child: _body(history, rest)),
       ],
+    );
+  }
+
+  String _tab = 'details';
+
+  /// Built lazily, one top-level block at a time.
+  ///
+  /// `ListView(children: [...])` constructs every child up front, and a real
+  /// dossier is six hundred rows and cells — which is the whole of the stall
+  /// when a record opened. `ListView.builder` builds the ones on screen.
+  ///
+  /// One `SelectionArea` around the lot, so the text is still selectable
+  /// without every value carrying its own selection machinery.
+  Widget _body(List<Map<String, dynamic>> history,
+      List<Map<String, dynamic>> rest) {
+    final showing = _tab == 'history' ? history : rest;
+    if (_tab != 'history' && rest.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Text('nothing recorded yet',
+            style: TextStyle(color: Colors.white38, fontSize: 12)),
+      );
+    }
+    return SelectionArea(
+      child: ListView.builder(
+        key: ValueKey(_tab),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 20),
+        itemCount: showing.length,
+        itemBuilder: (_, i) => Blocks(
+          blocks: [showing[i]],
+          onOpenRoom: widget.onOpenRoom,
+        ),
+      ),
+    );
+  }
+
+  Widget _tabs(List<Map<String, dynamic>> history) {
+    final steps =
+        ((history.isEmpty ? const [] : history.first['steps'] ?? const [])
+            as List).length;
+    return SizedBox(
+      height: 32,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        children: [
+          _tabButton('details', 'Details'),
+          const SizedBox(width: 6),
+          _tabButton('history', 'History ($steps)'),
+        ],
+      ),
+    );
+  }
+
+  Widget _tabButton(String id, String label) {
+    final on = _tab == id;
+    return TextButton(
+      onPressed: () => setState(() => _tab = id),
+      style: TextButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        backgroundColor:
+            on ? Colors.white.withValues(alpha: .10) : Colors.transparent,
+        foregroundColor: on ? Colors.white : Colors.white54,
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12)),
     );
   }
 

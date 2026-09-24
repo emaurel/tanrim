@@ -29,6 +29,9 @@ void main() {
       {'block': 'something_invented_later', 'title': 'New', 'value': {'a': 1}},
     ]);
     expect(find.text('NEW'), findsOneWidget);
+    // Drawn as `raw`, which starts closed — open it and the content is there.
+    await t.tap(find.text('NEW'));
+    await t.pumpAndSettle();
     expect(find.textContaining('"a": 1'), findsOneWidget);
   });
 
@@ -171,6 +174,71 @@ void main() {
       await t.tap(find.text('· Assay Room'));
       await t.pumpAndSettle();
       expect(opened, ['assay@c1']);
+    });
+  });
+
+  group('folding', () {
+    testWidgets('a titled card folds away by its heading', (t) async {
+      await _draw(t, [
+        {
+          'block': 'fields',
+          'title': 'Contact',
+          'rows': [
+            {'label': 'Phone', 'value': '06 03 36 64 05'},
+          ],
+        }
+      ]);
+      expect(find.text('06 03 36 64 05'), findsOneWidget);
+
+      await t.tap(find.text('CONTACT'));
+      await t.pumpAndSettle();
+      expect(find.text('06 03 36 64 05'), findsNothing);
+      // The heading stays, or there is nothing left to open.
+      expect(find.text('CONTACT'), findsOneWidget);
+
+      await t.tap(find.text('CONTACT'));
+      await t.pumpAndSettle();
+      expect(find.text('06 03 36 64 05'), findsOneWidget);
+    });
+
+    testWidgets('a section folds too, and its children with it', (t) async {
+      await _draw(t, [
+        {
+          'block': 'section',
+          'title': 'Profile',
+          'children': [
+            {'block': 'text', 'body': 'a family firm'},
+          ],
+        }
+      ]);
+      expect(find.text('a family firm'), findsOneWidget);
+      await t.tap(find.text('Profile'));
+      await t.pumpAndSettle();
+      expect(find.text('a family firm'), findsNothing);
+    });
+
+    testWidgets('raw starts closed', (t) async {
+      // It is the long tail — whatever had no shape worth giving it — and a
+      // record that opens on a wall of JSON buries the parts that did.
+      await _draw(t, [
+        {'block': 'raw', 'title': 'Leftovers', 'value': {'a': 1}},
+      ]);
+      expect(find.text('LEFTOVERS'), findsOneWidget);
+      expect(find.textContaining('"a": 1'), findsNothing);
+
+      await t.tap(find.text('LEFTOVERS'));
+      await t.pumpAndSettle();
+      expect(find.textContaining('"a": 1'), findsOneWidget);
+    });
+
+    testWidgets('an untitled block is not a card', (t) async {
+      // A paragraph has nothing to click and nothing to label it with once
+      // closed.
+      await _draw(t, [
+        {'block': 'text', 'body': 'a family firm'},
+      ]);
+      expect(find.byIcon(Icons.expand_more), findsNothing);
+      expect(find.text('a family firm'), findsOneWidget);
     });
   });
 }

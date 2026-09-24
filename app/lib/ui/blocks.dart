@@ -7,6 +7,11 @@ import '../model/record.dart';
 
 /// Draws the blocks a record's view is made of.
 ///
+/// Text is plain `Text` inside one `SelectionArea` at the top, not a
+/// `SelectableText` per value. A real dossier draws six hundred of them, and
+/// each `SelectableText` carries its own selection machinery — that alone was
+/// most of the second-long stall when a record opened.
+///
 /// The app knows this vocabulary and nothing about what any record MEANS — a
 /// dossier with cited prices, a job posting, a port survey all arrive as the
 /// same eight shapes. A plugin cannot ship rendering code into a compiled
@@ -46,60 +51,44 @@ class Blocks extends StatelessWidget {
       'table' => _titled(title, _table(b)),
       'images' => _titled(title, _images(b)),
       'timeline' => _titled(title, _timeline(b)),
-      _ => _titled(title.isEmpty ? 'Raw' : title, _raw(b['value'])),
+      // Closed by default. A `raw` block is the long tail — whatever had no
+      // shape worth giving it — and a dossier that opens on a wall of JSON
+      // buries the parts that did.
+      _ => _titled(title.isEmpty ? 'Raw' : title, _raw(b['value']),
+          open: false),
     };
   }
 
-  Widget _titled(String title, Widget child) => Padding(
+  /// A titled block, folded away by its heading.
+  ///
+  /// An untitled one has nothing to click and nothing to label it with once
+  /// closed, so it stays as it is — a paragraph is not a card.
+  Widget _titled(String title, Widget child, {bool open = true}) {
+    if (title.isEmpty) {
+      return Padding(
         padding: const EdgeInsets.only(bottom: 16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (title.isNotEmpty) ...[
-              Text(title.toUpperCase(),
-                  style: const TextStyle(
-                      fontSize: 10.5,
-                      letterSpacing: 1.1,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white38)),
-              const SizedBox(height: 7),
-            ],
-            child,
-          ],
-        ),
+        child: child,
       );
+    }
+    return Collapsible(
+      title: title,
+      initiallyOpen: open,
+      child: child,
+    );
+  }
 
   Widget _section(BuildContext context, Map<String, dynamic> b, String title) {
     final note = '${b['note'] ?? ''}';
     final children = ((b['children'] ?? []) as List)
         .map((c) => (c as Map).cast<String, dynamic>())
         .toList();
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: .025),
-        borderRadius: BorderRadius.circular(7),
-        border: Border(
-            left: BorderSide(
-                color: Colors.white.withValues(alpha: .12), width: 2)),
-      ),
+    return Collapsible(
+      title: title,
+      framed: true,
+      note: note,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (title.isNotEmpty)
-            Text(title,
-                style: const TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w700)),
-          if (note.isNotEmpty) ...[
-            const SizedBox(height: 3),
-            Text(note,
-                style: const TextStyle(
-                    fontSize: 11.5, color: Colors.white38, height: 1.4)),
-          ],
-          const SizedBox(height: 10),
-          for (final c in children) _block(context, c),
-        ],
+        children: [for (final c in children) _block(context, c)],
       ),
     );
   }
@@ -187,7 +176,7 @@ class Blocks extends StatelessWidget {
           value is num ? ago(value.toDouble()) : text, style: style),
       'percent' => Text(value is num ? '${(value * 100).round()}%' : text,
           style: style),
-      _ => SelectableText(text, style: style),
+      _ => Text(text, style: style),
     };
   }
 
@@ -263,7 +252,7 @@ class Blocks extends StatelessWidget {
                             color: Colors.white.withValues(alpha: .35))),
               ),
               Expanded(
-                child: SelectableText('${i['text'] ?? ''}',
+                child: Text('${i['text'] ?? ''}',
                     style: const TextStyle(fontSize: 12.5, height: 1.45)),
               ),
               _cite(i['source']),
@@ -377,7 +366,9 @@ class Blocks extends StatelessWidget {
     );
   }
 
-  Widget _step(Map<String, dynamic> s, bool first) {
+  /// One step. `latest` is the newest — the list arrives newest first, so
+  /// that is the top one and the one worth marking.
+  Widget _step(Map<String, dynamic> s, bool latest) {
     final wrote = (s['wrote'] as List?)?.map((w) => '$w').toList();
     final room = '${s['room'] ?? ''}';
     final roomName = '${s['room_name'] ?? ''}';
@@ -391,9 +382,9 @@ class Blocks extends StatelessWidget {
             height: 7,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: first
-                  ? Colors.white.withValues(alpha: .25)
-                  : const Color(0xFF8FD9A6),
+              color: latest
+                  ? const Color(0xFF8FD9A6)
+                  : Colors.white.withValues(alpha: .25),
             ),
           ),
         ),
@@ -481,7 +472,7 @@ class Blocks extends StatelessWidget {
           color: Colors.black.withValues(alpha: .3),
           borderRadius: BorderRadius.circular(6),
         ),
-        child: SelectableText(
+        child: Text(
           _pretty(value),
           style: const TextStyle(
               fontSize: 11, height: 1.45, fontFamily: 'monospace',
@@ -547,5 +538,101 @@ String _pretty(Object? value) {
     return const JsonEncoder.withIndent('  ').convert(value);
   } catch (_) {
     return '$value';
+  }
+}
+
+/// A card that folds away by its heading.
+///
+/// Its own widget, and stateful, so opening one does not rebuild the rest of
+/// a record — a dossier is a few hundred rows and a chevron should not cost
+/// a full pass over them.
+class Collapsible extends StatefulWidget {
+  const Collapsible({
+    super.key,
+    required this.title,
+    required this.child,
+    this.note = '',
+    this.initiallyOpen = true,
+    this.framed = false,
+  });
+
+  final String title;
+  final Widget child;
+  final String note;
+  final bool initiallyOpen;
+
+  /// Sections draw a box around themselves; a bare block does not.
+  final bool framed;
+
+  @override
+  State<Collapsible> createState() => _CollapsibleState();
+}
+
+class _CollapsibleState extends State<Collapsible> {
+  late bool _open = widget.initiallyOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final head = InkWell(
+      onTap: () => setState(() => _open = !_open),
+      borderRadius: BorderRadius.circular(4),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(children: [
+          Icon(_open ? Icons.expand_more : Icons.chevron_right,
+              size: 15, color: Colors.white.withValues(alpha: .4)),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              widget.framed ? widget.title : widget.title.toUpperCase(),
+              overflow: TextOverflow.ellipsis,
+              style: widget.framed
+                  ? const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)
+                  : const TextStyle(
+                      fontSize: 10.5,
+                      letterSpacing: 1.1,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white38),
+            ),
+          ),
+        ]),
+      ),
+    );
+
+    final body = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        head,
+        if (widget.note.isNotEmpty && _open) ...[
+          const SizedBox(height: 3),
+          Text(widget.note,
+              style: const TextStyle(
+                  fontSize: 11.5, color: Colors.white38, height: 1.4)),
+        ],
+        if (_open) ...[
+          const SizedBox(height: 8),
+          widget.child,
+        ],
+      ],
+    );
+
+    if (!widget.framed) {
+      return Padding(
+        padding: EdgeInsets.only(bottom: _open ? 16 : 6),
+        child: body,
+      );
+    }
+    return Container(
+      margin: EdgeInsets.only(bottom: _open ? 14 : 6),
+      padding: EdgeInsets.fromLTRB(12, 8, 12, _open ? 2 : 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .025),
+        borderRadius: BorderRadius.circular(7),
+        border: Border(
+            left: BorderSide(
+                color: Colors.white.withValues(alpha: .12), width: 2)),
+      ),
+      child: body,
+    );
   }
 }

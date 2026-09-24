@@ -124,18 +124,22 @@ def test_the_timeline_reads_the_state_machines_own_record(real_env):
     tl = view.timeline(record)
     assert tl["block"] == "timeline"
 
-    first, second = tl["steps"]
-    assert (first["from_stage"], first["stage"]) == ("intake", "surveyed")
-    assert first["wrote"] == ["profile"]
-    assert first["room_name"] == "Assay Room"
-    assert first["by_hand"] is False
+    # NEWEST FIRST. The ledger appends, so this is the reverse of what is on
+    # disk — what just happened is what you opened the record to find out.
+    newest, oldest = tl["steps"]
+    assert (newest["from_stage"], newest["stage"]) == ("surveyed", "visualised")
+    assert (oldest["from_stage"], oldest["stage"]) == ("intake", "surveyed")
+
+    assert oldest["wrote"] == ["profile"]
+    assert oldest["room_name"] == "Assay Room"
+    assert oldest["by_hand"] is False
 
     # A WORKER — `lens-2` — still resolves to the room its role staffs.
-    assert second["room_name"] == "Gallery"
+    assert newest["room_name"] == "Gallery"
     # An operator hand-move is marked as one.
-    assert second["by_hand"] is True
+    assert newest["by_hand"] is True
     # Steps taken before `wrote` existed simply have none.
-    assert second["wrote"] is None
+    assert newest["wrote"] is None
 
 
 def test_the_timeline_never_fails_to_draw(real_env):

@@ -125,7 +125,11 @@ def timeline(record: dict[str, Any]) -> dict[str, Any]:
 
     by_id = {r.id: r.name for r in _rooms_safely(rooms_mod)}
     steps: list[dict[str, Any]] = []
-    for entry in record.get("history") or []:
+    # Newest first. The ledger appends, so the history is oldest-first on
+    # disk, and reversing it HERE rather than in a client means every reader
+    # gets the same order — what just happened is what you opened the record
+    # to find out.
+    for entry in reversed(record.get("history") or []):
         agent = str(entry.get("agent") or "")
         room = _room_of(agent, rooms_mod, geom)
         steps.append({
