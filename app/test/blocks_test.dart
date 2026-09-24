@@ -38,6 +38,7 @@ Future<void> _draw(WidgetTester t, List<Map<String, dynamic>> blocks,
 }
 
 void main() {
+  _malformed();
   testWidgets('a block this build has never seen is drawn, not dropped',
       (t) async {
     // The same rule the live socket follows for an unknown frame. Nothing a
@@ -263,3 +264,30 @@ void main() {
     });
   });
 }
+
+void _malformed() {
+  group('a block the app cannot quite read', () {
+    // The rule is that an unreadable block is drawn or ignored and never
+    // fatal. A table row is `{cells: [...]}`; a bare list threw a cast error
+    // that took the whole record window down and showed a red screen.
+    testWidgets('a table row given as a bare list still draws', (t) async {
+      await _draw(t, [
+        {
+          'block': 'table',
+          'title': 'Offering',
+          'columns': ['Item', 'Price'],
+          'rows': [
+            ['Planche charcuterie', '13 €'],
+            {'cells': ['Formule déjeuner', '19 €']},
+          ],
+        },
+      ]);
+      expect(caught(), isNull);
+      expect(find.text('Planche charcuterie'), findsOneWidget);
+      expect(find.text('Formule déjeuner'), findsOneWidget);
+    });
+  });
+}
+
+/// Whatever the framework caught while building, if anything.
+Object? caught() => TestWidgetsFlutterBinding.instance.takeException();

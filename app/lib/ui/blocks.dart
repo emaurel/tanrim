@@ -270,9 +270,15 @@ class Blocks extends StatelessWidget {
   Widget _table(Map<String, dynamic> b) {
     final columns =
         ((b['columns'] ?? []) as List).map((c) => '$c').toList();
-    final rows = ((b['rows'] ?? []) as List)
-        .map((r) => (r as Map).cast<String, dynamic>())
-        .toList();
+    // A row is `{cells: [...]}`. A bare list is accepted too: a plugin that
+    // emits one is wrong, but taking the whole record window down over it
+    // breaks the rule that an unreadable block is drawn or ignored and never
+    // fatal.
+    final rows = [
+      for (final r in (b['rows'] ?? []) as List)
+        if (r is List) <String, dynamic>{'cells': r}
+        else if (r is Map) r.cast<String, dynamic>(),
+    ];
     return Container(
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: .03),

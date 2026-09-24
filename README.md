@@ -16,7 +16,32 @@ nothing to do, which is the correct empty state rather than an error.
 
 Built on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk).
 
-![the world](docs/world.png)
+![A castle's eleven rooms, each with the worker that staffs it. Two are
+working; two carry an approval badge.](docs/img/world.png)
+
+<table>
+<tr>
+<td><img src="docs/img/castle.png" alt="A castle's window: what it is an
+instance of, its records grouped by stage, and its rooms."></td>
+<td><img src="docs/img/record.png" alt="A record's window: the blocks its
+plugin answered with, and the history the core built."></td>
+</tr>
+<tr>
+<td><b>A castle</b> — one running instance of a plugin. Its work comes first
+and its rooms last: you open a room to see what is in it, not to look at the
+building.</td>
+<td><b>A record</b> — drawn from a small block vocabulary the plugin answers
+with. The history is the core's, built from the state machine for every kind
+of work.</td>
+</tr>
+</table>
+
+Regenerate them with `cd app && tool/screenshots.sh`. They are rendered from
+the real widgets against a real dump of the rooms, so re-running the script is
+the whole job of keeping them true — the picture this replaced was three weeks
+old and predated castles, windows and the record view entirely. The businesses
+on the board are invented; the real ledger holds people who have not been
+contacted.
 
 ## What you get
 
