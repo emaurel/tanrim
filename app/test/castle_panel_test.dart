@@ -142,6 +142,30 @@ void main() {
       expect(find.text('Ring 1, plot 2'), findsOneWidget);
     });
   });
+
+  testWidgets('the work comes before the rooms', (t) async {
+    // A castle is a place that DOES something; its rooms are how. You open one
+    // to look at what is in it rather than at the building.
+    await _panel(t, records: [
+      WorkRecord(const {
+        'id': 'r1', 'name': 'Table des Ormes', 'stage': 'sourced',
+        'kind': 'prospect', 'castle_id': 'c1', 'updated_ts': 0,
+      }),
+    ]);
+
+    expect(find.text('prospect (1)'), findsOneWidget);
+    expect(find.text('Rooms (2)'), findsOneWidget);
+    expect(t.getTopLeft(find.text('prospect (1)')).dx,
+        lessThan(t.getTopLeft(find.text('Rooms (2)')).dx));
+  });
+
+  testWidgets('a castle with no work at all still lands somewhere', (t) async {
+    // Which kinds a castle has depends on what is installed, so the first tab
+    // is resolved rather than fixed.
+    await _panel(t);
+    expect(find.text('Rooms (2)'), findsOneWidget);
+    expect(find.text('assay'), findsOneWidget);
+  });
 }
 
 /// Whatever the framework caught while building, if anything.

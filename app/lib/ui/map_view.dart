@@ -303,10 +303,15 @@ class MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
     return _iso.toTile(world);
   }
 
+  /// The castle whose LAND is under this point.
+  ///
+  /// Its plot, not the bounding box of its rooms: the plot is what is drawn,
+  /// what the outlines line up with, and — once you are zoomed in among the
+  /// rooms — the only part of a castle left to click.
   Castle? _castleAt(Offset local, Size size) {
     final t = _tileAt(local, size);
     for (final c in widget.castles.reversed) {
-      final (x, y, w, h) = c.bounds;
+      final (x, y, w, h) = c.plot;
       if (t.dx >= x && t.dx < x + w && t.dy >= y && t.dy < y + h) return c;
     }
     return null;
@@ -497,14 +502,20 @@ class MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
                   widget.onRoomTapped(r);
                   return;
                 }
-                // Close up, empty land still offers to be built on. Nothing else
-                // is there to click, and having to zoom out to build would be a
-                // rule with no reason behind it.
+                // Close up, empty land still offers to be built on. Nothing
+                // else is there to click, and having to zoom out to build
+                // would be a rule with no reason behind it.
                 final p = _plotAt(d.localPosition, size);
                 if (p != null) {
                   setState(() => _hoveredPlot = null);
                   widget.onPlotTapped?.call(p.ring, p.slot);
+                  return;
                 }
+                // Its own land, between the rooms. Zoomed in, that is the only
+                // part of a castle left to click — without it you had to zoom
+                // out to open the castle you were standing in.
+                final c = _castleAt(d.localPosition, size);
+                if (c != null) widget.onCastleTapped?.call(c);
               },
               // Its own layer. The map repaints every frame — the sprites
               // breathe — and without a boundary that invalidation travels up

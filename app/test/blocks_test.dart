@@ -3,8 +3,21 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:tanrim/ui/blocks.dart';
 
+/// Opens every card. They all start CLOSED — a record opens on its shape,
+/// not on six hundred rows — so a test about content has to open one first.
+Future<void> _openAll(WidgetTester t) async {
+  for (final chevron in [
+    ...t.widgetList<Icon>(find.byIcon(Icons.chevron_right)),
+  ].asMap().keys.toList().reversed) {
+    final found = find.byIcon(Icons.chevron_right);
+    if (chevron >= found.evaluate().length) continue;
+    await t.tap(found.at(chevron));
+    await t.pumpAndSettle();
+  }
+}
+
 Future<void> _draw(WidgetTester t, List<Map<String, dynamic>> blocks,
-    {void Function(String)? onOpenRoom}) async {
+    {void Function(String)? onOpenRoom, bool open = true}) async {
   t.view
     ..physicalSize = const Size(560, 900)
     ..devicePixelRatio = 1.0;
@@ -18,6 +31,10 @@ Future<void> _draw(WidgetTester t, List<Map<String, dynamic>> blocks,
     ),
   ));
   await t.pumpAndSettle();
+  if (open) {
+    await _openAll(t);
+    await _openAll(t);        // sections reveal children that are cards too
+  }
 }
 
 void main() {
@@ -27,9 +44,9 @@ void main() {
     // plugin sends should be able to make part of a record invisible.
     await _draw(t, [
       {'block': 'something_invented_later', 'title': 'New', 'value': {'a': 1}},
-    ]);
+    ], open: false);
     expect(find.text('NEW'), findsOneWidget);
-    // Drawn as `raw`, which starts closed — open it and the content is there.
+    // Drawn as `raw` — open it and the content is there.
     await t.tap(find.text('NEW'));
     await t.pumpAndSettle();
     expect(find.textContaining('"a": 1'), findsOneWidget);
@@ -178,7 +195,10 @@ void main() {
   });
 
   group('folding', () {
-    testWidgets('a titled card folds away by its heading', (t) async {
+    testWidgets('every card starts closed, and opens by its heading',
+        (t) async {
+      // A record opens on its SHAPE — which sections exist, which are empty —
+      // rather than on a wall of rows that buries it.
       await _draw(t, [
         {
           'block': 'fields',
@@ -187,18 +207,20 @@ void main() {
             {'label': 'Phone', 'value': '06 03 36 64 05'},
           ],
         }
-      ]);
+      ], open: false);
+      expect(find.text('CONTACT'), findsOneWidget);
+      expect(find.text('06 03 36 64 05'), findsNothing);
+
+      await t.tap(find.text('CONTACT'));
+      await t.pumpAndSettle();
       expect(find.text('06 03 36 64 05'), findsOneWidget);
 
+      // And the heading stays when it closes again, or there is nothing left
+      // to open.
       await t.tap(find.text('CONTACT'));
       await t.pumpAndSettle();
       expect(find.text('06 03 36 64 05'), findsNothing);
-      // The heading stays, or there is nothing left to open.
       expect(find.text('CONTACT'), findsOneWidget);
-
-      await t.tap(find.text('CONTACT'));
-      await t.pumpAndSettle();
-      expect(find.text('06 03 36 64 05'), findsOneWidget);
     });
 
     testWidgets('a section folds too, and its children with it', (t) async {
@@ -210,19 +232,17 @@ void main() {
             {'block': 'text', 'body': 'a family firm'},
           ],
         }
-      ]);
-      expect(find.text('a family firm'), findsOneWidget);
+      ], open: false);
+      expect(find.text('a family firm'), findsNothing);
       await t.tap(find.text('Profile'));
       await t.pumpAndSettle();
-      expect(find.text('a family firm'), findsNothing);
+      expect(find.text('a family firm'), findsOneWidget);
     });
 
-    testWidgets('raw starts closed', (t) async {
-      // It is the long tail — whatever had no shape worth giving it — and a
-      // record that opens on a wall of JSON buries the parts that did.
+    testWidgets('raw starts closed too', (t) async {
       await _draw(t, [
         {'block': 'raw', 'title': 'Leftovers', 'value': {'a': 1}},
-      ]);
+      ], open: false);
       expect(find.text('LEFTOVERS'), findsOneWidget);
       expect(find.textContaining('"a": 1'), findsNothing);
 
@@ -236,8 +256,9 @@ void main() {
       // closed.
       await _draw(t, [
         {'block': 'text', 'body': 'a family firm'},
-      ]);
+      ], open: false);
       expect(find.byIcon(Icons.expand_more), findsNothing);
+      expect(find.byIcon(Icons.chevron_right), findsNothing);
       expect(find.text('a family firm'), findsOneWidget);
     });
   });

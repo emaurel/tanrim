@@ -85,8 +85,11 @@ void main() {
     // Details first, and the history is not in it.
     expect(find.text('CONTACT'), findsOneWidget);
     expect(find.text('intake → surveyed'), findsNothing);
+    // Cards start closed, so the heading is what Details shows.
 
     await t.tap(find.text('History (1)'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('HISTORY'));
     await t.pumpAndSettle();
     expect(find.text('intake → surveyed'), findsOneWidget);
     expect(find.text('CONTACT'), findsNothing);
@@ -118,6 +121,8 @@ void main() {
       },
     ]);
     await t.tap(find.text('History (2)'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('HISTORY'));
     await t.pumpAndSettle();
 
     final newest = t.getTopLeft(find.text('visualised → built'));

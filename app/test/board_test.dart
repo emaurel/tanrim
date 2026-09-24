@@ -52,12 +52,19 @@ void main() {
       ),
     );
     expect(find.text('surprise'), findsOneWidget);
+    await t.tap(find.text('surprise'));
+    await t.pumpAndSettle();
     expect(find.text('Orphan'), findsOneWidget);
   });
 
-  testWidgets('endings come last and start collapsed', (t) async {
+  testWidgets('endings come last, and every stage starts collapsed',
+      (t) async {
     // A board that sorts `lost` next to `sourced` buries the work still worth
     // doing, and 47 disqualified records would push everything off screen.
+    //
+    // All of them start closed now, endings included: a castle's work is a
+    // dozen stages and seventy records, and the SHAPE of the pipeline — where
+    // the work has piled up — is what you came to see.
     await _pump(
       t,
       Board(
@@ -71,11 +78,17 @@ void main() {
         onTapRecord: (_) {},
       ),
     );
-    expect(find.text('Working'), findsOneWidget);
-    expect(find.text('Gone'), findsNothing, reason: 'endings start collapsed');
+    expect(find.text('Working'), findsNothing, reason: 'stages start closed');
+    expect(find.text('Gone'), findsNothing);
+
+    // `live` above `lost`, and each opens on its own.
+    expect(t.getTopLeft(find.text('live')).dy,
+        lessThan(t.getTopLeft(find.text('lost')).dy));
+
     await t.tap(find.text('lost'));
     await t.pumpAndSettle();
     expect(find.text('Gone'), findsOneWidget);
+    expect(find.text('Working'), findsNothing);
   });
 
   testWidgets('newest first within a stage', (t) async {
@@ -92,6 +105,8 @@ void main() {
         onTapRecord: (_) {},
       ),
     );
+    await t.tap(find.text('s'));
+    await t.pumpAndSettle();
     final older = t.getTopLeft(find.text('Older'));
     final newer = t.getTopLeft(find.text('Newer'));
     expect(newer.dy, lessThan(older.dy));

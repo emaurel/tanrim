@@ -91,7 +91,12 @@ class _StageGroup extends StatefulWidget {
 }
 
 class _StageGroupState extends State<_StageGroup> {
-  late bool _open = !widget.dimmed;
+  /// Closed to start with, endings included.
+  ///
+  /// A castle's work is a dozen stages and seventy records; opened, the board
+  /// is a long scroll and the SHAPE of the pipeline — where the work has piled
+  /// up — is the thing you came to see and the thing you cannot see.
+  bool _open = false;
 
   @override
   Widget build(BuildContext context) {

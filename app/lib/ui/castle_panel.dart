@@ -72,8 +72,19 @@ class _CastlePanelState extends State<CastlePanel> {
     return out;
   }
 
-  /// Which section is showing: 'rooms', or a kind of work.
-  String _tab = 'rooms';
+  /// Which section is showing: a kind of work, or 'rooms'.
+  ///
+  /// Resolved on first build rather than fixed, because which kinds a castle
+  /// has depends on what is installed — and a castle with no work at all
+  /// should land on the one tab it does have.
+  String? _tab;
+
+  String get _showing {
+    final tabs = [..._work.keys, 'rooms'];
+    final wanted = _tab;
+    if (wanted != null && tabs.contains(wanted)) return wanted;
+    return tabs.first;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -93,7 +104,10 @@ class _CastlePanelState extends State<CastlePanel> {
 
   Widget _tabs() {
     final work = _work;
-    final tabs = ['rooms', ...work.keys];
+    // The WORK first and the rooms last. A castle is a place that does
+    // something; its rooms are how, and you open one to look at what is in it
+    // rather than at the building.
+    final tabs = [...work.keys, 'rooms'];
     return SizedBox(
       height: 34,
       child: ListView(
@@ -115,7 +129,7 @@ class _CastlePanelState extends State<CastlePanel> {
   }
 
   Widget _tabButton(String id, String label) {
-    final on = _tab == id;
+    final on = _showing == id;
     return TextButton(
       onPressed: () => setState(() => _tab = id),
       style: TextButton.styleFrom(
@@ -129,8 +143,8 @@ class _CastlePanelState extends State<CastlePanel> {
   }
 
   Widget _body(Castle c) {
-    if (_tab != 'rooms') {
-      final mine = _work[_tab] ?? const <WorkRecord>[];
+    if (_showing != 'rooms') {
+      final mine = _work[_showing] ?? const <WorkRecord>[];
       final counts = <String, int>{};
       for (final r in mine) {
         counts[r.stage] = (counts[r.stage] ?? 0) + 1;

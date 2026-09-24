@@ -196,6 +196,28 @@ class WorldPainter extends CustomPainter {
   /// and a faint fill: filled plots read as buildings that are already there,
   /// which is the one thing they must not look like.
   void _plots(Canvas canvas) {
+    // The land a castle stands ON, drawn under it. Without it a castle had no
+    // edge you could click once you were inside it — the rooms were clickable
+    // and the gaps between them were nothing at all.
+    for (final c in castles) {
+      final (x, y, w, h) = c.plot;
+      if (!_onScreen(x, y, w, h)) continue;
+      final hot = c.id == hoveredCastle;
+      final face = iso.rectDiamond(x, y, w, h);
+      canvas.drawPath(
+          face,
+          Paint()
+            ..color = hot
+                ? const Color(0x1EFFFFFF)
+                : const Color(0x0AFFFFFF));
+      canvas.drawPath(
+          face,
+          Paint()
+            ..color = hot ? const Color(0x66FFFFFF) : const Color(0x22FFFFFF)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = (hot ? 2.0 : 1.2) / zoom);
+    }
+
     for (final p in plots) {
       final (x, y, w, h) = p.bounds;
       if (!_onScreen(x, y, w, h)) continue;
@@ -239,13 +261,17 @@ class WorldPainter extends CustomPainter {
   /// unreadable labels answer neither.
   void _estate(Canvas canvas) {
     final sorted = [...castles]..sort((a, b) {
-        final (ax, ay, _, _) = a.bounds;
-        final (bx, by, _, _) = b.bounds;
+        final (ax, ay, _, _) = a.plot;
+        final (bx, by, _, _) = b.plot;
         return isoDepth(ax, ay).compareTo(isoDepth(bx, by));
       });
 
     for (final c in sorted) {
-      final (x, y, w, h) = c.bounds;
+      // The PLOT, not the rooms' bounding box. The block is the piece of land
+      // the castle stands on, so it lines up with the outlines around it and
+      // with what you click — a block the size of the rooms was a different
+      // shape from the thing it represented.
+      final (x, y, w, h) = c.plot;
       if (!_onScreen(x, y, w, h)) continue;
       final hot = c.id == hoveredCastle;
       final face = iso.rectDiamond(x, y, w, h);
@@ -398,16 +424,23 @@ class WorldPainter extends CustomPainter {
   }
 
   void _roomLabel(Canvas canvas, Room room) {
+    // The middle of the floor, not the top of the back wall. On the wall the
+    // name sat over whatever room was behind it and read as belonging to
+    // that one; in the middle it is unambiguously this room's.
     final at = iso.toScreen(
-        room.position.x + room.size.x / 2, room.position.y);
+        room.position.x + room.size.x / 2, room.position.y + room.size.y / 2);
     if (labelled) {
       _text(
         canvas,
         room.name,
-        at + Offset(0, -_wallHeight * iso.tileH - 18 / zoom),
+        at + Offset(0, -6 / zoom),
         size: 13 / zoom,
         weight: FontWeight.w600,
         centre: true,
+        // Outlined rather than shadowed: it lies on a floor that may be any
+        // colour, and a blur reads as smudge where an outline reads as a
+        // label. Black, because the floors are light enough to need it.
+        halo: Colors.black,
       );
     }
     // The badge stays at every distance. It is the one thing on a room that
@@ -415,7 +448,7 @@ class WorldPainter extends CustomPainter {
     // simply by having zoomed out.
     final badge = badges[room.id] ?? 0;
     if (badge > 0) {
-      final c = at + Offset(0, -_wallHeight * iso.tileH - 38 / zoom);
+      final c = at + Offset(0, -26 / zoom);
       canvas.drawCircle(c, 10 / zoom, Paint()..color = const Color(0xFFE23D3D));
       _text(canvas, '$badge', c - Offset(0, 8 / zoom),
           size: 11 / zoom, weight: FontWeight.bold, centre: true);

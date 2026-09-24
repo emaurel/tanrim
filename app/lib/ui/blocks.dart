@@ -51,11 +51,7 @@ class Blocks extends StatelessWidget {
       'table' => _titled(title, _table(b)),
       'images' => _titled(title, _images(b)),
       'timeline' => _titled(title, _timeline(b)),
-      // Closed by default. A `raw` block is the long tail — whatever had no
-      // shape worth giving it — and a dossier that opens on a wall of JSON
-      // buries the parts that did.
-      _ => _titled(title.isEmpty ? 'Raw' : title, _raw(b['value']),
-          open: false),
+      _ => _titled(title.isEmpty ? 'Raw' : title, _raw(b['value'])),
     };
   }
 
@@ -63,7 +59,12 @@ class Blocks extends StatelessWidget {
   ///
   /// An untitled one has nothing to click and nothing to label it with once
   /// closed, so it stays as it is — a paragraph is not a card.
-  Widget _titled(String title, Widget child, {bool open = true}) {
+  /// Every card starts CLOSED.
+  ///
+  /// A dossier is six hundred rows; opened, the window is a wall of them and
+  /// the shape of the record — which sections exist, which are empty — is
+  /// buried. Closed, the first thing you see is what there is.
+  Widget _titled(String title, Widget child, {bool open = false}) {
     if (title.isEmpty) {
       return Padding(
         padding: const EdgeInsets.only(bottom: 16),
@@ -86,6 +87,7 @@ class Blocks extends StatelessWidget {
       title: title,
       framed: true,
       note: note,
+      initiallyOpen: false,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [for (final c in children) _block(context, c)],
@@ -552,7 +554,7 @@ class Collapsible extends StatefulWidget {
     required this.title,
     required this.child,
     this.note = '',
-    this.initiallyOpen = true,
+    this.initiallyOpen = false,
     this.framed = false,
   });
 

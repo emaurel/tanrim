@@ -53,7 +53,8 @@ Future<dynamic> _map(WidgetTester t,
     {Web web = const Web(),
     Set<(int, int)> taken = const {},
     List<Castle>? castles,
-    void Function(int ring, int slot)? onPlotTapped}) async {
+    void Function(int ring, int slot)? onPlotTapped,
+    void Function(Castle)? onCastleTapped}) async {
   t.view
     ..physicalSize = const Size(1200, 800)
     ..devicePixelRatio = 1.0;
@@ -72,6 +73,7 @@ Future<dynamic> _map(WidgetTester t,
         web: web,
         taken: taken,
         onPlotTapped: onPlotTapped,
+        onCastleTapped: onCastleTapped,
         onRoomTapped: (_) {},
       ),
     ),
@@ -372,5 +374,57 @@ void main() {
     // actually works in, which is a multiplier and not an amount.
     // ignore: avoid_dynamic_calls
     expect(s.debugZoom, closeTo(start * 1.21, 0.0001));
+  });
+
+  testWidgets('a castle can be opened from its own land, zoomed in',
+      (t) async {
+    // Zoomed in among the rooms, the land between them is the only part of a
+    // castle left to click — without it you had to zoom out to open the
+    // castle you were standing in.
+    final opened = <String>[];
+    final s = await _map(t, onCastleTapped: (c) => opened.add(c.id));
+    final size = t.getSize(find.byType(MapView));
+
+    // ignore: avoid_dynamic_calls
+    expect(s.debugZoom > WorldPainter.labelZoom, isTrue, reason: 'close up');
+    // Inside the plot, in the gap between the rooms.
+    // ignore: avoid_dynamic_calls
+    await t.tapAt(s.debugScreenOf(13.0, 9.0, size) as Offset);
+    await t.pump();
+    expect(opened, ['p']);
+  });
+
+  testWidgets('a room still wins over the land it stands on', (t) async {
+    final opened = <String>[];
+    final rooms = <String>[];
+    t.view
+      ..physicalSize = const Size(1200, 800)
+      ..devicePixelRatio = 1.0;
+    addTearDown(t.view.reset);
+
+    final key = GlobalKey();
+    await t.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: MapView(
+          key: key,
+          rooms: _rooms,
+          agents: const [],
+          badges: const {},
+          castles: _castles,
+          castleBadges: const {},
+          onCastleTapped: (c) => opened.add(c.id),
+          onRoomTapped: (r) => rooms.add(r.id),
+        ),
+      ),
+    ));
+    await t.pump(const Duration(milliseconds: 16));
+
+    final s = key.currentState as dynamic;
+    final size = t.getSize(find.byType(MapView));
+    // ignore: avoid_dynamic_calls
+    await t.tapAt(s.debugScreenOf(6.0, 4.0, size) as Offset);
+    await t.pump();
+    expect(rooms, ['a']);
+    expect(opened, isEmpty);
   });
 }
