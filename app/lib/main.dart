@@ -11,6 +11,7 @@ import 'model/world.dart';
 import 'ui/approvals.dart';
 import 'ui/board.dart';
 import 'ui/castle_dialogs.dart';
+import 'ui/castle_panel.dart';
 import 'ui/map_view.dart';
 import 'ui/room_panel.dart';
 import 'ui/settings.dart';
@@ -78,6 +79,7 @@ class _WorldPageState extends State<WorldPage> {
   List<String> _deadStages = const [];
   Map<String, int> _counts = const {};
   String? _selectedRecord;
+  String? _selectedCastle;
 
   List<Approval> _approvals = const [];
 
@@ -389,19 +391,38 @@ class _WorldPageState extends State<WorldPage> {
     if (mounted) _say(said);
   }
 
-  /// Clicked a castle: its card, where it can be renamed or razed.
-  Future<void> _onCastleTapped(Castle castle) async {
-    final edit = await editCastle(context, castle);
-    if (edit == null || !mounted) return;
-    if (edit.raze) {
-      if (!await confirmRaze(context, castle)) return;
-      final said = await _razeCastle(castle.id);
-      if (mounted) _say(said);
-      return;
+  /// Clicked a castle: open its panel in the right-hand column.
+  ///
+  /// Not a dialog. A castle is a PLACE with work in it — its rooms, its
+  /// records, what it is an instance of — and a modal that asks for a name and
+  /// goes away can hold none of that.
+  void _onCastleTapped(Castle castle) {
+    setState(() {
+      _selectedCastle = castle.id;
+      _pane = _Pane.castle;
+      _panelOpen = true;
+    });
+  }
+
+  Future<void> _askRaze(Castle castle) async {
+    if (!await confirmRaze(context, castle)) return;
+    final said = await _razeCastle(castle.id);
+    if (!mounted) return;
+    setState(() {
+      if (_selectedCastle == castle.id) {
+        _selectedCastle = null;
+        _pane = _Pane.board;
+      }
+    });
+    _say(said);
+  }
+
+  Castle? _castleById(String? id) {
+    if (id == null) return null;
+    for (final c in _castles) {
+      if (c.id == id) return c;
     }
-    if (edit.name.isEmpty || edit.name == castle.name) return;
-    final problem = await _renameCastle(castle.id, edit.name);
-    if (problem.isNotEmpty && mounted) _say(problem);
+    return null;
   }
 
   void _say(String message) {
@@ -529,6 +550,23 @@ class _WorldPageState extends State<WorldPage> {
                                 await _loadBoard();
                                 await _loadApprovals();
                               },
+                            ),
+                          _Pane.castle when _castleById(_selectedCastle) !=
+                                  null =>
+                            CastlePanel(
+                              castle: _castleById(_selectedCastle)!,
+                              rooms: _rooms,
+                              badges: _badges,
+                              onClose: () =>
+                                  setState(() => _pane = _Pane.board),
+                              onRename: (name) =>
+                                  _renameCastle(_selectedCastle!, name),
+                              onRaze: () =>
+                                  _askRaze(_castleById(_selectedCastle)!),
+                              onOpenRoom: (r) => setState(() {
+                                _selected = r.id;
+                                _pane = _Pane.room;
+                              }),
                             ),
                           _ => _boardPane(),
                         },
@@ -704,6 +742,8 @@ class _WorldPageState extends State<WorldPage> {
           _tab('Board', _Pane.board),
           _tab('Approvals', _Pane.approvals, count: pending),
           if (_selected != null) _tab('Room', _Pane.room),
+          if (_castleById(_selectedCastle) != null)
+            _tab('Castle', _Pane.castle),
         ],
       ),
     );
@@ -787,4 +827,4 @@ class _WorldPageState extends State<WorldPage> {
 }
 
 /// Which pane the right-hand column shows.
-enum _Pane { board, approvals, room }
+enum _Pane { board, approvals, room, castle }
