@@ -357,15 +357,25 @@ def add_user_approval(
     summary: str,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from .castles import here
+
     _ensure_approvals()
+    payload = payload or {}
+    # Which castle is asking. From the run in hand, so a plugin raising a card
+    # needs to know nothing about castles; from the record it names when there
+    # is no run, which is the case for a card raised by a sweep.
+    castle = here()
+    if not castle and payload.get("lead_id"):
+        castle = home_castle_for(get_record(payload["lead_id"]) or {})
     rec = {
         "id": str(uuid.uuid4()),
         "ts": time.time(),
         "kind": kind,                # e.g., "tool_review", "create_room", "delete_room"
         "room_id": room_id,           # which room shows the badge
+        "castle_id": castle,
         "requesting_agent": requesting_agent,
         "summary": summary,
-        "payload": payload or {},
+        "payload": payload,
         "status": "pending",          # pending | approved | rejected | applied
         "decision": None,             # {"ts": ..., "reason": "..."}
     }
@@ -415,6 +425,33 @@ def resolve_user_approval(
                 _write(USER_APPROVALS_FILE, items)
                 return r
     return None
+
+
+def approval_castle(card: dict[str, Any]) -> str:
+    """Which castle a card belongs to, stored or inferred.
+
+    Inferred for cards raised before castles existed: from the record they
+    name, which is how every other pre-castle thing resolves. A card filed
+    under no castle appears in no castle's list, and a pending approval that
+    nobody can see is the one kind of state this environment must never have.
+    """
+    if card.get("castle_id"):
+        return card["castle_id"]
+    # `"lead_id"` is the wire format — approval payloads already written into
+    # `state/*.json` and read by the app — so the KEY stays. What it holds is
+    # a record id.
+    record_id = (card.get("payload") or {}).get("lead_id")
+    if record_id:
+        return home_castle_for(get_record(record_id) or {})
+    return ""
+
+
+def approval_counts_by_castle() -> dict[str, int]:
+    out: dict[str, int] = {}
+    for card in list_user_approvals(status="pending"):
+        key = approval_castle(card)
+        out[key] = out.get(key, 0) + 1
+    return out
 
 
 def approval_counts_by_room() -> dict[str, int]:

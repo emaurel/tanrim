@@ -10,13 +10,14 @@ import '../model/record.dart';
 /// irreversible, so the card has to carry enough to decide ON — and refusing
 /// has to be as easy as agreeing, with somewhere to say why. A rejection with
 /// no reason produces a rebuild identical to the one that was rejected.
-class Approvals extends StatelessWidget {
+class Approvals extends StatefulWidget {
   const Approvals({
     super.key,
     required this.api,
     required this.approvals,
     required this.onResolved,
     this.onOpenRecord,
+    this.castleNames = const {},
   });
 
   final Api api;
@@ -24,8 +25,22 @@ class Approvals extends StatelessWidget {
   final VoidCallback onResolved;
   final void Function(String recordId)? onOpenRecord;
 
+  /// castle id -> its name, for the group headers.
+  final Map<String, String> castleNames;
+
+  @override
+  State<Approvals> createState() => _ApprovalsState();
+}
+
+class _ApprovalsState extends State<Approvals> {
+  /// Castles whose cards are hidden. Open by default: a pending approval is
+  /// something waiting on you, and hiding it behind a click by default is how
+  /// one sits unnoticed for two days.
+  final Set<String> _collapsed = {};
+
   @override
   Widget build(BuildContext context) {
+    final approvals = widget.approvals;
     if (approvals.isEmpty) {
       return const Center(
         child: Padding(
@@ -38,14 +53,73 @@ class Approvals extends StatelessWidget {
     // Oldest first: a card that has been sitting for two days is the one to
     // look at, not the one that arrived while you were reading.
     final sorted = [...approvals]..sort((a, b) => a.ts.compareTo(b.ts));
-    return ListView.builder(
+
+    // By castle. A decision belongs to a place, and two agencies' gates in one
+    // undifferentiated list is the board's old problem again — you cannot tell
+    // whose email you are about to send.
+    final groups = <String, List<Approval>>{};
+    for (final a in sorted) {
+      groups.putIfAbsent(a.castleId, () => []).add(a);
+    }
+
+    return ListView(
       padding: const EdgeInsets.all(12),
-      itemCount: sorted.length,
-      itemBuilder: (_, i) => ApprovalCard(
-        api: api,
-        approval: sorted[i],
-        onResolved: onResolved,
-        onOpenRecord: onOpenRecord,
+      children: [
+        for (final entry in groups.entries) ...[
+          _group(entry.key, entry.value),
+          if (!_collapsed.contains(entry.key))
+            for (final a in entry.value)
+              ApprovalCard(
+                api: widget.api,
+                approval: a,
+                onResolved: widget.onResolved,
+                onOpenRecord: widget.onOpenRecord,
+              ),
+          const SizedBox(height: 10),
+        ],
+      ],
+    );
+  }
+
+  Widget _group(String castleId, List<Approval> cards) {
+    final open = !_collapsed.contains(castleId);
+    final name = widget.castleNames[castleId] ??
+        (castleId.isEmpty ? 'no castle' : castleId);
+    return InkWell(
+      onTap: () => setState(() {
+        if (open) {
+          _collapsed.add(castleId);
+        } else {
+          _collapsed.remove(castleId);
+        }
+      }),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(2, 6, 2, 8),
+        child: Row(children: [
+          Icon(open ? Icons.expand_more : Icons.chevron_right,
+              size: 17, color: Colors.white.withValues(alpha: .45)),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(name.toUpperCase(),
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 10.5,
+                    letterSpacing: 0.9,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white54)),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE23D3D),
+              borderRadius: BorderRadius.circular(9),
+            ),
+            child: Text('${cards.length}',
+                style: const TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.bold)),
+          ),
+        ]),
       ),
     );
   }

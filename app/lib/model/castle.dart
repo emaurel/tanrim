@@ -27,6 +27,8 @@ class Castle {
     required this.span,
     required this.records,
     required this.installed,
+    this.status = 'idle',
+    this.waiting = 0,
     this.rooms = const [],
   });
 
@@ -45,6 +47,14 @@ class Castle {
   final double span;
 
   final int records;
+
+  /// `working` when a run is in flight here, `idle` otherwise. There is no
+  /// third state: a castle is either doing something or it is not, and "has
+  /// work waiting" is [waiting], not a status.
+  final String status;
+  final int waiting;
+
+  bool get working => status == 'working';
 
   /// False when the plugin it is an instance of is no longer installed — the
   /// castle outlives it, so the map has to be able to say so rather than
@@ -106,6 +116,8 @@ class Castle {
         span: ((j['span'] ?? 52) as num).toDouble(),
         records: (j['records'] ?? 0) as int,
         installed: j['installed'] != false,
+        status: (j['status'] ?? 'idle') as String,
+        waiting: (j['waiting'] ?? 0) as int,
       );
 }
 

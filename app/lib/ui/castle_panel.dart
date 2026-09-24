@@ -19,8 +19,6 @@ class CastlePanel extends StatefulWidget {
     required this.castle,
     required this.rooms,
     required this.badges,
-    required this.onClose,
-    required this.onRename,
     required this.onRaze,
     required this.onOpenRoom,
     required this.records,
@@ -36,10 +34,7 @@ class CastlePanel extends StatefulWidget {
   final List<Room> rooms;
   final Map<String, int> badges;
 
-  final VoidCallback onClose;
 
-  /// Returns a problem, or empty when it worked.
-  final Future<String> Function(String name) onRename;
   final Future<void> Function() onRaze;
   final void Function(Room) onOpenRoom;
 
@@ -56,56 +51,7 @@ class CastlePanel extends StatefulWidget {
 }
 
 class _CastlePanelState extends State<CastlePanel> {
-  late final TextEditingController _name =
-      TextEditingController(text: widget.castle.name);
-  final FocusNode _focus = FocusNode();
-  bool _editing = false;
-  bool _busy = false;
-  String? _said;
-
-  @override
-  void didUpdateWidget(CastlePanel old) {
-    super.didUpdateWidget(old);
-    if (old.castle.id != widget.castle.id) {
-      _name.text = widget.castle.name;
-      _editing = false;
-      _said = null;
-    }
-  }
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    final wanted = _name.text.trim();
-    if (wanted.isEmpty) {
-      setState(() {
-        _name.text = widget.castle.name;
-        _editing = false;
-      });
-      return;
-    }
-    if (wanted == widget.castle.name) {
-      setState(() => _editing = false);
-      return;
-    }
-    setState(() {
-      _busy = true;
-      _said = null;
-    });
-    final problem = await widget.onRename(wanted);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _editing = false;
-      _said = problem.isEmpty ? null : problem;
-      if (problem.isNotEmpty) _name.text = widget.castle.name;
-    });
-  }
+  final bool _busy = false;
 
   List<Room> get _mine => widget.rooms
       .where((r) => r.castleId == widget.castle.id || r.castleId.isEmpty)
@@ -135,16 +81,8 @@ class _CastlePanelState extends State<CastlePanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _header(c),
-        if (_said != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Text(_said!,
-                style: const TextStyle(
-                    fontSize: 12, color: Color(0xFFE0A458))),
-          ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
           child: _facts(c),
         ),
         _tabs(),
@@ -241,70 +179,6 @@ class _CastlePanelState extends State<CastlePanel> {
   }
 
 
-  /// The name, edited in place.
-  ///
-  /// In place rather than behind a dialog because the default is
-  /// `[PLUGIN NAME] [N]` — it tells you what a castle IS and nothing about
-  /// what it is for, so renaming is the first thing you do and should not be
-  /// two clicks and a modal away.
-  Widget _header(Castle c) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 8, 10),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: _editing
-                  ? TextField(
-                      controller: _name,
-                      focusNode: _focus,
-                      autofocus: true,
-                      style: const TextStyle(
-                          fontSize: 17, fontWeight: FontWeight.w700),
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        border: OutlineInputBorder(),
-                        contentPadding:
-                            EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                      ),
-                      onSubmitted: (_) => _save(),
-                      onTapOutside: (_) => _save(),
-                    )
-                  : InkWell(
-                      onTap: () => setState(() => _editing = true),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Row(children: [
-                          Flexible(
-                            child: Text(c.name,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w700)),
-                          ),
-                          const SizedBox(width: 8),
-                          Icon(Icons.edit_outlined,
-                              size: 14,
-                              color: Colors.white.withValues(alpha: .35)),
-                        ]),
-                      ),
-                    ),
-            ),
-            if (_busy)
-              const Padding(
-                padding: EdgeInsets.all(12),
-                child: SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2)),
-              )
-            else
-              IconButton(
-                onPressed: widget.onClose,
-                icon: const Icon(Icons.close, size: 20),
-              ),
-          ],
-        ),
-      );
 
   Widget _facts(Castle c) => Wrap(
         spacing: 6,

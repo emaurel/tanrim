@@ -15,6 +15,7 @@ class AppWindow {
     this.icon,
     this.initialSize = const Size(420, 560),
     this.subtitle = '',
+    this.onRename,
   });
 
   final String id;
@@ -23,6 +24,14 @@ class AppWindow {
   final IconData? icon;
   final Widget child;
   final Size initialSize;
+
+  /// Rename the thing this window is about, from its title bar.
+  ///
+  /// Here rather than in the window's body, because the body had its own
+  /// header with the same name and its own close button — the title was drawn
+  /// twice and the cross twice, for every window. Returns a problem, or empty
+  /// when it worked.
+  final Future<String> Function(String)? onRename;
 }
 
 /// Floating windows over the map.
@@ -234,7 +243,7 @@ class _Frame extends StatelessWidget {
         },
         child: Container(
           height: headerHeight,
-          padding: const EdgeInsets.only(left: 12, right: 4),
+          padding: const EdgeInsets.only(left: 12),
           color: Colors.white.withValues(alpha: .05),
           child: Row(children: [
             if (window.icon != null) ...[
@@ -242,28 +251,22 @@ class _Frame extends StatelessWidget {
                   size: 14, color: Colors.white.withValues(alpha: .45)),
               const SizedBox(width: 8),
             ],
-            Flexible(
-              child: Text(window.title,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 12.5, fontWeight: FontWeight.w600)),
-            ),
-            if (window.subtitle.isNotEmpty) ...[
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(window.subtitle,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 11, color: Colors.white38)),
+            Expanded(child: _Title(window: window)),
+            // Flush to the corner. An `IconButton` carries 8px of its own
+            // padding inside a 40px minimum box, so a 4px gap put the cross
+            // visibly short of the top right of the window.
+            SizedBox(
+              width: headerHeight,
+              height: headerHeight,
+              child: IconButton(
+                onPressed: onClose,
+                iconSize: 15,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                splashRadius: 15,
+                icon: const Icon(Icons.close),
+                tooltip: 'Close',
               ),
-            ],
-            const Spacer(),
-            IconButton(
-              onPressed: onClose,
-              iconSize: 15,
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.close),
-              tooltip: 'Close',
             ),
           ]),
         ),
@@ -309,4 +312,94 @@ class _GripPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_GripPainter old) => false;
+}
+
+/// The window's title, editable in place when the window allows it.
+class _Title extends StatefulWidget {
+  const _Title({required this.window});
+  final AppWindow window;
+
+  @override
+  State<_Title> createState() => _TitleState();
+}
+
+class _TitleState extends State<_Title> {
+  TextEditingController? _field;
+  String? _problem;
+
+  @override
+  void didUpdateWidget(_Title old) {
+    super.didUpdateWidget(old);
+    if (old.window.title != widget.window.title) _field = null;
+  }
+
+  @override
+  void dispose() {
+    _field?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final field = _field;
+    if (field == null) return;
+    final wanted = field.text.trim();
+    setState(() => _field = null);
+    if (wanted.isEmpty || wanted == widget.window.title) return;
+    final problem = await widget.window.onRename!(wanted);
+    if (mounted && problem.isNotEmpty) setState(() => _problem = problem);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final w = widget.window;
+    if (_field != null) {
+      return TextField(
+        controller: _field,
+        autofocus: true,
+        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+        decoration: const InputDecoration(
+          isDense: true,
+          border: InputBorder.none,
+          contentPadding: EdgeInsets.zero,
+        ),
+        onSubmitted: (_) => _save(),
+        onTapOutside: (_) => _save(),
+      );
+    }
+    final title = Text(
+      _problem ?? w.title,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: 12.5,
+        fontWeight: FontWeight.w600,
+        color: _problem == null ? null : const Color(0xFFE0A458),
+      ),
+    );
+    return Row(children: [
+      Flexible(
+        child: w.onRename == null
+            ? title
+            : InkWell(
+                onTap: () => setState(() {
+                  _problem = null;
+                  _field = TextEditingController(text: w.title);
+                }),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Flexible(child: title),
+                  const SizedBox(width: 6),
+                  Icon(Icons.edit_outlined,
+                      size: 11, color: Colors.white.withValues(alpha: .3)),
+                ]),
+              ),
+      ),
+      if (w.subtitle.isNotEmpty) ...[
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(w.subtitle,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11, color: Colors.white38)),
+        ),
+      ],
+    ]);
+  }
 }

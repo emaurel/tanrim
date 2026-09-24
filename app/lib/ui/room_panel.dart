@@ -16,7 +16,6 @@ class RoomPanel extends StatefulWidget {
     required this.api,
     required this.room,
     required this.here,
-    required this.onClose,
     required this.onChanged,
   });
 
@@ -25,7 +24,6 @@ class RoomPanel extends StatefulWidget {
 
   /// Workers currently standing in this room, from the live socket.
   final List<AgentState> here;
-  final VoidCallback onClose;
 
   /// Something happened that the rest of the app should reload.
   final VoidCallback onChanged;
@@ -158,31 +156,18 @@ class _RoomPanelState extends State<RoomPanel> {
     );
   }
 
+  /// What model the room runs on, and nothing else.
+  ///
+  /// The name and the close button used to be here too — and are drawn by the
+  /// window's own title bar, so every room showed its name twice and carried
+  /// two crosses.
   Widget _header(Map<String, dynamic>? s) {
     final model = s?['model'];
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 14, 8, 10),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(widget.room.name,
-                    style: const TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.w700)),
-                if (model != null && '$model'.isNotEmpty)
-                  Text('$model',
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.white38)),
-              ],
-            ),
-          ),
-          IconButton(
-              onPressed: widget.onClose,
-              icon: const Icon(Icons.close, size: 20)),
-        ],
-      ),
+    if (model == null || '$model'.isEmpty) return const SizedBox(height: 6);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+      child: Text('$model',
+          style: const TextStyle(fontSize: 11, color: Colors.white38)),
     );
   }
 
@@ -200,6 +185,23 @@ class _RoomPanelState extends State<RoomPanel> {
     );
   }
 
+  /// A stable colour per kind.
+  ///
+  /// Derived from the name rather than listed, because the kinds come from
+  /// whatever plugins are installed and a hardcoded map would be a core file
+  /// naming one plugin's pipelines.
+  static Color _kindColour(String kind) {
+    const palette = [
+      Color(0xFF8ECAE6),
+      Color(0xFFE5989B),
+      Color(0xFFBCD35F),
+      Color(0xFFE0A458),
+      Color(0xFF9AB8F0),
+      Color(0xFFC9ADA7),
+    ];
+    return palette[kind.hashCode.abs() % palette.length];
+  }
+
   Widget _queueRow(WorkRecord r, bool blocked) {
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
@@ -214,10 +216,35 @@ class _RoomPanelState extends State<RoomPanel> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(r.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                Row(children: [
+                  // Which PIPELINE this is on. A room can work more than one
+                  // — the Assay Room takes prospects and ports, which are
+                  // different kinds of work with different stages — and the
+                  // queue gave no way to tell one row from another.
+                  if (r.kind.isNotEmpty) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: _kindColour(r.kind).withValues(alpha: .22),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(r.kind,
+                          style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: _kindColour(r.kind))),
+                    ),
+                    const SizedBox(width: 7),
+                  ],
+                  Expanded(
+                    child: Text(r.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+                ]),
+                const SizedBox(height: 2),
                 Text('${r.stage} · ${ago(r.updated)}',
                     style: const TextStyle(
                         fontSize: 11, color: Colors.white38)),

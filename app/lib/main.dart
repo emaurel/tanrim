@@ -670,7 +670,6 @@ class _WorldPageState extends State<WorldPage> {
           castles: _castles,
           badges: _castleBadges,
           onOpen: _goToCastle,
-          onBuild: _buildAnywhere,
         ),
       );
     }
@@ -684,6 +683,7 @@ class _WorldPageState extends State<WorldPage> {
         child: Approvals(
           api: _api!,
           approvals: _approvals,
+          castleNames: {for (final c in _castles) c.id: c.name},
           onResolved: () async {
             await _loadApprovals();
             await _loadBoard();
@@ -703,6 +703,8 @@ class _WorldPageState extends State<WorldPage> {
         icon: Icons.castle_outlined,
         subtitle: castle.pluginName,
         initialSize: const Size(460, 620),
+        // Renamed from the title bar, where the name already is.
+        onRename: (name) => _renameCastle(castle.id, name),
         child: CastlePanel(
           castle: castle,
           rooms: _rooms,
@@ -712,8 +714,6 @@ class _WorldPageState extends State<WorldPage> {
           deadStages: _deadStages,
           selectedRecord: _selectedRecord,
           onTapRecord: (r) => setState(() => _selectedRecord = r.id),
-          onClose: () => _close(id),
-          onRename: (name) => _renameCastle(castle.id, name),
           onRaze: () => _askRaze(castle),
           onOpenRoom: (r) {
             setState(() => _selected = r.id);
@@ -736,7 +736,6 @@ class _WorldPageState extends State<WorldPage> {
           api: _api!,
           room: room,
           here: agents.where((a) => a.roomId == room.id).toList(),
-          onClose: () => _close(id),
           onChanged: () async {
             await _loadBoard();
             await _loadApprovals();
@@ -752,20 +751,6 @@ class _WorldPageState extends State<WorldPage> {
     _mapKey.currentState?.flyToCastle(castle);
     setState(() => _selectedCastle = castle.id);
     _open('castle:${castle.id}');
-  }
-
-  /// Build on the first free plot, chosen by the server.
-  Future<void> _buildAnywhere() async {
-    final chosen = await askWhatToBuild(context,
-        buildable: _buildable, ring: 0, slot: 0);
-    if (chosen == null || !mounted) return;
-    final api = _api;
-    if (api == null) return;
-    final out =
-        (await api.post('/castles', {'plugin': chosen})) as Map<String, dynamic>;
-    final said = await _afterPluginChange(
-        out, () => 'built ${(out['castle'] as Map)['name']}');
-    if (mounted) _say(said);
   }
 
   Widget _round({

@@ -259,9 +259,16 @@ class WorldPainter extends CustomPainter {
           iso.wall(x + w, y, x + w, y + h, lift),
           Paint()..color = const Color(0xFF585F6D));
 
+      // Green while something is running in it, pale otherwise. At this
+      // distance the block IS the castle, so its colour is the only thing
+      // that can say the place is busy without being read.
       final top = face.shift(Offset(0, -lift * iso.tileH));
-      canvas.drawPath(top,
-          Paint()..color = hot ? Colors.white : const Color(0xFFE7EAF0));
+      canvas.drawPath(
+          top,
+          Paint()
+            ..color = c.working
+                ? (hot ? const Color(0xFFBFF0CC) : const Color(0xFF8FD9A6))
+                : (hot ? Colors.white : const Color(0xFFE7EAF0)));
       canvas.drawPath(
           top,
           Paint()
@@ -275,19 +282,27 @@ class WorldPainter extends CustomPainter {
           size: 15 / zoom,
           weight: FontWeight.w700,
           centre: true,
-          colour: const Color(0xFF12141A),
+          // Green too when it is working, and the outline stays white either
+          // way — it is what keeps the name readable over whatever is behind.
+          colour: c.working
+              ? const Color(0xFF14602F)
+              : const Color(0xFF12141A),
           halo: Colors.white);
       _text(
           canvas,
           c.installed
-              ? '${c.rooms.length} rooms · ${c.records} records'
+              ? (c.working
+                  ? 'working · ${c.records} records'
+                  : '${c.rooms.length} rooms · ${c.records} records')
               : 'plugin not installed',
           centre.translate(0, 8 / zoom),
           size: 11 / zoom,
           centre: true,
-          colour: c.installed
-              ? const Color(0xFF5A6272)
-              : const Color(0xFF9A4B2F));
+          colour: !c.installed
+              ? const Color(0xFF9A4B2F)
+              : (c.working
+                  ? const Color(0xFF2F7A4A)
+                  : const Color(0xFF5A6272)));
 
       final waiting = castleBadges[c.id] ?? 0;
       if (waiting > 0) {

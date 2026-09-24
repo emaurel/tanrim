@@ -207,4 +207,63 @@ void main() {
     expect(find.text('body:one'), findsNothing);
     expect(find.text('body:two'), findsOneWidget);
   });
+
+  testWidgets('the close button sits in the corner', (t) async {
+    await _layer(t, ids: ['one']);
+    final frame = t.getRect(find.byKey(const ValueKey('window-frame:one')));
+    final cross = t.getRect(find.byIcon(Icons.close));
+
+    // Flush right and flush top, within the header's own height. An
+    // `IconButton` carries 8px of padding inside a 40px minimum box, which
+    // put the cross visibly short of the corner.
+    expect(frame.right - cross.right, lessThan(12));
+    expect(cross.top - frame.top, lessThan(12));
+  });
+
+  testWidgets('a window with a rename edits its title in place', (t) async {
+    // The name lives in the title bar, and only there. It used to be drawn
+    // again inside the window with a second close button beside it.
+    final asked = <String>[];
+    t.view
+      ..physicalSize = const Size(900, 700)
+      ..devicePixelRatio = 1.0;
+    addTearDown(t.view.reset);
+
+    await t.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: WindowLayer(
+          windows: [
+            AppWindow(
+              id: 'c',
+              title: 'Web agency 1',
+              onRename: (n) async {
+                asked.add(n);
+                return '';
+              },
+              child: const SizedBox(),
+            ),
+          ],
+          onClose: (_) {},
+        ),
+      ),
+    ));
+    await t.pumpAndSettle();
+
+    expect(find.byType(TextField), findsNothing);
+    await t.tap(find.text('Web agency 1'));
+    await t.pumpAndSettle();
+    expect(find.byType(TextField), findsOneWidget);
+
+    await t.enterText(find.byType(TextField), 'Nimes office');
+    await t.testTextInput.receiveAction(TextInputAction.done);
+    await t.pumpAndSettle();
+    expect(asked, ['Nimes office']);
+  });
+
+  testWidgets('a window without a rename is not editable', (t) async {
+    await _layer(t, ids: ['one']);
+    await t.tap(find.text('one'));
+    await t.pumpAndSettle();
+    expect(find.byType(TextField), findsNothing);
+  });
 }

@@ -15,7 +15,6 @@ class Kingdom extends StatelessWidget {
     required this.castles,
     required this.badges,
     required this.onOpen,
-    required this.onBuild,
   });
 
   final List<Castle> castles;
@@ -24,7 +23,6 @@ class Kingdom extends StatelessWidget {
   final Map<String, int> badges;
 
   final void Function(Castle) onOpen;
-  final VoidCallback onBuild;
 
   @override
   Widget build(BuildContext context) {
@@ -59,14 +57,8 @@ class Kingdom extends StatelessWidget {
           const SizedBox(height: 10),
         ],
         const SizedBox(height: 6),
-        OutlinedButton.icon(
-          onPressed: onBuild,
-          icon: const Icon(Icons.add, size: 16),
-          label: const Text('Build a castle'),
-        ),
-        const SizedBox(height: 8),
         const Text(
-          'Or click any outlined plot on the map.',
+          'Click any outlined plot on the map to build another.',
           style: TextStyle(fontSize: 11.5, color: Colors.white30),
         ),
       ],
@@ -89,15 +81,52 @@ class Kingdom extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(c.name,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 13.5, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 3),
+                  Row(children: [
+                    // Working or idle, at a glance and without reading.
+                    Tooltip(
+                      message: c.working
+                          ? 'working — a run is in flight'
+                          : 'idle',
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: c.working
+                              ? const Color(0xFF63C77B)
+                              : Colors.white.withValues(alpha: .28),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(c.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 13.5, fontWeight: FontWeight.w600)),
+                    ),
+                    // Beside the name, where you read it, rather than off at
+                    // the other end of the row.
+                    if (waiting > 0) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE23D3D),
+                          borderRadius: BorderRadius.circular(9),
+                        ),
+                        child: Text('$waiting',
+                            style: const TextStyle(
+                                fontSize: 11, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ]),
+                  const SizedBox(height: 4),
                   Text(
                     c.installed
-                        ? '${c.rooms.length} rooms · ${c.records} records '
-                            '· ring ${c.ring}, plot ${c.slot}'
+                        ? '${c.rooms.length} rooms · ${c.records} records'
+                            '${c.working ? " · ${c.status}" : ""}'
                         : 'plugin not installed',
                     style: TextStyle(
                         fontSize: 11.5,
@@ -108,18 +137,6 @@ class Kingdom extends StatelessWidget {
                 ],
               ),
             ),
-            if (waiting > 0)
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE23D3D),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text('$waiting',
-                    style: const TextStyle(
-                        fontSize: 11.5, fontWeight: FontWeight.bold)),
-              ),
             const SizedBox(width: 6),
             Icon(Icons.chevron_right,
                 size: 17, color: Colors.white.withValues(alpha: .3)),

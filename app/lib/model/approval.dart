@@ -14,6 +14,10 @@ class Approval {
   String get id => raw['id'] as String;
   String get kind => (raw['kind'] ?? '') as String;
   String get roomId => (raw['room_id'] ?? '') as String;
+
+  /// Which castle raised it. Resolved server-side, so a card raised before
+  /// castles existed still files under the one its record belongs to.
+  String get castleId => (raw['castle_id'] ?? '') as String;
   String get summary => (raw['summary'] ?? '') as String;
   String get requestedBy => (raw['requesting_agent'] ?? '') as String;
   double get ts => (raw['ts'] ?? 0).toDouble();

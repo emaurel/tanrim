@@ -501,6 +501,16 @@ async def get_castles() -> dict[str, Any]:
     env = environment.current()
     names = {d["id"]: d.get("name") or d["id"] for d in env.describe()}
 
+    # Which castles have something running in them. Taken from the runs in
+    # flight rather than from a sprite's status: a sprite is "busy" for the
+    # length of an animation, and the question here is whether the castle is
+    # doing work.
+    busy: dict[str, int] = {}
+    for run in agent_helpers.every_in_flight():
+        castle = geom.castle_of(str(run.get("role") or ""))
+        busy[castle] = busy.get(castle, 0) + 1
+    waiting = state.approval_counts_by_castle()
+
     # The EQUATION, not a list of plots.
     #
     # Sending plots meant choosing how many, and any number is wrong: too few
@@ -518,6 +528,12 @@ async def get_castles() -> dict[str, Any]:
              "plugin_name": names.get(c.get("plugin", ""), c.get("plugin", "")),
              "installed": c.get("plugin") in names,
              "records": len(state.records_in(c["id"])),
+             # `working` when a run is in flight here, `idle` otherwise. There
+             # is no third state: a castle is either doing something or it is
+             # not, and "has work waiting" is the badge, not the status.
+             "status": "working" if busy.get(c["id"]) else "idle",
+             "running": busy.get(c["id"], 0),
+             "waiting": waiting.get(c["id"], 0),
              **geom.plot_for(c.get("ring", 1), c.get("slot", 0))}
             for c in built
         ],
@@ -751,10 +767,21 @@ async def health():
 
 @app.get("/approvals")
 async def list_approvals(status: str = "pending"):
+    # `castle_id` is RESOLVED on the way out, not just read off the card. A
+    # card raised before castles existed stored none, and would otherwise
+    # arrive filed under nothing — a pending approval nobody can see is the
+    # one kind of state this environment must not have.
+    cards = [
+        {**card, "castle_id": state.approval_castle(card)}
+        for card in state.list_user_approvals(status=status, limit=200)
+    ]
     return {
-        "approvals": state.list_user_approvals(status=status, limit=200),
+        "approvals": cards,
         "counts_by_room": state.approval_counts_by_room(),
+        "counts_by_castle": state.approval_counts_by_castle(),
     }
+
+
 class ApprovalDecision(BaseModel):
     decision: str  # "approved" | "rejected"
     reason: str | None = None

@@ -35,7 +35,6 @@ Future<void> _panel(
   WidgetTester t, {
   Castle? castle,
   List<Room>? rooms,
-  Future<String> Function(String)? onRename,
   Future<void> Function()? onRaze,
   void Function(Room)? onOpenRoom,
   List<WorkRecord> records = const [],
@@ -51,8 +50,6 @@ Future<void> _panel(
         castle: castle ?? _castle(),
         rooms: rooms ?? [_room('assay', 'c1'), _room('factory', 'c1')],
         badges: const {'assay@c1': 3},
-        onClose: () {},
-        onRename: onRename ?? (_) async => '',
         onRaze: onRaze ?? () async {},
         onOpenRoom: onOpenRoom ?? (_) {},
         records: records,
@@ -68,7 +65,7 @@ Future<void> _panel(
 void main() {
   testWidgets('it shows what the castle is and what is in it', (t) async {
     await _panel(t);
-    expect(find.text('Web agency 1'), findsOneWidget);
+    // The NAME is the window's title bar's job now — this is the body.
     expect(find.text('Web agency'), findsOneWidget);       // the plugin
     expect(find.text('ring 1, plot 0'), findsOneWidget);
     expect(find.text('2 rooms'), findsOneWidget);
@@ -79,58 +76,8 @@ void main() {
     expect(find.text('3'), findsOneWidget);
   });
 
-  testWidgets('the name is edited in place', (t) async {
-    // In place because the default is `[PLUGIN NAME] [N]` — it says what a
-    // castle IS and nothing about what it is for, so renaming is the first
-    // thing you do and should not be two clicks and a modal away.
-    final asked = <String>[];
-    await _panel(t, onRename: (n) async {
-      asked.add(n);
-      return '';
-    });
 
-    expect(find.byType(TextField), findsNothing);
-    await t.tap(find.text('Web agency 1'));
-    await t.pumpAndSettle();
-    expect(find.byType(TextField), findsOneWidget);
 
-    await t.enterText(find.byType(TextField), 'Nimes office');
-    await t.testTextInput.receiveAction(TextInputAction.done);
-    await t.pumpAndSettle();
-
-    expect(asked, ['Nimes office']);
-  });
-
-  testWidgets('a refused rename says so and puts the old name back',
-      (t) async {
-    await _panel(t, onRename: (_) async => 'that name is taken');
-
-    await t.tap(find.text('Web agency 1'));
-    await t.pumpAndSettle();
-    await t.enterText(find.byType(TextField), 'Something else');
-    await t.testTextInput.receiveAction(TextInputAction.done);
-    await t.pumpAndSettle();
-
-    expect(find.text('that name is taken'), findsOneWidget);
-    expect(find.text('Web agency 1'), findsOneWidget);
-  });
-
-  testWidgets('an empty name is not a rename', (t) async {
-    var called = 0;
-    await _panel(t, onRename: (_) async {
-      called++;
-      return '';
-    });
-
-    await t.tap(find.text('Web agency 1'));
-    await t.pumpAndSettle();
-    await t.enterText(find.byType(TextField), '   ');
-    await t.testTextInput.receiveAction(TextInputAction.done);
-    await t.pumpAndSettle();
-
-    expect(called, 0);
-    expect(find.text('Web agency 1'), findsOneWidget);
-  });
 
   testWidgets('a castle whose plugin is gone explains itself', (t) async {
     await _panel(t, castle: _castle(installed: false), rooms: const []);
