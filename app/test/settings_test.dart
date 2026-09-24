@@ -44,6 +44,23 @@ final _plugins = <Map<String, dynamic>>[
   },
 ];
 
+/// The catalog rows implied by a set of running plugins.
+///
+/// The cards are built from what is ON DISK, not from what is running — a
+/// disabled plugin has to be visible to be switched back on — so a test about
+/// the running detail still needs a directory for each one to hang off.
+List<Map<String, dynamic>> _catalogFor(List<Map<String, dynamic>> plugins) => [
+      for (final p in plugins)
+        {
+          'id': p['id'],
+          'enabled': true,
+          'running': true,
+          'reason': '',
+          'git': '',
+          'unrecoverable': <String>[],
+        }
+    ];
+
 Future<void> _openPlugins(
   WidgetTester t, {
   Future<String> Function()? onReload,
@@ -52,6 +69,8 @@ Future<void> _openPlugins(
   Future<String> Function(String id, bool enabled)? onSetEnabled,
   Future<String> Function(String id, bool force)? onRemove,
   Future<String> Function(String source)? onInstall,
+  Future<(List<Map<String, dynamic>>, List<Map<String, dynamic>>)> Function()?
+      onRefreshPlugins,
   String tab = 'plugins',
 }) async {
   t.view
@@ -74,10 +93,13 @@ Future<void> _openPlugins(
     process: ServerProcess(repo: '/nowhere', port: 59997),
     onStartServer: () async => 'not in this test',
     onStopServer: () async => 'not in this test',
-    catalog: catalog ?? const [],
+    catalog: catalog ?? _catalogFor(plugins ?? _plugins),
     onInstall: onInstall ?? (_) async => 'not in this test',
     onSetEnabled: onSetEnabled ?? (_, _) async => 'ok',
     onRemove: onRemove ?? (_, _) async => 'deleted',
+    onRefreshPlugins: onRefreshPlugins ??
+        () async =>
+            (catalog ?? _catalogFor(plugins ?? _plugins), plugins ?? _plugins),
   );
 
   await t.pumpWidget(MaterialApp(
@@ -181,7 +203,9 @@ void main() {
     await t.ensureVisible(find.text('job_hunt'));
     await t.pumpAndSettle();
     expect(find.text('job_hunt'), findsOneWidget);
-    expect(find.text('misbehaving'), findsOneWidget);
+    // It says it is off AND why, on the card itself.
+    expect(find.textContaining('switched off'), findsOneWidget);
+    expect(find.textContaining('misbehaving'), findsOneWidget);
     expect(t.widget<Switch>(find.byType(Switch)).value, isFalse);
   });
 
@@ -267,5 +291,42 @@ void main() {
     expect(stop.onPressed, isNull);
     // And it says what is wrong with the checkout rather than just failing.
     expect(find.textContaining('no directory at /nowhere'), findsOneWidget);
+  });
+
+  testWidgets('the switch shows the new state, not the old one', (t) async {
+    // The bug this is here for: the panel is a modal built from a SNAPSHOT.
+    // Throwing the switch changed the server and the app's own lists, and the
+    // open panel went on drawing the switch where it had been — so the one
+    // control whose whole job is to show a state showed the opposite of what
+    // had just happened.
+    var enabled = false;
+    List<Map<String, dynamic>> catalogNow() => [
+          {'id': 'job_hunt', 'enabled': enabled, 'running': enabled,
+           'reason': '', 'git': '', 'unrecoverable': <String>[]},
+        ];
+
+    await _openPlugins(
+      t,
+      plugins: const [],
+      catalog: catalogNow(),
+      onSetEnabled: (_, on) async {
+        enabled = on;
+        return 'ok';
+      },
+      onRefreshPlugins: () async => (catalogNow(), <Map<String, dynamic>>[]),
+    );
+
+    await t.ensureVisible(find.byType(Switch));
+    await t.pumpAndSettle();
+    expect(t.widget<Switch>(find.byType(Switch)).value, isFalse);
+
+    await t.tap(find.byType(Switch));
+    await t.pumpAndSettle();
+
+    expect(t.widget<Switch>(find.byType(Switch)).value, isTrue,
+        reason: 'the panel must refetch and redraw, not keep its snapshot');
+    // And nothing writes "enabled" underneath it: the switch says it.
+    expect(find.text('enabled'), findsNothing);
+    expect(find.text('disabled'), findsNothing);
   });
 }

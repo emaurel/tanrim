@@ -466,7 +466,20 @@ class _WorldPageState extends State<WorldPage> {
         onInstall: _installPlugin,
         onSetEnabled: _setPluginEnabled,
         onRemove: _removePlugin,
+        onRefreshPlugins: _pluginLists,
       );
+
+  /// What is on disk and what is running, freshly fetched.
+  ///
+  /// Returned rather than only stored, because the settings panel is a modal
+  /// built from a snapshot: updating this state does not reach a panel that is
+  /// already open, so it asks for the new lists itself.
+  Future<(List<Map<String, dynamic>>, List<Map<String, dynamic>>)>
+      _pluginLists() async {
+    await _loadCatalog();
+    await _loadPlugins();
+    return (_catalog, _plugins);
+  }
 
   /// Re-read `plugins/` on the server, then refetch everything derived from it.
   ///
