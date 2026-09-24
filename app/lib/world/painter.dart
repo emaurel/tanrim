@@ -28,6 +28,8 @@ class WorldPainter extends CustomPainter {
     this.castles = const [],
     this.castleBadges = const {},
     this.hoveredCastle,
+    this.plots = const [],
+    this.hoveredPlot,
   });
 
   /// Below this zoom a room is a few pixels across and its name does not fit,
@@ -51,6 +53,13 @@ class WorldPainter extends CustomPainter {
 
   /// room id -> pending approval count, drawn as a badge.
   final Map<String, int> badges;
+
+  /// Empty land. Outlined rather than filled, because the point of drawing it
+  /// is that there is nothing there yet and something could be.
+  final List<Plot> plots;
+
+  /// `ring:slot` of the plot under the cursor.
+  final String? hoveredPlot;
 
   /// The map's labels are drawn with a raw `TextPainter`, which inherits
   /// nothing from the widget tree — so the family has to be handed to it or
@@ -79,6 +88,7 @@ class WorldPainter extends CustomPainter {
     canvas.scale(zoom);
 
     if (far) {
+      _plots(canvas);
       _estate(canvas);
       canvas.restore();
       return;
@@ -111,6 +121,48 @@ class WorldPainter extends CustomPainter {
     canvas.restore();
   }
 
+  // -- empty land ------------------------------------------------------------
+
+  /// An outline per free plot, with a plus in it.
+  ///
+  /// Drawn UNDER the castles and before them, so a castle always covers its
+  /// own ground rather than an outline showing through. Kept to a dashed edge
+  /// and a faint fill: filled plots read as buildings that are already there,
+  /// which is the one thing they must not look like.
+  void _plots(Canvas canvas) {
+    for (final p in plots) {
+      final (x, y, w, h) = p.bounds;
+      final hot = hoveredPlot == '${p.ring}:${p.slot}';
+      final face = iso.rectDiamond(x, y, w, h);
+
+      canvas.drawPath(
+          face,
+          Paint()
+            ..color = hot
+                ? const Color(0x2AFFFFFF)
+                : const Color(0x12FFFFFF));
+      canvas.drawPath(
+          face,
+          Paint()
+            ..color = hot ? const Color(0x99FFFFFF) : const Color(0x44FFFFFF)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = (hot ? 2.4 : 1.4) / zoom);
+
+      if (hot) {
+        final c = iso.toScreen(x + w / 2, y + h / 2);
+        final arm = 9 / zoom;
+        final pen = Paint()
+          ..color = Colors.white
+          ..strokeWidth = 2.4 / zoom
+          ..strokeCap = StrokeCap.round;
+        canvas.drawLine(c.translate(-arm, 0), c.translate(arm, 0), pen);
+        canvas.drawLine(c.translate(0, -arm), c.translate(0, arm), pen);
+        _text(canvas, 'build here', c.translate(0, 22 / zoom),
+            size: 12 / zoom, centre: true, colour: Colors.white70);
+      }
+    }
+  }
+
   // -- the estate, seen from far off ----------------------------------------
 
   /// One pale block per castle, with its name and what is waiting in it.
@@ -127,7 +179,7 @@ class WorldPainter extends CustomPainter {
 
     for (final c in sorted) {
       final (x, y, w, h) = c.bounds;
-      final hot = c.pluginId == hoveredCastle;
+      final hot = c.id == hoveredCastle;
       final face = iso.rectDiamond(x, y, w, h);
 
       // A low slab rather than a flat diamond: it still reads as a place.
@@ -156,11 +208,19 @@ class WorldPainter extends CustomPainter {
           weight: FontWeight.w700,
           centre: true,
           colour: const Color(0xFF12141A));
-      _text(canvas, '${c.rooms.length} rooms',
+      _text(
+          canvas,
+          c.installed
+              ? '${c.rooms.length} rooms · ${c.records} records'
+              : 'plugin not installed',
           centre.translate(0, 8 / zoom),
-          size: 11 / zoom, centre: true, colour: const Color(0xFF5A6272));
+          size: 11 / zoom,
+          centre: true,
+          colour: c.installed
+              ? const Color(0xFF5A6272)
+              : const Color(0xFF9A4B2F));
 
-      final waiting = castleBadges[c.pluginId] ?? 0;
+      final waiting = castleBadges[c.id] ?? 0;
       if (waiting > 0) {
         final at = centre.translate(0, 30 / zoom);
         canvas.drawCircle(

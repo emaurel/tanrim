@@ -154,13 +154,17 @@ def test_every_room_keeps_its_crew_its_colours_and_its_labels(real_env):
     white, and each agent's one-line description became its role id."""
     from tanrim import rooms
 
-    staffed = {r.id: r.agents for r in rooms.load_rooms() if r.agents}
+    # By BASE id: a room on the map is `archives@c7f2` once castles exist,
+    # because two castles of one plugin have the same rooms.
+    staffed = {r.base_id or r.id: r.agents
+               for r in rooms.load_rooms() if r.agents}
     assert {"archives", "treasury"} <= set(staffed), "Sage and Coin were lost"
     for room_id, agents in staffed.items():
         for a in agents:
+            base = a.id.split("@")[0]
             assert a.color != "#ffffff", f"{a.id} has the default colour"
-            assert a.name and a.name != a.id, f"{a.id} has no display name"
-            assert a.role != a.id and len(a.role) > 20, \
+            assert a.name and a.name != base, f"{a.id} has no display name"
+            assert a.role != base and len(a.role) > 20, \
                 f"{a.id}'s description is its role id"
 
 
@@ -181,15 +185,20 @@ def test_the_crew_size_can_be_changed_and_is_written_back(real_env, tmp_path):
     failed with a 422."""
     from tanrim import rooms
 
-    before = next(r.max_workers for r in rooms.load_rooms() if r.id == "factory")
+    def factory() -> int:
+        # By base id: the room on the map is `factory@<castle>` once castles
+        # exist, and the crew size belongs to the room the PLUGIN declared —
+        # it is written back to that plugin's manifest.
+        return next(r.max_workers for r in rooms.load_rooms()
+                    if (r.base_id or r.id) == "factory")
+
+    before = factory()
     try:
         assert rooms.set_max_workers("factory", 4) is None
-        assert next(r.max_workers for r in rooms.load_rooms()
-                    if r.id == "factory") == 4
+        assert factory() == 4
     finally:
         rooms.set_max_workers("factory", before)
-    assert next(r.max_workers for r in rooms.load_rooms()
-                if r.id == "factory") == before
+    assert factory() == before
 
 
 # ---------------------------------------------------------------------------
@@ -227,10 +236,14 @@ def test_a_room_panel_names_its_model_without_importing_an_agent(real_env):
     assert not [n for n in sys.modules if "web_agency.agents" in n], \
         "booting imported an agent module"
 
+    # Keyed by the room on the MAP — one handler per room instance, because
+    # two castles of one plugin each need their own panel and their own
+    # in-flight task.
     handlers = build_handlers(World())
+    by_base = {h.room_id.split("@")[0]: h for h in handlers.values()}
     for room_id in ("research", "assay", "factory", "gallery", "listing"):
-        assert handlers[room_id].model_name.startswith("claude-"), \
-            f"{room_id} reports {handlers[room_id].model_name}"
+        assert by_base[room_id].model_name.startswith("claude-"), \
+            f"{room_id} reports {by_base[room_id].model_name}"
 
 
 def test_a_permanent_refusal_is_not_dispatched_again(real_env):

@@ -10,6 +10,7 @@ import 'model/record.dart';
 import 'model/world.dart';
 import 'ui/approvals.dart';
 import 'ui/board.dart';
+import 'ui/castle_dialogs.dart';
 import 'ui/map_view.dart';
 import 'ui/room_panel.dart';
 import 'ui/settings.dart';
@@ -88,6 +89,8 @@ class _WorldPageState extends State<WorldPage> {
   bool _panelOpen = true;
 
   List<Castle> _castles = const [];
+  List<Plot> _plots = const [];
+  List<Map<String, dynamic>> _buildable = const [];
   List<Map<String, dynamic>> _plugins = const [];
   List<String> _kinds = const [];
 
@@ -159,6 +162,7 @@ class _WorldPageState extends State<WorldPage> {
       await _loadRooms();
       setState(() => _connected = true);
       await _loadPlugins();
+      await _loadCastles();
       await _loadCatalog();
       await _loadApprovals();
       await _loadBoard();
@@ -177,9 +181,11 @@ class _WorldPageState extends State<WorldPage> {
           await _loadApprovals();
           await _loadBoard();
         case LiveKind.worldChanged:
-          // Someone reloaded the plugins — possibly in another window.
+          // Someone reloaded the plugins or built a castle — possibly in
+          // another window.
           await _loadRooms();
           await _loadPlugins();
+          await _loadCastles();
         case LiveKind.disconnected:
           setState(() => _state = 'reconnecting…');
         case LiveKind.connected:
@@ -242,6 +248,7 @@ class _WorldPageState extends State<WorldPage> {
     }
     await _loadRooms();
     await _loadPlugins();
+    await _loadCastles();
     await _loadCatalog();
     return describe();
   }
@@ -306,17 +313,108 @@ class _WorldPageState extends State<WorldPage> {
       setState(() {
         _plugins = list;
         _kinds = ((d['lead_kinds'] ?? []) as List).cast<String>();
-        _castles = Castle.group(
-          _rooms,
-          {for (final p in list)
-            p['id'] as String: ((p['rooms'] ?? []) as List).cast<String>()},
-          {for (final p in list)
-            p['id'] as String: (p['name'] ?? p['id']) as String},
-        );
       });
     } catch (_) {
       // The map still works without them; it just cannot group.
     }
+  }
+
+  /// The castles, the empty land around them, and what can be built on it.
+  ///
+  /// From the server rather than grouped here. Grouping rooms by which plugin
+  /// declared them could only ever produce ONE castle per plugin, and — more
+  /// quietly — knew nothing about where they sat. The plot geometry has to
+  /// match the room coordinates exactly, and the only way to be sure of that
+  /// is for one side to own both.
+  Future<void> _loadCastles() async {
+    final api = _api;
+    if (api == null) return;
+    try {
+      final d = await api.get('/castles') as Map<String, dynamic>;
+      final castles = ((d['castles'] ?? []) as List)
+          .map((c) => Castle.fromJson((c as Map).cast<String, dynamic>())
+              .withRooms(_rooms))
+          .toList();
+      final plots = ((d['plots'] ?? []) as List)
+          .map((p) => Plot.fromJson((p as Map).cast<String, dynamic>()))
+          .toList();
+      final buildable = ((d['buildable'] ?? []) as List)
+          .map((p) => (p as Map).cast<String, dynamic>())
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _castles = castles;
+        _plots = plots;
+        _buildable = buildable;
+      });
+    } catch (_) {
+      // An older server has no castles. The map still draws its rooms.
+    }
+  }
+
+  /// Build one on an empty plot.
+  Future<String> _buildCastle(String plugin, int ring, int slot) async {
+    final api = _api;
+    if (api == null) return 'not connected to a server';
+    final out = (await api.post('/castles',
+            {'plugin': plugin, 'ring': ring, 'slot': slot}))
+        as Map<String, dynamic>;
+    if (out['ok'] != true) return '${out['error']}';
+    await _loadRooms();
+    await _loadCastles();
+    return 'built ${(out['castle'] as Map)['name']}';
+  }
+
+  Future<String> _renameCastle(String id, String name) async {
+    final api = _api;
+    if (api == null) return 'not connected to a server';
+    final out = (await api.send('PATCH', '/castles/$id', {'name': name}))
+        as Map<String, dynamic>;
+    if (out['ok'] != true) return '${out['error']}';
+    await _loadCastles();
+    return '';
+  }
+
+  /// Clicked empty land: ask what to build, then build it.
+  Future<void> _onPlotTapped(int ring, int slot) async {
+    final chosen = await askWhatToBuild(context,
+        buildable: _buildable, ring: ring, slot: slot);
+    if (chosen == null || !mounted) return;
+    final said = await _buildCastle(chosen, ring, slot);
+    if (mounted) _say(said);
+  }
+
+  /// Clicked a castle: its card, where it can be renamed or razed.
+  Future<void> _onCastleTapped(Castle castle) async {
+    final edit = await editCastle(context, castle);
+    if (edit == null || !mounted) return;
+    if (edit.raze) {
+      if (!await confirmRaze(context, castle)) return;
+      final said = await _razeCastle(castle.id);
+      if (mounted) _say(said);
+      return;
+    }
+    if (edit.name.isEmpty || edit.name == castle.name) return;
+    final problem = await _renameCastle(castle.id, edit.name);
+    if (problem.isNotEmpty && mounted) _say(problem);
+  }
+
+  void _say(String message) {
+    if (message.isEmpty || !mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<String> _razeCastle(String id) async {
+    final api = _api;
+    if (api == null) return 'not connected to a server';
+    final out =
+        (await api.send('DELETE', '/castles/$id')) as Map<String, dynamic>;
+    if (out['ok'] != true) return '${out['error']}';
+    await _loadRooms();
+    await _loadCastles();
+    final left = out['records_left'] ?? 0;
+    return 'razed${left == 0 ? '' : ' — $left record(s) kept'}';
   }
 
   /// Pending approvals per castle, for the badge you can read from far off.
@@ -377,6 +475,9 @@ class _WorldPageState extends State<WorldPage> {
                   badges: _badges,
                   castles: _castles,
                   castleBadges: _castleBadges,
+                  plots: _plots,
+                  onPlotTapped: _onPlotTapped,
+                  onCastleTapped: _onCastleTapped,
                   selectedRoom: _selected,
                   onRoomTapped: (r) => setState(() {
                     _selected = r.id;

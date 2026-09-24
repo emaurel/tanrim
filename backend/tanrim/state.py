@@ -22,6 +22,7 @@ ROOM_TOOL_OVERRIDES_FILE = STATE_DIR / "room_tool_overrides.json"
 EVENTS_FILE = STATE_DIR / "events.json"
 TASK_RERUNS_FILE = STATE_DIR / "task_reruns.json"
 ESCALATIONS_FILE = STATE_DIR / "agent_escalations.json"
+CASTLES_FILE = STATE_DIR / "castles.json"
 _lock = Lock()
 
 # Decided approval cards kept for reference. Pending ones are never trimmed.
@@ -108,9 +109,155 @@ def _ensure() -> None:
         (EVENTS_FILE, "[]"),
         (TASK_RERUNS_FILE, "{}"),
         (ESCALATIONS_FILE, "[]"),
+        (CASTLES_FILE, "[]"),
     ]:
         if not f.exists():
             f.write_text(default)
+
+
+# ---------------------------------------------------------------------------
+# Castles
+# ---------------------------------------------------------------------------
+
+def list_castles() -> list[dict[str, Any]]:
+    """Every castle, in the order they were built."""
+    _ensure()
+    return _read(CASTLES_FILE)
+
+
+def get_castle(castle_id: str) -> dict[str, Any] | None:
+    for c in list_castles():
+        if c["id"] == castle_id:
+            return c
+    return None
+
+
+def castles_of(plugin_id: str) -> list[dict[str, Any]]:
+    return [c for c in list_castles() if c.get("plugin") == plugin_id]
+
+
+def add_castle(plugin_id: str, name: str = "", *, plugin_name: str = "",
+               ring: int | None = None, slot: int | None = None
+               ) -> dict[str, Any]:
+    """Build one. Picks the first free plot unless told otherwise."""
+    from . import castles as geom
+
+    with _lock:
+        existing: list[dict[str, Any]] = _read(CASTLES_FILE)
+        taken = [(c.get("ring", 0), c.get("slot", 0)) for c in existing]
+        if ring is None or slot is None:
+            ring, slot = geom.next_free(taken)
+        elif (int(ring), int(slot)) in taken:
+            raise ValueError(f"ring {ring} slot {slot} is already built on")
+        if not name:
+            n = sum(1 for c in existing if c.get("plugin") == plugin_id) + 1
+            name = geom.default_name(plugin_name or plugin_id, n)
+        made = geom.record(plugin_id, name, ring, slot)
+        existing.append(made)
+        _write(CASTLES_FILE, existing)
+    return made
+
+
+def ensure_castles(env: Any) -> list[dict[str, Any]]:
+    """Give every plugin that declares rooms a castle, if it has none.
+
+    So an install that predates castles comes up looking exactly as it did:
+    one castle per plugin, holding the rooms that plugin always had. A plugin
+    that only PATCHES rooms gets none — it lives inside the castle of what it
+    extends, which is the same rule the panel draws the hierarchy by.
+
+    Called from the server rather than from `environment.boot`, deliberately.
+    Boot runs in tests against synthetic plugins in a temporary directory, and
+    seeding there would write castles for `alpha` and `beta` into the real
+    ledger.
+    """
+    made: list[dict[str, Any]] = []
+    have = {c.get("plugin") for c in list_castles()}
+    for described in env.describe():
+        if described["id"] in have or not described.get("rooms"):
+            continue
+        made.append(add_castle(described["id"],
+                               plugin_name=described.get("name") or described["id"]))
+    return made
+
+
+def rename_castle(castle_id: str, name: str) -> dict[str, Any] | None:
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("a castle needs a name")
+    with _lock:
+        items: list[dict[str, Any]] = _read(CASTLES_FILE)
+        for c in items:
+            if c["id"] == castle_id:
+                c["name"] = name[:80]
+                _write(CASTLES_FILE, items)
+                return c
+    return None
+
+
+def move_castle(castle_id: str, ring: int, slot: int) -> dict[str, Any] | None:
+    with _lock:
+        items: list[dict[str, Any]] = _read(CASTLES_FILE)
+        if any(c["id"] != castle_id and c.get("ring") == ring
+               and c.get("slot") == slot for c in items):
+            raise ValueError(f"ring {ring} slot {slot} is already built on")
+        for c in items:
+            if c["id"] == castle_id:
+                c["ring"], c["slot"] = int(ring), int(slot)
+                _write(CASTLES_FILE, items)
+                return c
+    return None
+
+
+def delete_castle(castle_id: str) -> bool:
+    """Remove a castle. Its records are NOT removed — see `records_in`."""
+    with _lock:
+        items: list[dict[str, Any]] = _read(CASTLES_FILE)
+        kept = [c for c in items if c["id"] != castle_id]
+        if len(kept) == len(items):
+            return False
+        _write(CASTLES_FILE, kept)
+    return True
+
+
+def _home_castle() -> dict[str, str]:
+    """kind -> the castle a record with no castle of its own belongs to.
+
+    The first castle of the plugin that owns that kind. Resolved at read time
+    rather than backfilled onto 78 records, because which castle that is
+    depends on what is installed and where it has been built — and a backfill
+    would have to be redone every time a plugin was reinstalled.
+    """
+    from . import environment
+
+    if not environment.booted():
+        return {}
+    owner: dict[str, str] = {}
+    for described in environment.current().describe():
+        for kind in described.get("pipelines") or ():
+            owner.setdefault(kind, described["id"])
+    first: dict[str, str] = {}
+    for castle in list_castles():
+        first.setdefault(castle.get("plugin", ""), castle["id"])
+    return {kind: first[plugin] for kind, plugin in owner.items()
+            if plugin in first}
+
+
+def home_castle_for(record: dict[str, Any]) -> str:
+    """Which castle a record belongs to, explicit or inherited."""
+    return record.get("castle_id") or _home_castle().get(record_kind(record), "")
+
+
+def records_in(castle_id: str) -> list[dict[str, Any]]:
+    """Every record belonging to a castle.
+
+    A record written before castles existed has no `castle_id`, and belongs to
+    the first castle of the plugin that owns its kind — resolved at read time
+    rather than backfilled, because which castle that is depends on what is
+    installed right now.
+    """
+    return [r for r in list_records(limit=100000)
+            if home_castle_for(r) == castle_id]
 
 
 def list_notes(room_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
@@ -489,11 +636,17 @@ def add_record(
         raise ValueError(
             f"the {kind!r} pipeline declares no entry stage, so there is "
             f"nowhere to create this record — set `Pipeline(entry=...)`")
+    from .castles import here
+
     rec: dict[str, Any] = {
         "id": str(uuid.uuid4()),
         "ts": time.time(),
         "updated_ts": time.time(),
         "kind": kind,
+        # Which castle opened it. Taken from the run in hand rather than asked
+        # for, so a plugin creating a record needs to know nothing about
+        # castles.
+        "castle_id": fields.pop("castle_id", "") or here(),
         "stage": stage,
         "name": name,
         "source": source or {},
@@ -823,6 +976,7 @@ def list_record_rows(
     stage: str | None = None,
     stages: list[str] | None = None,
     limit: int = 200,
+    castle_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """`list_records`, projected to rows. What every list view should call.
 
@@ -836,12 +990,20 @@ def list_record_rows(
         stamp = RECORDS_FILE.stat().st_mtime_ns
     except OSError:
         stamp = 0
-    key = f"{stage}|{stages}|{limit}"
+    key = f"{stage}|{stages}|{limit}|{castle_id}"
     hit = _ROWS_CACHE.get(key)
     if hit is not None and hit[0] == stamp:
         return orjson.loads(hit[1])
-    rows = [record_summary(l) for l in list_records(stage=stage, stages=stages,
-                                                limit=limit)]
+    found = list_records(stage=stage, stages=stages, limit=limit)
+    if castle_id:
+        # A record written before castles existed has no `castle_id`, and
+        # belongs to the FIRST castle of whichever plugin owns its kind — so it
+        # keeps appearing where it always did rather than vanishing from every
+        # queue the moment a second castle is built.
+        home = _home_castle()
+        found = [r for r in found
+                 if (r.get("castle_id") or home.get(record_kind(r))) == castle_id]
+    rows = [record_summary(l) for l in found]
     raw = orjson.dumps(rows)
     if len(_ROWS_CACHE) > 64:          # bounded: a handful of slices per room
         _ROWS_CACHE.clear()

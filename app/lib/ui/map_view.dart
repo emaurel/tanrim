@@ -19,6 +19,9 @@ class MapView extends StatefulWidget {
     this.selectedRoom,
     this.castles = const [],
     this.castleBadges = const {},
+    this.plots = const [],
+    this.onPlotTapped,
+    this.onCastleTapped,
   });
 
   final List<Room> rooms;
@@ -30,6 +33,16 @@ class MapView extends StatefulWidget {
   /// Drawn instead of the rooms when zoomed out far enough.
   final List<Castle> castles;
   final Map<String, int> castleBadges;
+
+  /// Empty land you can build on, outlined on the map.
+  final List<Plot> plots;
+
+  /// Tapped an empty plot: `(ring, slot)`.
+  final void Function(int ring, int slot)? onPlotTapped;
+
+  /// Tapped a castle from far off. The map still flies to it; this is for
+  /// anything the app wants to do as well, like opening its card.
+  final void Function(Castle)? onCastleTapped;
 
   @override
   State<MapView> createState() => _MapViewState();
@@ -56,7 +69,7 @@ class _MapViewState extends State<MapView>
 
   @visibleForTesting
   String? debugCastleAt(Offset local, Size size) =>
-      _castleAt(local, size)?.pluginId;
+      _castleAt(local, size)?.id;
 
   @visibleForTesting
   double get debugTick => _tick;
@@ -72,6 +85,7 @@ class _MapViewState extends State<MapView>
   double _zoom = 1;
   String? _hovered;
   String? _hoveredCastle;
+  String? _hoveredPlot;
 
   /// A camera move in flight. Clicking a castle from far off should travel to
   /// it rather than teleport: the jump is what makes an operator lose track of
@@ -198,6 +212,18 @@ class _MapViewState extends State<MapView>
     return null;
   }
 
+  Plot? _plotAt(Offset local, Size size) {
+    // Castles first: a castle sits ON a plot, and land that is built on is not
+    // empty land however the outlines are ordered.
+    if (_castleAt(local, size) != null) return null;
+    final t = _tileAt(local, size);
+    for (final p in widget.plots) {
+      final (x, y, w, h) = p.bounds;
+      if (t.dx >= x && t.dx < x + w && t.dy >= y && t.dy < y + h) return p;
+    }
+    return null;
+  }
+
   Room? _roomAt(Offset local, Size size) {
     final t = _tileAt(local, size);
     // Near rooms first: they are drawn last and so are the ones on top.
@@ -238,8 +264,13 @@ class _MapViewState extends State<MapView>
           onHover: (e) {
             if (_far) {
               final c = _castleAt(e.localPosition, size);
-              if (c?.pluginId != _hoveredCastle) {
-                setState(() => _hoveredCastle = c?.pluginId);
+              final p = c == null ? _plotAt(e.localPosition, size) : null;
+              final plotKey = p == null ? null : '${p.ring}:${p.slot}';
+              if (c?.id != _hoveredCastle || plotKey != _hoveredPlot) {
+                setState(() {
+                  _hoveredCastle = c?.id;
+                  _hoveredPlot = plotKey;
+                });
               }
               return;
             }
@@ -249,6 +280,7 @@ class _MapViewState extends State<MapView>
           onExit: (_) => setState(() {
             _hovered = null;
             _hoveredCastle = null;
+            _hoveredPlot = null;
           }),
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
@@ -276,8 +308,20 @@ class _MapViewState extends State<MapView>
                   final (x, y, w, h) = c.bounds;
                   setState(() {
                     _hoveredCastle = null;
+                    _hoveredPlot = null;
                     _flyTo(x, y, w, h, size);
                   });
+                  widget.onCastleTapped?.call(c);
+                  return;
+                }
+                // Empty land. Building is the operator's decision, so this
+                // only ASKS — it does not travel there first, because flying
+                // to a plot that may not get built on is a camera move you
+                // did not want.
+                final p = _plotAt(d.localPosition, size);
+                if (p != null) {
+                  setState(() => _hoveredPlot = null);
+                  widget.onPlotTapped?.call(p.ring, p.slot);
                 }
                 return;
               }
@@ -296,6 +340,8 @@ class _MapViewState extends State<MapView>
                 castles: widget.castles,
                 castleBadges: widget.castleBadges,
                 hoveredCastle: _hoveredCastle,
+                plots: widget.plots,
+                hoveredPlot: _hoveredPlot,
                 hoveredRoom: _hovered,
                 selectedRoom: widget.selectedRoom,
                 badges: widget.badges,

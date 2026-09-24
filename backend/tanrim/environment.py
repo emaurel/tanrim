@@ -379,6 +379,20 @@ class Environment:
     def kinds(self) -> list[str]:
         return list(self._pipelines)
 
+    # -- scoped ids ---------------------------------------------------------
+    #
+    # The world addresses rooms and agents as `assay@c7f2`, because two castles
+    # of one plugin have the same rooms and every one of them has to be
+    # addressable. The environment knows nothing about castles and should not:
+    # it answers about `assay`. So every accessor that takes an id strips the
+    # castle first, and the alternative — every CALLER remembering to — is a
+    # bug waiting in each of the twenty places that look one up.
+
+    @staticmethod
+    def _base(scoped: str) -> str:
+        from .castles import base
+        return base(scoped)
+
     def pipeline(self, kind: str) -> Pipeline | None:
         """One pipeline as its plugin declared it, terminal stages included.
 
@@ -465,12 +479,14 @@ class Environment:
         return list(self._rooms.values())
 
     def room(self, room_id: str) -> Room | None:
+        room_id = self._base(room_id)
         return self._rooms.get(room_id)
 
     def agents(self) -> list[AgentSpec]:
         return list(self._agents.values())
 
     def agent(self, role: str) -> AgentSpec | None:
+        role = self._base(role)
         return self._agents.get(role)
 
     def role_for_stage(self, stage: str, kind: str | None = None) -> str | None:
@@ -507,17 +523,20 @@ class Environment:
         it was a hardcoded `{"ultron"}` that no plugin could add to — a
         plugin whose overseer must not be duplicated had no way to say so.
         """
+        role = self._base(role)
         agent = self._agents.get(role)
         return bool(agent and agent.singleton)
 
     def job_for(self, role: str, stage: str) -> Job | None:
         """What this role does at this stage, or its default."""
+        role = self._base(role)
         agent = self._agents.get(role)
         if agent is None:
             return None
         return agent.jobs.get(stage) or agent.default_job
 
     def stages_for_role(self, role: str) -> set[str]:
+        role = self._base(role)
         agent = self._agents.get(role)
         room = self.room(agent.room) if agent else None
         if room is None:
@@ -639,6 +658,7 @@ class Environment:
         return list(self._step_gates)
 
     def room_handler(self, room_id: str) -> type | None:
+        room_id = self._base(room_id)
         return self._room_handlers.get(room_id)
 
     def room_handlers(self) -> dict[str, type]:
@@ -666,6 +686,7 @@ class Environment:
 
     def agents_in(self, room_id: str) -> list[AgentSpec]:
         """Who staffs a room. Derived, so a room and its agents cannot disagree."""
+        room_id = self._base(room_id)
         return [a for a in self._agents.values() if a.room == room_id]
 
     def set_max_workers(self, room_id: str, n: int) -> str | None:
@@ -677,6 +698,7 @@ class Environment:
         `persist_room` simply loses the change on restart, which is a
         legitimate answer.
         """
+        room_id = self._base(room_id)
         room = self._rooms.get(room_id)
         if room is None:
             return f"no room {room_id!r}"

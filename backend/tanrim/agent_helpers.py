@@ -515,6 +515,13 @@ async def run_agent(
     may hire a helper, anything at or above `delegation.MAX_DEPTH` means it may
     not (a specialist that could delegate would recurse).
     """
+    # Scoped to the castle in hand. A plugin's agent says `role="probe"`,
+    # written before castles existed and correct in every one of them; the
+    # world hires `probe@c7f2`, because a castle's crew is its own.
+    from .castles import scoped_here
+
+    role = scoped_here(role)
+    room_id = scoped_here(room_id)
     from claude_agent_sdk import ClaudeAgentOptions, query
 
     import os

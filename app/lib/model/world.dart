@@ -83,6 +83,8 @@ class AgentSpec {
 class Room {
   Room({
     required this.id,
+    this.castleId = '',
+    this.baseId = '',
     required this.name,
     required this.purpose,
     required this.position,
@@ -95,6 +97,16 @@ class Room {
   });
 
   final String id;
+
+  /// Which castle this room is in, and the id the plugin declared.
+  ///
+  /// `id` is `<baseId>@<castleId>` once castles exist, because two castles of
+  /// one plugin have the same rooms and every one of them has to be
+  /// addressable. Both halves come from the server rather than being parsed
+  /// back out of `id` here — the panel wants the base to find its handler, the
+  /// map wants the castle to know which plot it stands on.
+  final String castleId;
+  final String baseId;
   final String name;
   final String purpose;
 
@@ -109,6 +121,8 @@ class Room {
 
   static Room fromJson(Map<String, dynamic> j) => Room(
         id: j['id'] as String,
+        castleId: (j['castle_id'] ?? '') as String,
+        baseId: (j['base_id'] ?? j['id']) as String,
         name: (j['name'] ?? j['id']) as String,
         purpose: (j['purpose'] ?? '') as String,
         position: Vec2.from(j['position'] as Map<String, dynamic>?),

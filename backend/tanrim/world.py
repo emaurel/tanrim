@@ -96,7 +96,13 @@ class World:
     # ---------- Workers ----------
 
     def workers(self, role: str) -> list[AgentState]:
-        """Every agent currently filling this role, base and ephemeral."""
+        """Every agent currently filling this role, base and ephemeral.
+
+        Scoped to the castle in hand: two agencies both have a Forge, and one
+        being busy says nothing about the other.
+        """
+        from .castles import scoped_here
+        role = scoped_here(role)
         return [a for a in self.agents.values() if (a.role or a.id) == role]
 
     ROMAN = ["", "II", "III", "IV", "V", "VI"]
@@ -104,6 +110,8 @@ class World:
     async def spawn_worker(self, role: str, record_id: str | None = None) -> AgentState:
         """Hire another agent for a role that's already busy. The new sprite
         appears in the same room — the frontend creates it on first sight."""
+        from .castles import scoped_here
+        role = scoped_here(role)
         base = self.agents.get(role)
         if base is None:
             raise KeyError(f"no base agent for role {role}")
@@ -187,6 +195,8 @@ class World:
     async def despawn_worker(self, agent_id: str) -> bool:
         """Retire an ephemeral worker. The base agent of a role is never
         removed — a room should never look abandoned."""
+        from .castles import scoped_here
+        agent_id = scoped_here(agent_id)
         agent = self.agents.get(agent_id)
         if agent is None or not agent.ephemeral or agent.busy:
             return False
@@ -220,12 +230,16 @@ class World:
         self._subscribers.discard(q)
 
     def room(self, room_id: str) -> RoomSpec:
+        from .castles import scoped_here
+        room_id = scoped_here(room_id)
         for r in self.rooms:
             if r.id == room_id:
                 return r
         raise KeyError(room_id)
 
     async def move_to(self, agent_id: str, room_id: str, status: str = "walking") -> None:
+        from .castles import scoped_here
+        agent_id, room_id = scoped_here(agent_id), scoped_here(room_id)
         agent = self.agents[agent_id]
         target = self.room(room_id)
         agent.room_id = room_id
@@ -240,6 +254,8 @@ class World:
         self, agent_id: str, room_id: str, bench_id: str
     ) -> None:
         """Walk a worker to a station inside its room for the duration of a job."""
+        from .castles import scoped_here
+        agent_id, room_id = scoped_here(agent_id), scoped_here(room_id)
         from .rooms import workbench as find_bench
 
         agent = self.agents.get(agent_id)
@@ -269,6 +285,8 @@ class World:
         Back to the idle strip along the bottom of the room — or to this
         agent's own station, if it has one.
         """
+        from .castles import scoped_here
+        agent_id = scoped_here(agent_id)
         agent = self.agents.get(agent_id)
         if agent is None:
             return
@@ -283,12 +301,16 @@ class World:
         await self.publish({"type": "agent_update", "agent": agent.__dict__})
 
     async def say(self, agent_id: str, text: str, seconds: float = 4.0) -> None:
+        from .castles import scoped_here
+        agent_id = scoped_here(agent_id)
         agent = self.agents[agent_id]
         agent.say = text
         agent.say_until = time.time() + seconds
         await self.publish({"type": "agent_update", "agent": agent.__dict__})
 
     async def set_status(self, agent_id: str, status: str) -> None:
+        from .castles import scoped_here
+        agent_id = scoped_here(agent_id)
         agent = self.agents[agent_id]
         agent.status = status
         await self.publish({"type": "agent_update", "agent": agent.__dict__})
@@ -296,6 +318,8 @@ class World:
     async def talk(self, from_id: str, to_id: str, seconds: float = 5.0, label: str | None = None) -> None:
         """Visualize one agent communicating with another. The frontend draws a
         blinking line between the two sprites for the given duration."""
+        from .castles import scoped_here
+        from_id, to_id = scoped_here(from_id), scoped_here(to_id)
         if from_id not in self.agents or to_id not in self.agents:
             return
         await self.publish({

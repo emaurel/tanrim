@@ -112,6 +112,15 @@ class RoomSpec(BaseModel):
         disagreeing about where a room sits has to resolve to one answer.
     """
     id: str
+    #: Which castle this room belongs to, and the room id the plugin declared.
+    #:
+    #: `id` is `<base_id>@<castle_id>` once castles exist, because every room
+    #: on the map has to be addressable and two castles of one plugin have the
+    #: same rooms. Both halves are carried rather than parsed back out of `id`
+    #: by every reader: the panel wants the base to find its handler, the map
+    #: wants the castle to know which outline it sits in.
+    castle_id: str = ""
+    base_id: str = ""
     #: The room this patches. When set, everything else is optional.
     extends: str | None = None
     name: str = ""
@@ -203,6 +212,11 @@ def _layout_workbenches(room: RoomSpec) -> None:
 _ROOMS_CACHE: dict[str, list[RoomSpec]] = {}
 
 
+def invalidate() -> None:
+    """Forget the laid-out rooms. Building or moving a castle changes them."""
+    _ROOMS_CACHE.clear()
+
+
 def load_rooms() -> list[RoomSpec]:
     """Every room, patched and laid out, from the installed plugins.
 
@@ -216,29 +230,118 @@ def load_rooms() -> list[RoomSpec]:
 
     if not environment.booted():
         return []
-    key = "env"
+    from . import state
+
+    built = state.list_castles()
+    # Keyed on the castles too: building one changes what this returns, and a
+    # cache that only knew about the environment would go on serving the world
+    # as it was before the castle existed.
+    key = "|".join(f"{c['id']}:{c.get('ring')}:{c.get('slot')}" for c in built)
     rooms = _ROOMS_CACHE.get(key)
     if rooms is None:
-        rooms = _from_environment(environment.current())
+        rooms = _from_environment(environment.current(), built)
         _ROOMS_CACHE[key] = rooms
     return rooms
 
 
-def _from_environment(env: "Any") -> list[RoomSpec]:
+def _plugin_of_room(env: "Any") -> dict[str, str]:
+    """room id -> the plugin that declared it."""
+    out: dict[str, str] = {}
+    for described in env.describe():
+        for room_id in described.get("rooms") or ():
+            out[room_id] = described["id"]
+    return out
+
+
+def _offsets(env: "Any", castles: "list[dict[str, Any]]") -> dict[str, tuple[int, int]]:
+    """Where each castle's rooms sit, relative to where the plugin put them.
+
+    A plugin declares absolute tile positions — the web agency spans x 0..48,
+    the job hunt 64..94 — which is right for one of each and meaningless for
+    two. So a castle's footprint is NORMALISED to its own bounding box and
+    then centred on its plot, which is also what stops a second castle of the
+    same plugin landing exactly on top of the first.
+    """
+    from . import castles as geom
+
+    owner = _plugin_of_room(env)
+    boxes: dict[str, tuple[float, float, float, float]] = {}
+    for room in env.rooms():
+        plugin = owner.get(room.id, "")
+        x0, y0 = room.position
+        x1, y1 = x0 + room.size[0], y0 + room.size[1]
+        if plugin in boxes:
+            a, b, c, d = boxes[plugin]
+            boxes[plugin] = (min(a, x0), min(b, y0), max(c, x1), max(d, y1))
+        else:
+            boxes[plugin] = (x0, y0, x1, y1)
+
+    out: dict[str, tuple[int, int]] = {}
+    for castle in castles:
+        box = boxes.get(castle.get("plugin", ""))
+        if box is None:
+            continue
+        x0, y0, x1, y1 = box
+        cx, cy = geom.plot_centre(castle.get("ring", 1), castle.get("slot", 0))
+        # Whole tiles. A room at x=88.7 is half a tile into its neighbour, and
+        # every renderer downstream assumes a room starts on a tile boundary.
+        out[castle["id"]] = (round(cx - (x0 + x1) / 2),
+                             round(cy - (y0 + y1) / 2))
+    return out
+
+
+def _from_environment(env: "Any",
+                      castles: "list[dict[str, Any]] | None" = None
+                      ) -> list[RoomSpec]:
     """The environment's rooms as the `RoomSpec`s the rest of the core uses.
 
     A translation, not a second source of truth. The contract's `Room` is a
     plain dataclass with no layout arithmetic and no agent list — geometry is
     this module's job, and who staffs a room is DERIVED from the agents rather
     than restated in the manifest, so a room and its crew cannot disagree.
+
+    One room per CASTLE, with the castle's id suffixed onto the room's and its
+    agents'. With no castles at all it emits the rooms exactly as declared,
+    unscoped — which is what every test and every install that predates
+    castles expects, and is why adding them broke nothing.
     """
+    from . import castles as geom
+
+    castles = castles or []
+    owner = _plugin_of_room(env)
+    offsets = _offsets(env, castles)
+
+    # Only castles whose plugin is actually installed. A castle outlives an
+    # uninstalled plugin — that is the point of disabling one — and a test
+    # booting synthetic plugins reads the same ledger, so "there are castles"
+    # and "any of them apply here" are different questions.
+    #
+    # None applying falls back to the rooms exactly as declared, unscoped,
+    # which is what every install that predates castles expects.
+    plan: list[tuple[str, tuple[int, int]]] = [
+        (c["id"], offsets[c["id"]]) for c in castles if c["id"] in offsets
+    ] or [("", (0, 0))]
+    by_plugin = {c["id"]: c.get("plugin") for c in castles}
+
     rooms: list[RoomSpec] = []
-    for room in env.rooms():
+    for castle_id, (dx, dy) in plan:
+        for room in env.rooms():
+            if castle_id and owner.get(room.id) != by_plugin.get(castle_id):
+                continue
+            rooms.extend(_one_room(env, room, castle_id, dx, dy, geom))
+    return rooms
+
+
+def _one_room(env: "Any", room: "Any", castle_id: str, dx: int, dy: int,
+              geom: "Any") -> list[RoomSpec]:
+    if True:
         spec = RoomSpec(
-            id=room.id,
+            id=geom.scope(room.id, castle_id),
+            castle_id=castle_id,
+            base_id=room.id,
             name=room.name,
             purpose=room.purpose,
-            position=Vec2(x=room.position[0], y=room.position[1]),
+            position=Vec2(x=room.position[0] + dx, y=room.position[1] + dy),
             size=Size(w=room.size[0], h=room.size[1]),
             color=room.color,
             tools=list(room.tools),
@@ -252,7 +355,7 @@ def _from_environment(env: "Any") -> list[RoomSpec]:
             # panel and the map label render — not the role id, which is
             # `id`. Passing the id put "probe" where "Qualifier. Audits the
             # existing site…" belongs, on every sprite.
-            agents=[AgentSpec(id=a.role, name=a.name,
+            agents=[AgentSpec(id=geom.scope(a.role, castle_id), name=a.name,
                               role=a.description or a.role,
                               color=a.color, station=a.station or None)
                     for a in env.agents_in(room.id)],
@@ -268,8 +371,8 @@ def _from_environment(env: "Any") -> list[RoomSpec]:
             ],
         )
         _layout_workbenches(spec)
-        rooms.append(spec)
-    return rooms
+        return [spec]
+    return []
 #: The most workers a room may be given. The environment enforces its own
 #: copy of this; it is exported because the settings panel shows the ceiling.
 MAX_WORKERS_CAP = 20
@@ -306,8 +409,11 @@ def stages_for_role(role: str) -> set[str]:
     source of truth: adding a bench with a stage is what makes that stage
     routable, with no matching change in Python.
     """
+    from .castles import base
+
+    role = base(role)
     for room in load_rooms():
-        if not any(a.id == role for a in room.agents):
+        if not any(base(a.id) == role for a in room.agents):
             continue
         stages: set[str] = set()
         for bench in room.workbenches:
@@ -336,10 +442,19 @@ def room_for_role(role: str) -> str | None:
     """The room staffed by `role` — so a crash badges the room the operator
     would go looking in. Derived from the manifests, like everything else here.
     """
+    from .castles import base, scoped_here
+
+    # Scoped when the caller is inside a castle, so a crash badges the room the
+    # operator would actually go looking in rather than the first castle's.
+    wanted = base(role)
+    want_castle = scoped_here(role)
+    fallback = None
     for room in load_rooms():
-        if any(a.id == role for a in room.agents):
-            return room.id
-    return None
+        if any(base(a.id) == wanted for a in room.agents):
+            if room.id == want_castle or not room.castle_id:
+                return room.id
+            fallback = fallback or room.id
+    return fallback
 
 
 def mcp_servers_for(room_id: str) -> list[McpServerSpec]:

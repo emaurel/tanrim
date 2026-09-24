@@ -10,56 +10,73 @@ import 'package:tanrim/ui/menu.dart';
 import 'package:tanrim/world/iso.dart';
 import 'package:tanrim/world/painter.dart';
 
-Room _room(String id, double x, double y, [double w = 4, double h = 4]) =>
+Room _room(String id, double x, double y,
+        [double w = 4, double h = 4, String castle = '']) =>
     Room.fromJson({
-      'id': id,
+      'id': castle.isEmpty ? id : '$id@$castle',
+      'base_id': id,
+      'castle_id': castle,
       'name': id,
       'position': {'x': x, 'y': y},
       'size': {'w': w, 'h': h},
       'color': '#445566',
     });
 
+/// A castle as `/castles` serves one.
+Castle _castle(String id, String plugin,
+        {String name = '', double x = 0, double y = 0, int records = 0,
+        bool installed = true}) =>
+    Castle.fromJson({
+      'id': id,
+      'plugin': plugin,
+      'plugin_name': plugin,
+      'name': name.isEmpty ? plugin : name,
+      'ring': 1,
+      'slot': 0,
+      'x': x,
+      'y': y,
+      'span': 64,
+      'records': records,
+      'installed': installed,
+    });
+
 void main() {
   group('castles', () {
-    test('a plugin that declares rooms is one; an extension is not', () {
-      // `website_recreation` adds benches to two of the web agency's rooms
-      // and declares none of its own — it lives INSIDE that castle, which is
-      // exactly what an extension is.
-      final castles = Castle.group(
-        [_room('a', 0, 0), _room('b', 4, 0)],
-        {'base': ['a', 'b'], 'ext': []},
-        {'base': 'Base', 'ext': 'Ext'},
-      );
-      expect(castles.length, 1);
-      expect(castles.single.pluginId, 'base');
-      expect(castles.single.rooms.length, 2);
+    test('two castles of ONE plugin each take their own rooms', () {
+      // The thing the old grouping could not express: it keyed castles by
+      // plugin, so a second instance of the same plugin was impossible.
+      final rooms = [
+        _room('hall', 0, 0, 4, 4, 'aaa'),
+        _room('hall', 100, 0, 4, 4, 'bbb'),
+      ];
+      final first = _castle('aaa', 'p', name: 'First').withRooms(rooms);
+      final second = _castle('bbb', 'p', name: 'Second').withRooms(rooms);
+
+      expect(first.rooms.single.id, 'hall@aaa');
+      expect(second.rooms.single.id, 'hall@bbb');
+      expect(first.rooms.single.baseId, 'hall');
     });
 
-    test('two plugins with rooms are two castles', () {
-      final castles = Castle.group(
-        [_room('a', 0, 0), _room('b', 40, 40)],
-        {'one': ['a'], 'two': ['b']},
-        {'one': 'One', 'two': 'Two'},
-      );
-      expect(castles.map((c) => c.pluginId), ['one', 'two']);
+    test('an install with no castles still lands its rooms somewhere', () {
+      // Rooms come back unscoped from a server that predates castles, and a
+      // castle with no rooms would draw as an empty plot.
+      final c = _castle('aaa', 'p').withRooms([_room('hall', 0, 0)]);
+      expect(c.rooms.single.id, 'hall');
     });
 
-    test('a room no plugin claims is still shown', () {
-      // An unclaimed room is a bug worth SEEING. Dropping it would hide the
-      // one thing that says something is wrong.
-      final castles = Castle.group(
-        [_room('a', 0, 0), _room('orphan', 9, 9)],
-        {'one': ['a']},
-        {'one': 'One'},
-      );
-      expect(castles.length, 2);
-      expect(castles.last.rooms.single.id, 'orphan');
+    test('a castle whose plugin is gone says so', () {
+      final c = _castle('aaa', 'gone', installed: false);
+      expect(c.installed, isFalse);
+      // And falls back to its plot, so it is still somewhere on the map.
+      final (_, _, w, h) = c.bounds;
+      expect(w, 64);
+      expect(h, 64);
     });
 
     test('bounds cover every room', () {
-      final c = Castle(pluginId: 'p', name: 'P', rooms: [
-        _room('a', 2, 3, 4, 5),
-        _room('b', 10, 1, 2, 2),
+      final c = _castle('aaa', 'p').withRooms([
+        _room('a', 2, 3, 4, 5, 'aaa'),
+        _room('b', 10, 1, 2, 2, 'aaa'),
       ]);
       final (x, y, w, h) = c.bounds;
       expect(x, 2);
@@ -175,65 +192,83 @@ void main() {
   });
 
   group('the real installation', () {
-    // Captured from a running server with three plugins installed:
-    // web_agency (12 rooms), job_hunt (5) and website_recreation, which
-    // declares none of its own. Regenerate with the snippet in tool/README.md.
-    List<Room> rooms() => (jsonDecode(
-            File('test/rooms_fixture.json').readAsStringSync()) as List)
-        .map((r) => Room.fromJson((r as Map).cast<String, dynamic>()))
-        .toList();
+    // Captured from a running server: three plugins, two castles, and the
+    // empty land around them. Regenerate with the snippet in tool/README.md.
+    Map<String, dynamic> load(String name) =>
+        jsonDecode(File('test/$name').readAsStringSync()) as Map<String, dynamic>;
 
-    List<Map<String, dynamic>> plugins() =>
-        ((jsonDecode(File('test/plugins_fixture.json').readAsStringSync())
-                as Map)['plugins'] as List)
-            .map((p) => (p as Map).cast<String, dynamic>())
+    List<Room> rooms() =>
+        (jsonDecode(File('test/rooms_fixture.json').readAsStringSync()) as List)
+            .map((r) => Room.fromJson((r as Map).cast<String, dynamic>()))
             .toList();
 
-    List<Castle> build() {
-      final list = plugins();
-      return Castle.group(
-        rooms(),
-        {for (final p in list)
-          p['id'] as String: ((p['rooms'] ?? []) as List).cast<String>()},
-        {for (final p in list)
-          p['id'] as String: (p['name'] ?? p['id']) as String},
-      );
+    List<Castle> castles() {
+      final all = rooms();
+      return ((load('castles_fixture.json')['castles'] ?? []) as List)
+          .map((c) => Castle.fromJson((c as Map).cast<String, dynamic>())
+              .withRooms(all))
+          .toList();
     }
 
-    test('two plugins with rooms make two castles, and nothing is orphaned', () {
-      final castles = build();
-      expect(castles.map((c) => c.pluginId).toSet(), {'web_agency', 'job_hunt'});
-      expect(castles.any((c) => c.pluginId.isEmpty), isFalse,
-          reason: 'an unclaimed room means a plugin lost one');
-      final counted = castles.fold<int>(0, (n, c) => n + c.rooms.length);
-      expect(counted, rooms().length, reason: 'every room lives in a castle');
+    List<Plot> plots() =>
+        ((load('castles_fixture.json')['plots'] ?? []) as List)
+            .map((p) => Plot.fromJson((p as Map).cast<String, dynamic>()))
+            .toList();
+
+    test('every room belongs to exactly one castle', () {
+      final built = castles();
+      expect(built.length, 2);
+      final counted = built.fold<int>(0, (n, c) => n + c.rooms.length);
+      expect(counted, rooms().length,
+          reason: 'a room in no castle is a room that draws nowhere');
     });
 
-    test('the castles do not overlap on the map', () {
-      // Room positions are absolute tiles, and nothing allocates them — a new
-      // plugin picks its own corner. Two castles sharing tiles would draw one
-      // through the other, and the estate view would put two labels in one
-      // place.
-      final castles = build();
-      for (var i = 0; i < castles.length; i++) {
-        for (var j = i + 1; j < castles.length; j++) {
-          final a = castles[i].bounds, b = castles[j].bounds;
+    test('the castles do not overlap', () {
+      // Room positions are absolute tiles and the plots are laid out by the
+      // server, so this is the check that the two agree.
+      final built = castles();
+      for (var i = 0; i < built.length; i++) {
+        for (var j = i + 1; j < built.length; j++) {
+          final a = built[i].bounds, b = built[j].bounds;
           final apart = a.$1 + a.$3 <= b.$1 ||
               b.$1 + b.$3 <= a.$1 ||
               a.$2 + a.$4 <= b.$2 ||
               b.$2 + b.$4 <= a.$2;
           expect(apart, isTrue,
-              reason: '${castles[i].pluginId} overlaps ${castles[j].pluginId}');
+              reason: '${built[i].name} overlaps ${built[j].name}');
         }
       }
     });
 
-    test('an extension lives inside the castle it extends', () {
-      // `website_recreation` adds benches to the web agency's rooms and
-      // declares none of its own, so it is not a castle — it is part of one.
-      expect(plugins().where((p) => p['id'] == 'website_recreation').single['rooms'],
-          isEmpty);
-      expect(build().map((c) => c.pluginId), isNot(contains('website_recreation')));
+    test('a castle sits inside its own plot', () {
+      for (final c in castles()) {
+        final (px, py, pw, ph) = c.plot;
+        final (bx, by, bw, bh) = c.bounds;
+        expect(bx, greaterThanOrEqualTo(px));
+        expect(by, greaterThanOrEqualTo(py));
+        expect(bx + bw, lessThanOrEqualTo(px + pw));
+        expect(by + bh, lessThanOrEqualTo(py + ph));
+      }
+    });
+
+    test('empty plots are offered, and none is under a castle', () {
+      final free = plots();
+      expect(free, isNotEmpty, reason: 'there must be somewhere to build');
+      final taken = {for (final c in castles()) '${c.ring}:${c.slot}'};
+      for (final p in free) {
+        expect(taken.contains('${p.ring}:${p.slot}'), isFalse,
+            reason: 'ring ${p.ring} slot ${p.slot} is already built on');
+      }
+    });
+
+    test('an extension has no castle of its own', () {
+      // `website_recreation` patches the agency's rooms and declares none.
+      final buildable =
+          ((load('castles_fixture.json')['buildable'] ?? []) as List)
+              .map((b) => (b as Map)['id'])
+              .toSet();
+      expect(buildable, {'job_hunt', 'web_agency'});
+      expect(buildable.contains('website_recreation'), isFalse);
     });
   });
 }

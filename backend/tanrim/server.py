@@ -36,6 +36,15 @@ _env = environment.boot(discovery.find())
 print(f"[boot] {len(_env.plugins)} plugin(s): "
       + ", ".join(p.id for p in _env.plugins))
 
+# Every plugin that declares rooms gets a castle if it has none, so an install
+# that predates castles comes up looking exactly as it did. Here rather than in
+# `environment.boot`, which also runs in tests against synthetic plugins in a
+# temporary directory — seeding there would write castles for `alpha` and
+# `beta` into the real ledger.
+for _made in state.ensure_castles(_env):
+    print(f"[boot] built {_made['name']} ({_made['plugin']}) "
+          f"at ring {_made['ring']} slot {_made['slot']}")
+
 # What the plugins say is wrong with their own installation. Reported at boot
 # rather than discovered: a missing prompt does not fail an agent run, it lets
 # the agent improvise, and a missing key fails it much later than it should.
@@ -414,6 +423,8 @@ async def _reload_now() -> dict[str, Any]:
     app.openapi_schema = None          # or /docs keeps describing the old set
 
     tool_registry.reload()
+    state.ensure_castles(env)
+    rooms_mod.invalidate()
     HANDLERS = build_handlers(world)
     moved = await world.resync()
 
@@ -454,6 +465,129 @@ async def reload_plugins() -> dict[str, Any]:
     are editing anyway, so restart — `uvicorn --reload` does it for you.
     """
     return await _reload_now()
+
+
+class CastleBody(BaseModel):
+    plugin: str = ""
+    name: str = ""
+    ring: int | None = None
+    slot: int | None = None
+
+
+async def _world_changed() -> dict[str, Any]:
+    """After anything that changes which castles exist or where they sit."""
+    global HANDLERS
+
+    rooms_mod.invalidate()
+    HANDLERS = build_handlers(world)
+    moved = await world.resync()
+    await world.publish({"type": "castles_changed"})
+    return moved
+
+
+@app.get("/castles")
+async def get_castles() -> dict[str, Any]:
+    """Every castle, the plots around them, and what can be built.
+
+    The plots come from here rather than being computed in the app, because
+    the ROOMS are positioned from the same geometry — an app that worked out
+    its own plot centres would disagree with the coordinates it was given and
+    draw each castle beside its own rooms.
+    """
+    from . import castles as geom
+
+    built = state.list_castles()
+    taken = {(c.get("ring", 0), c.get("slot", 0)) for c in built}
+    env = environment.current()
+    names = {d["id"]: d.get("name") or d["id"] for d in env.describe()}
+
+    rings = max([c.get("ring", 1) for c in built] or [1])
+    # One ring beyond the furthest castle, so there is always empty land to
+    # build on without the map having to ask for more.
+    empty = [p for p in geom.plots(sum(geom.slots_on(r)
+                                       for r in range(1, rings + 2)))
+             if (p["ring"], p["slot"]) not in taken]
+
+    return {
+        "castles": [
+            {**c,
+             "plugin_name": names.get(c.get("plugin", ""), c.get("plugin", "")),
+             "installed": c.get("plugin") in names,
+             "records": len(state.records_in(c["id"])),
+             **geom.plot_for(c.get("ring", 1), c.get("slot", 0))}
+            for c in built
+        ],
+        "plots": empty,
+        # Only plugins that declare rooms of their own: an extension lives
+        # inside the castle of what it extends and cannot have one.
+        "buildable": [{"id": d["id"], "name": d.get("name") or d["id"],
+                       "description": d.get("description", ""),
+                       "built": len(state.castles_of(d["id"]))}
+                      for d in env.describe() if d.get("rooms")],
+        "span": geom.PLOT,
+    }
+
+
+@app.post("/castles")
+async def post_castle(body: CastleBody) -> dict[str, Any]:
+    env = environment.current()
+    names = {d["id"]: d.get("name") or d["id"]
+             for d in env.describe() if d.get("rooms")}
+    if body.plugin not in names:
+        return {"ok": False,
+                "error": f"{body.plugin!r} is not an installed plugin with "
+                         f"rooms of its own"}
+    try:
+        made = state.add_castle(body.plugin, body.name,
+                                plugin_name=names[body.plugin],
+                                ring=body.ring, slot=body.slot)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    await _world_changed()
+    state.log_event("run_end", from_="operator", outcome="completed",
+                    summary=f"built {made['name']}",
+                    details={"castle": made})
+    return {"ok": True, "castle": made}
+
+
+@app.patch("/castles/{castle_id}")
+async def patch_castle(castle_id: str, body: CastleBody) -> dict[str, Any]:
+    """Rename a castle, or move it to another plot."""
+    try:
+        if body.name:
+            got = state.rename_castle(castle_id, body.name)
+            if got is None:
+                return {"ok": False, "error": "no such castle"}
+        if body.ring is not None and body.slot is not None:
+            got = state.move_castle(castle_id, body.ring, body.slot)
+            if got is None:
+                return {"ok": False, "error": "no such castle"}
+            await _world_changed()
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "castle": state.get_castle(castle_id)}
+
+
+@app.delete("/castles/{castle_id}")
+async def delete_castle(castle_id: str) -> dict[str, Any]:
+    """Raze a castle.
+
+    Its RECORDS are left alone. They are the work itself, and whatever was
+    made for them, so deleting a PLACE must not delete what was done there.
+    They stop appearing in any queue, because every queue is scoped to a
+    castle, and they come back if one is rebuilt on the same plot for the same
+    plugin.
+    """
+    castle = state.get_castle(castle_id)
+    if castle is None:
+        return {"ok": False, "error": "no such castle"}
+    held = len(state.records_in(castle_id))
+    state.delete_castle(castle_id)
+    await _world_changed()
+    state.log_event("run_end", from_="operator", outcome="completed",
+                    summary=f"razed {castle['name']}"
+                            + (f", leaving {held} record(s)" if held else ""))
+    return {"ok": True, "razed": castle, "records_left": held}
 
 
 @app.get("/plugins/catalog")

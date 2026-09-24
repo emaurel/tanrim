@@ -1,28 +1,61 @@
 import 'world.dart';
 
-/// A plugin's rooms, taken together.
+/// One running instance of a plugin, and the land it stands on.
 ///
-/// Each installed plugin that declares rooms of its own is one castle. An
-/// EXTENSION is not: `website_recreation` adds benches to two of the web
-/// agency's rooms and declares none, so it lives inside that castle rather
-/// than beside it — which is exactly what it is.
+/// A plugin says what a kind of work IS; a castle is one copy of it, with its
+/// own rooms on the map, its own sprites and its own records. Two castles of
+/// the web agency are two agencies: same trade, different work in them.
 ///
-/// Today there is one. The shape exists because the world is meant to hold
-/// several, and because zooming out far enough should show you the estate
-/// rather than a wall of unreadable tiles.
+/// Built by the SERVER rather than inferred here. The app used to group rooms
+/// by which plugin declared them, which could only ever produce one castle per
+/// plugin — and, more quietly, computed nothing about where they sat. The plot
+/// geometry has to match the room coordinates exactly, and the only way to be
+/// sure of that is for one side to own both.
 class Castle {
   Castle({
+    required this.id,
     required this.pluginId,
+    required this.pluginName,
     required this.name,
-    required this.rooms,
+    required this.ring,
+    required this.slot,
+    required this.centre,
+    required this.span,
+    required this.records,
+    required this.installed,
+    this.rooms = const [],
   });
 
+  final String id;
   final String pluginId;
+  final String pluginName;
+
+  /// `[PLUGIN NAME] [N]` until it is renamed.
   final String name;
+
+  final int ring;
+  final int slot;
+
+  /// The centre of its plot, in tiles.
+  final (double, double) centre;
+  final double span;
+
+  final int records;
+
+  /// False when the plugin it is an instance of is no longer installed — the
+  /// castle outlives it, so the map has to be able to say so rather than
+  /// drawing an empty place with no explanation.
+  final bool installed;
+
   final List<Room> rooms;
 
-  /// The bounding box over its rooms, in tile space.
+  /// The plot's square, in tile space.
+  (double, double, double, double) get plot =>
+      (centre.$1 - span / 2, centre.$2 - span / 2, span, span);
+
+  /// The bounding box over its rooms, or the plot when it has none.
   (double, double, double, double) get bounds {
+    if (rooms.isEmpty) return plot;
     var minX = double.infinity, minY = double.infinity;
     var maxX = -double.infinity, maxY = -double.infinity;
     for (final r in rooms) {
@@ -36,34 +69,70 @@ class Castle {
     return (minX, minY, maxX - minX, maxY - minY);
   }
 
-  /// Build one castle per plugin that declares rooms.
-  ///
-  /// `byPlugin` is `/plugins` → `{pluginId: [roomId]}`. A room no plugin
-  /// claims still gets a castle of its own rather than vanishing: an
-  /// unclaimed room is a bug worth SEEING, not hiding.
-  static List<Castle> group(
-    List<Room> rooms,
-    Map<String, List<String>> byPlugin,
-    Map<String, String> pluginNames,
-  ) {
-    final out = <Castle>[];
-    final claimed = <String>{};
-    for (final entry in byPlugin.entries) {
-      final mine =
-          rooms.where((r) => entry.value.contains(r.id)).toList();
-      if (mine.isEmpty) continue;
-      claimed.addAll(mine.map((r) => r.id));
-      out.add(Castle(
-        pluginId: entry.key,
-        name: pluginNames[entry.key] ?? entry.key,
-        rooms: mine,
-      ));
-    }
-    final orphans = rooms.where((r) => !claimed.contains(r.id)).toList();
-    if (orphans.isNotEmpty) {
-      out.add(Castle(
-          pluginId: '', name: 'unclaimed', rooms: orphans));
-    }
-    return out;
-  }
+  Castle withRooms(List<Room> all) => Castle(
+        id: id,
+        pluginId: pluginId,
+        pluginName: pluginName,
+        name: name,
+        ring: ring,
+        slot: slot,
+        centre: centre,
+        span: span,
+        records: records,
+        installed: installed,
+        // A room with no castle belongs to every castle only when there is
+        // exactly one — an install that predates castles serves unscoped
+        // rooms, and they have to land somewhere.
+        rooms: all
+            .where((r) => r.castleId == id || (r.castleId.isEmpty))
+            .toList(),
+      );
+
+  static Castle fromJson(Map<String, dynamic> j) => Castle(
+        id: j['id'] as String,
+        pluginId: (j['plugin'] ?? '') as String,
+        pluginName: (j['plugin_name'] ?? j['plugin'] ?? '') as String,
+        name: (j['name'] ?? j['id']) as String,
+        ring: (j['ring'] ?? 1) as int,
+        slot: (j['slot'] ?? 0) as int,
+        centre: (
+          ((j['x'] ?? 0) as num).toDouble(),
+          ((j['y'] ?? 0) as num).toDouble(),
+        ),
+        span: ((j['span'] ?? 64) as num).toDouble(),
+        records: (j['records'] ?? 0) as int,
+        installed: j['installed'] != false,
+      );
+}
+
+/// Empty land, with an outline on it.
+///
+/// Served rather than computed for the same reason as a castle's centre: the
+/// rooms of whatever gets built here are positioned from this geometry, and
+/// two sides working it out separately is two sides that can disagree.
+class Plot {
+  const Plot({
+    required this.ring,
+    required this.slot,
+    required this.centre,
+    required this.span,
+  });
+
+  final int ring;
+  final int slot;
+  final (double, double) centre;
+  final double span;
+
+  (double, double, double, double) get bounds =>
+      (centre.$1 - span / 2, centre.$2 - span / 2, span, span);
+
+  static Plot fromJson(Map<String, dynamic> j) => Plot(
+        ring: (j['ring'] ?? 1) as int,
+        slot: (j['slot'] ?? 0) as int,
+        centre: (
+          ((j['x'] ?? 0) as num).toDouble(),
+          ((j['y'] ?? 0) as num).toDouble(),
+        ),
+        span: ((j['span'] ?? 64) as num).toDouble(),
+      );
 }

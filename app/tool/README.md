@@ -32,8 +32,9 @@ import json
 from fastapi.testclient import TestClient
 from tanrim.server import app
 with TestClient(app) as c:
-    rooms, plugins = c.get('/rooms').json(), c.get('/plugins').json()
-open('app/test/rooms_fixture.json','w').write(json.dumps(rooms))
-open('app/test/plugins_fixture.json','w').write(json.dumps(plugins))
+    for name, path in (('/rooms', 'rooms'), ('/plugins', 'plugins'),
+                       ('/castles', 'castles')):
+        open(f'app/test/{path}_fixture.json', 'w').write(
+            json.dumps(c.get(name).json()))
 "
 ```

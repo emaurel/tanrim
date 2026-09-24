@@ -93,6 +93,7 @@ async def _dispatch(role: str, world: World, task: dict[str, Any]) -> Any:
     the plugin). A core that names `probe`, `lens`, `scribe`, `courier`,
     `echo`, `forge`, `nova` and `porter` is a core that knows the domain.
     """
+    from . import castles as geom
     from . import environment, state
 
     env = environment.current()
@@ -100,11 +101,26 @@ async def _dispatch(role: str, world: World, task: dict[str, Any]) -> Any:
     if agent is None:
         return {"ok": False, "error": f"no plugin supplies role {role!r}"}
 
+    # Which castle this run belongs to, set for its whole duration. Taken from
+    # the ROLE when the caller already scoped it (a room panel knows which
+    # castle it is), otherwise from the record. Plugins never see it: they go
+    # on naming `probe` and `assay`, and the world resolves those against this.
+    token = geom.CURRENT.set(geom.castle_of(role))
+
     # A role with no stage jobs is dispatched with whatever it was given —
     # Nova takes a place to search and creates records rather than moving one.
     # The task is still NORMALISED: callers write `prompt`, the contract's Job
     # reads `instruction`, and skipping that here handed Nova an empty place
     # and a cheerful `ok: True` for a search it never ran.
+    try:
+        return await _run(env, agent, role, world, task, state, geom)
+    finally:
+        geom.CURRENT.reset(token)
+
+
+async def _run(env, agent, role: str, world: World, task: dict[str, Any],
+               state, geom) -> Any:
+    """The dispatch itself, inside the castle's context."""
     if not agent.jobs and agent.default_job is not None:
         return await agent.default_job(world, _task(task))
 
@@ -114,6 +130,11 @@ async def _dispatch(role: str, world: World, task: dict[str, Any]) -> Any:
     record = state.get_record(record_id)
     if record is None:
         return {"ok": False, "error": f"no such record: {record_id}"}
+
+    # A record knows which castle it belongs to; an unscoped dispatch — the
+    # orchestrator's sweep, an operator button on a board row — learns it here.
+    if not geom.here():
+        geom.CURRENT.set(state.home_castle_for(record))
 
     wrong = _wrong_stage(role, record)
     if wrong:

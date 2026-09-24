@@ -18,10 +18,40 @@ Room _room(String id, double x, double y, [double w = 12, double h = 8]) =>
 
 final _rooms = [_room('a', 0, 0), _room('b', 14, 0), _room('c', 0, 10)];
 final _castles =
-    Castle.group(_rooms, {'p': ['a', 'b', 'c']}, {'p': 'Plugin'});
+    castlesFrom(_rooms, {'p': ['a', 'b', 'c']}, {'p': 'Plugin'});
+
+/// Castles as the server groups them: one per plugin that declares rooms.
+List<Castle> castlesFrom(
+  List<Room> rooms,
+  Map<String, List<String>> byPlugin,
+  Map<String, String> names,
+) {
+  final out = <Castle>[];
+  for (final e in byPlugin.entries) {
+    final mine = rooms.where((r) => e.value.contains(r.id)).toList();
+    if (mine.isEmpty) continue;
+    out.add(Castle(
+      id: e.key,
+      pluginId: e.key,
+      pluginName: names[e.key] ?? e.key,
+      name: names[e.key] ?? e.key,
+      ring: 1,
+      slot: out.length,
+      centre: (0, 0),
+      span: 64,
+      records: 0,
+      installed: true,
+      rooms: mine,
+    ));
+  }
+  return out;
+}
+
 
 /// Pump a map and hand back its state.
-Future<dynamic> _map(WidgetTester t) async {
+Future<dynamic> _map(WidgetTester t,
+    {List<Plot> plots = const [],
+    void Function(int ring, int slot)? onPlotTapped}) async {
   t.view
     ..physicalSize = const Size(1200, 800)
     ..devicePixelRatio = 1.0;
@@ -37,6 +67,8 @@ Future<dynamic> _map(WidgetTester t) async {
         badges: const {},
         castles: _castles,
         castleBadges: const {},
+        plots: plots,
+        onPlotTapped: onPlotTapped,
         onRoomTapped: (_) {},
       ),
     ),
@@ -162,5 +194,45 @@ void main() {
     await t.tapAt(s.debugScreenOf(6.0, 4.0, size) as Offset);
     await t.pump();
     expect(opened, 'a');
+  });
+
+  testWidgets('empty land offers to be built on', (t) async {
+    // A plot is the one thing on the map that is not there yet, so a tap on
+    // it asks rather than travels: flying to somewhere that may not get built
+    // on is a camera move you did not want.
+    final tapped = <(int, int)>[];
+    const plot = Plot(ring: 1, slot: 3, centre: (200, 200), span: 64);
+    final s = await _map(t,
+        plots: const [plot], onPlotTapped: (r, sl) => tapped.add((r, sl)));
+
+    await _zoomOut(t, 30);
+    final size = t.getSize(find.byType(MapView));
+    // ignore: avoid_dynamic_calls
+    await t.tapAt(s.debugScreenOf(200.0, 200.0, size) as Offset);
+    await t.pump();
+
+    expect(tapped, [(1, 3)]);
+    // ignore: avoid_dynamic_calls
+    expect(s.debugFlying, isFalse, reason: 'it must not travel to empty land');
+  });
+
+  testWidgets('a castle covers the plot it stands on', (t) async {
+    // The plots and the castles come from the same geometry, so one sits on
+    // the other. Land that is built on is not empty land.
+    final tapped = <(int, int)>[];
+    // Deliberately overlapping the castle's own rooms.
+    const plot = Plot(ring: 1, slot: 0, centre: (7, 4), span: 64);
+    final s = await _map(t,
+        plots: const [plot], onPlotTapped: (r, sl) => tapped.add((r, sl)));
+
+    await _zoomOut(t, 30);
+    final size = t.getSize(find.byType(MapView));
+    // ignore: avoid_dynamic_calls
+    await t.tapAt(s.debugScreenOf(7.0, 4.0, size) as Offset);
+    await t.pump();
+
+    expect(tapped, isEmpty, reason: 'the castle is there, not empty land');
+    // ignore: avoid_dynamic_calls
+    expect(s.debugFlying, isTrue, reason: 'it travelled to the castle instead');
   });
 }

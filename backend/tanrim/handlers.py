@@ -22,8 +22,20 @@ if TYPE_CHECKING:
 
 
 class RoomHandler:
-    def __init__(self, world: "World") -> None:
+    """A room's panel.
+
+    One instance per ROOM ON THE MAP, not per room a plugin declares: two
+    castles of one plugin have the same rooms and each needs its own panel,
+    its own in-flight task and its own queue. `room_id` is the scoped id
+    (`assay@c7f2`) and `castle_id` the castle it belongs to; both are empty in
+    an install with no castles, which is exactly the shape this had before.
+    """
+
+    def __init__(self, world: "World", room_id: str = "",
+                 castle_id: str = "") -> None:
         self.world = world
+        self.room_id = room_id
+        self.castle_id = castle_id
 
     async def state(self) -> dict[str, Any]:
         return {}
@@ -48,6 +60,17 @@ class RecordRoomHandler(RoomHandler):
     model: str = ""
 
     @property
+    def role(self) -> str:
+        """The worker role in THIS castle.
+
+        `agent_id` is what the plugin declared — `forge`. The world hires
+        `forge@c7f2`, because a castle's crew is its own: two agencies both
+        have a Forge and one being busy says nothing about the other.
+        """
+        from .castles import scope
+        return scope(self.agent_id, self.castle_id)
+
+    @property
     def model_name(self) -> str:
         """Which model this room's agent runs on.
 
@@ -61,8 +84,9 @@ class RecordRoomHandler(RoomHandler):
         agent = environment.current().agent(self.agent_id)
         return (agent.model if agent else "") or "(unknown)"
 
-    def __init__(self, world: "World") -> None:
-        super().__init__(world)
+    def __init__(self, world: "World", room_id: str = "",
+                 castle_id: str = "") -> None:
+        super().__init__(world, room_id, castle_id)
         self._task: asyncio.Task | None = None
         self._tasks: set[asyncio.Task] = set()
         self._last_error: str | None = None
@@ -76,9 +100,9 @@ class RecordRoomHandler(RoomHandler):
         # room rather than one agent. `running` means "something is in flight
         # here" — which is what the map shows, so the panel must agree — and
         # `at_capacity` is what actually disables the buttons.
-        live = in_flight_for_role(self.agent_id)
+        live = in_flight_for_role(self.role)
         started_here = self._task is not None and not self._task.done()
-        limit = max_workers(self.agent_id)
+        limit = max_workers(self.role)
         return {
             "running": bool(live),
             "started_here": started_here,
@@ -91,9 +115,14 @@ class RecordRoomHandler(RoomHandler):
             "action_name": self.action_name,
             "accepts_stages": list(self.accepts_stages),
             # The work waiting for THIS room, so the panel is a to-do list.
-            "queue": state.list_record_rows(stages=list(self.accepts_stages), limit=40),
+            "castle_id": self.castle_id,
+            # The work waiting for THIS castle. Without the filter a second
+            # agency would show the first one's queue and offer to run it.
+            "queue": state.list_record_rows(stages=list(self.accepts_stages),
+                                            castle_id=self.castle_id, limit=40),
             "recent": [
-                record for record in state.list_record_rows(limit=40)
+                record for record in state.list_record_rows(
+                    castle_id=self.castle_id, limit=40)
                 if any(h.get("agent") == self.agent_id for h in (record.get("history") or []))
             ][:12],
             "last_error": self._last_error,
@@ -105,8 +134,8 @@ class RecordRoomHandler(RoomHandler):
             # Capacity is enforced inside the worker pool, which is the only
             # thing that knows how many workers are free. Starting is allowed
             # here; being refused is a normal outcome, not an error state.
-            busy = len(in_flight_for_role(self.agent_id))
-            limit = max_workers(self.agent_id)
+            busy = len(in_flight_for_role(self.role))
+            limit = max_workers(self.role)
             if busy >= limit:
                 return {
                     "ok": False,
@@ -151,7 +180,20 @@ def build_handlers(world: "World") -> dict[str, RoomHandler]:
     A room with no declared handler is not an error: it falls back to the
     generic info panel, which is what an unstaffed room should look like.
     """
-    from . import environment
+    from . import environment, rooms as rooms_mod
 
-    return {room_id: cls(world)
-            for room_id, cls in environment.current().room_handlers().items()}
+    declared = environment.current().room_handlers()
+    out: dict[str, RoomHandler] = {}
+    for room in rooms_mod.load_rooms():
+        cls = declared.get(room.base_id or room.id)
+        if cls is None:
+            continue
+        # Constructed with the world alone and told where it is afterwards.
+        # A plugin's handler may define `__init__(self, world)` — several do —
+        # and making them all take two more arguments to gain castles would be
+        # the core reaching into plugin code for its own convenience.
+        handler = cls(world)
+        handler.room_id = room.id
+        handler.castle_id = room.castle_id
+        out[room.id] = handler
+    return out

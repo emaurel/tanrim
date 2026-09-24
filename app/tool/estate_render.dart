@@ -54,7 +54,7 @@ void main() {
         }),
     ];
 
-    final castles = Castle.group(
+    final castles = _castlesFrom(
       [...rooms, ...imagined],
       {
         'web_agency': rooms.map((r) => r.id).toList(),
@@ -96,3 +96,31 @@ void main() {
     expect(File('build/estate.png').lengthSync(), greaterThan(1000));
   });
 }
+
+/// Castles as the server groups them: one per plugin that declares rooms.
+List<Castle> _castlesFrom(
+  List<Room> rooms,
+  Map<String, List<String>> byPlugin,
+  Map<String, String> names,
+) {
+  final out = <Castle>[];
+  for (final e in byPlugin.entries) {
+    final mine = rooms.where((r) => e.value.contains(r.id)).toList();
+    if (mine.isEmpty) continue;
+    out.add(Castle(
+      id: e.key,
+      pluginId: e.key,
+      pluginName: names[e.key] ?? e.key,
+      name: names[e.key] ?? e.key,
+      ring: 1,
+      slot: out.length,
+      centre: (0, 0),
+      span: 64,
+      records: 0,
+      installed: true,
+      rooms: mine,
+    ));
+  }
+  return out;
+}
+
