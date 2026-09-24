@@ -52,8 +52,7 @@ class MapView extends StatefulWidget {
   State<MapView> createState() => _MapViewState();
 }
 
-class _MapViewState extends State<MapView>
-    with SingleTickerProviderStateMixin {
+class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
   final _iso = const Iso();
 
   /// Far enough out to see an estate of castles, close enough to read a
@@ -114,8 +113,12 @@ class _MapViewState extends State<MapView>
     // is what has been BUILT, plus a ring of room around it to build in.
     for (final c in widget.castles) {
       final (x, y, w, h) = c.plot;
-      take(x - widget.web.span, y - widget.web.span,
-           w + widget.web.span * 2, h + widget.web.span * 2);
+      take(
+        x - widget.web.span,
+        y - widget.web.span,
+        w + widget.web.span * 2,
+        h + widget.web.span * 2,
+      );
     }
     return any ? (minX, minY, maxX, maxY) : null;
   }
@@ -133,8 +136,7 @@ class _MapViewState extends State<MapView>
   bool get debugFlying => _flight != null;
 
   @visibleForTesting
-  String? debugCastleAt(Offset local, Size size) =>
-      _castleAt(local, size)?.id;
+  String? debugCastleAt(Offset local, Size size) => _castleAt(local, size)?.id;
 
   @visibleForTesting
   double get debugTick => _tick;
@@ -161,8 +163,10 @@ class _MapViewState extends State<MapView>
   @visibleForTesting
   Offset debugScreenOf(double x, double y, Size size) {
     final w = _iso.toScreen(x, y);
-    return Offset(w.dx * _zoom + size.width / 2 + _camera.dx,
-        w.dy * _zoom + size.height / 3 + _camera.dy);
+    return Offset(
+      w.dx * _zoom + size.width / 2 + _camera.dx,
+      w.dy * _zoom + size.height / 3 + _camera.dy,
+    );
   }
 
   Offset _camera = Offset.zero;
@@ -175,6 +179,7 @@ class _MapViewState extends State<MapView>
   /// it rather than teleport: the jump is what makes an operator lose track of
   /// where they were.
   _Flight? _flight;
+
   /// NOT `late final … ..start()`: that is lazy, and the only other mention
   /// of the field is in `dispose`, so it was never initialised and the clock
   /// never ran. The sprites did not breathe and a camera flight never moved —
@@ -220,10 +225,8 @@ class _MapViewState extends State<MapView>
       maxY = c.dy > maxY ? c.dy : maxY;
     }
     final floor = _floor(size);
-    final fit = ((size.width * 0.86) / (maxX - minX))
-        .clamp(floor, _maxZoom);
-    final fitY = ((size.height * 0.72) / (maxY - minY))
-        .clamp(floor, _maxZoom);
+    final fit = ((size.width * 0.86) / (maxX - minX)).clamp(floor, _maxZoom);
+    final fitY = ((size.height * 0.72) / (maxY - minY)).clamp(floor, _maxZoom);
     final z = (fit < fitY ? fit : fitY).toDouble();
     final centre = Offset((minX + maxX) / 2, (minY + maxY) / 2);
     _flight = _Flight(
@@ -298,11 +301,28 @@ class _MapViewState extends State<MapView>
     return null;
   }
 
+  /// Memo for [_visiblePlots], keyed on everything that changes the answer.
+  ///
+  /// `build` runs on every frame — the sprites breathe — and this walks the
+  /// rings each time. The answer only changes when the camera does, which is
+  /// exactly when you are not asking it to do anything else.
+  String _plotsKey = '';
+  List<Plot> _plotsMemo = const [];
+
   /// The free plots the viewport covers, in tile space.
   ///
   /// The visible region is a diamond in tile coordinates, so this is its
   /// bounding box — which over-covers, and the painter culls the difference.
   List<Plot> _visiblePlots(Size size) {
+    final key = '${_camera.dx.round()}|${_camera.dy.round()}|'
+        '${_zoom.toStringAsFixed(4)}|${size.width}x${size.height}|'
+        '${widget.taken.length}';
+    if (key == _plotsKey) return _plotsMemo;
+    _plotsKey = key;
+    return _plotsMemo = _computeVisiblePlots(size);
+  }
+
+  List<Plot> _computeVisiblePlots(Size size) {
     final corners = [
       _tileAt(Offset.zero, size),
       _tileAt(Offset(size.width, 0), size),
@@ -318,7 +338,9 @@ class _MapViewState extends State<MapView>
       maxY = math.max(maxY, c.dy);
     }
     return widget.web.visible(
-        Rect.fromLTRB(minX, minY, maxX, maxY), widget.taken);
+      Rect.fromLTRB(minX, minY, maxX, maxY),
+      widget.taken,
+    );
   }
 
   Plot? _plotAt(Offset local, Size size) {
@@ -350,147 +372,161 @@ class _MapViewState extends State<MapView>
   @override
   Widget build(BuildContext context) {
     // The painter is not in the widget tree, so it cannot read the theme.
-    final family = DefaultTextStyle.of(context).style.fontFamily ??
+    final family =
+        DefaultTextStyle.of(context).style.fontFamily ??
         Theme.of(context).textTheme.bodyMedium?.fontFamily;
 
-    return LayoutBuilder(builder: (context, box) {
-      final size = Size(box.maxWidth, box.maxHeight);
-      _frame(size);
-      return Listener(
-        // Wheel zoom, anchored so the map does not slide away under the cursor.
-        onPointerSignal: (e) {
-          if (e is! PointerScrollEvent) return;
-          setState(() {
-            final before = _zoom;
-            _flight = null;   // the operator took the wheel
-            // Twice the travel per notch. 1.1 squared and 0.9 squared, so a
-            // notch moves exactly twice as far in the scale the zoom actually
-            // works in — a multiplier, not an amount.
-            _zoom = (_zoom * (e.scrollDelta.dy > 0 ? 0.81 : 1.21))
-                .clamp(_floor(size), _maxZoom);
-            final k = _zoom / before;
-            // Zoom about the POINTER, not the middle of the window. Scaling
-            // the camera about the centre means the thing you are pointing at
-            // slides away as you zoom towards it, and you chase it with the
-            // drag — which is most of what made the map feel awkward.
-            final d = e.localPosition -
-                Offset(size.width / 2, size.height / 3);
-            _camera = d * (1 - k) + _camera * k;
-          });
-        },
-        child: MouseRegion(
-          onHover: (e) {
-            if (_far) {
-              final c = _castleAt(e.localPosition, size);
-              final p = c == null ? _plotAt(e.localPosition, size) : null;
+    return LayoutBuilder(
+      builder: (context, box) {
+        final size = Size(box.maxWidth, box.maxHeight);
+        _frame(size);
+        return Listener(
+          // Wheel zoom, anchored so the map does not slide away under the cursor.
+          onPointerSignal: (e) {
+            if (e is! PointerScrollEvent) return;
+            setState(() {
+              final before = _zoom;
+              _flight = null; // the operator took the wheel
+              // Twice the travel per notch. 1.1 squared and 0.9 squared, so a
+              // notch moves exactly twice as far in the scale the zoom actually
+              // works in — a multiplier, not an amount.
+              _zoom = (_zoom * (e.scrollDelta.dy > 0 ? 0.81 : 1.21)).clamp(
+                _floor(size),
+                _maxZoom,
+              );
+              final k = _zoom / before;
+              // Zoom about the POINTER, not the middle of the window. Scaling
+              // the camera about the centre means the thing you are pointing at
+              // slides away as you zoom towards it, and you chase it with the
+              // drag — which is most of what made the map feel awkward.
+              final d =
+                  e.localPosition - Offset(size.width / 2, size.height / 3);
+              _camera = d * (1 - k) + _camera * k;
+            });
+          },
+          child: MouseRegion(
+            onHover: (e) {
+              if (_far) {
+                final c = _castleAt(e.localPosition, size);
+                final p = c == null ? _plotAt(e.localPosition, size) : null;
+                final plotKey = p == null ? null : '${p.ring}:${p.slot}';
+                if (c?.id != _hoveredCastle || plotKey != _hoveredPlot) {
+                  setState(() {
+                    _hoveredCastle = c?.id;
+                    _hoveredPlot = plotKey;
+                  });
+                }
+                return;
+              }
+              final r = _roomAt(e.localPosition, size);
+              // Land is hoverable at every distance now that it is drawn at
+              // every distance — a plot you can see and not point at reads as
+              // decoration.
+              final p = r == null ? _plotAt(e.localPosition, size) : null;
               final plotKey = p == null ? null : '${p.ring}:${p.slot}';
-              if (c?.id != _hoveredCastle || plotKey != _hoveredPlot) {
+              if (r?.id != _hovered || plotKey != _hoveredPlot) {
                 setState(() {
-                  _hoveredCastle = c?.id;
+                  _hovered = r?.id;
                   _hoveredPlot = plotKey;
                 });
               }
-              return;
-            }
-            final r = _roomAt(e.localPosition, size);
-            // Land is hoverable at every distance now that it is drawn at
-            // every distance — a plot you can see and not point at reads as
-            // decoration.
-            final p = r == null ? _plotAt(e.localPosition, size) : null;
-            final plotKey = p == null ? null : '${p.ring}:${p.slot}';
-            if (r?.id != _hovered || plotKey != _hoveredPlot) {
-              setState(() {
-                _hovered = r?.id;
-                _hoveredPlot = plotKey;
-              });
-            }
-          },
-          onExit: (_) => setState(() {
-            _hovered = null;
-            _hoveredCastle = null;
-            _hoveredPlot = null;
-          }),
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onScaleStart: (d) {
-              _flight = null;
-              _dragAnchor = d.localFocalPoint - _camera;
-              _zoomAnchor = _zoom;
             },
-            onScaleUpdate: (d) {
-              setState(() {
-                if (d.scale != 1.0) {
-                  _zoom =
-                      (_zoomAnchor * d.scale).clamp(_floor(size), _maxZoom);
-                }
-                _camera = d.localFocalPoint - _dragAnchor;
-              });
-            },
-            onTapUp: (d) {
-              // Zoomed out, a tap is "take me there" rather than "open this":
-              // there is nothing to open at a distance where a room is four
-              // pixels across.
-              if (_far) {
-                final c = _castleAt(d.localPosition, size);
-                if (c != null) {
-                  final (x, y, w, h) = c.bounds;
-                  setState(() {
-                    _hoveredCastle = null;
-                    _hoveredPlot = null;
-                    _flyTo(x, y, w, h, size);
-                  });
-                  widget.onCastleTapped?.call(c);
+            onExit: (_) => setState(() {
+              _hovered = null;
+              _hoveredCastle = null;
+              _hoveredPlot = null;
+            }),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onScaleStart: (d) {
+                _flight = null;
+                _dragAnchor = d.localFocalPoint - _camera;
+                _zoomAnchor = _zoom;
+              },
+              onScaleUpdate: (d) {
+                setState(() {
+                  if (d.scale != 1.0) {
+                    _zoom = (_zoomAnchor * d.scale).clamp(
+                      _floor(size),
+                      _maxZoom,
+                    );
+                  }
+                  _camera = d.localFocalPoint - _dragAnchor;
+                });
+              },
+              onTapUp: (d) {
+                // Zoomed out, a tap is "take me there" rather than "open this":
+                // there is nothing to open at a distance where a room is four
+                // pixels across.
+                if (_far) {
+                  final c = _castleAt(d.localPosition, size);
+                  if (c != null) {
+                    final (x, y, w, h) = c.bounds;
+                    setState(() {
+                      _hoveredCastle = null;
+                      _hoveredPlot = null;
+                      _flyTo(x, y, w, h, size);
+                    });
+                    widget.onCastleTapped?.call(c);
+                    return;
+                  }
+                  // Empty land. Building is the operator's decision, so this
+                  // only ASKS — it does not travel there first, because flying
+                  // to a plot that may not get built on is a camera move you
+                  // did not want.
+                  final p = _plotAt(d.localPosition, size);
+                  if (p != null) {
+                    setState(() => _hoveredPlot = null);
+                    widget.onPlotTapped?.call(p.ring, p.slot);
+                  }
                   return;
                 }
-                // Empty land. Building is the operator's decision, so this
-                // only ASKS — it does not travel there first, because flying
-                // to a plot that may not get built on is a camera move you
-                // did not want.
+                final r = _roomAt(d.localPosition, size);
+                if (r != null) {
+                  widget.onRoomTapped(r);
+                  return;
+                }
+                // Close up, empty land still offers to be built on. Nothing else
+                // is there to click, and having to zoom out to build would be a
+                // rule with no reason behind it.
                 final p = _plotAt(d.localPosition, size);
                 if (p != null) {
                   setState(() => _hoveredPlot = null);
                   widget.onPlotTapped?.call(p.ring, p.slot);
                 }
-                return;
-              }
-              final r = _roomAt(d.localPosition, size);
-              if (r != null) {
-                widget.onRoomTapped(r);
-                return;
-              }
-              // Close up, empty land still offers to be built on. Nothing else
-              // is there to click, and having to zoom out to build would be a
-              // rule with no reason behind it.
-              final p = _plotAt(d.localPosition, size);
-              if (p != null) {
-                setState(() => _hoveredPlot = null);
-                widget.onPlotTapped?.call(p.ring, p.slot);
-              }
-            },
-            child: CustomPaint(
-              size: size,
-              painter: WorldPainter(
-                rooms: widget.rooms,
-                agents: widget.agents,
-                camera: _camera,
-                zoom: _zoom,
-                iso: _iso,
-                tick: _tick,
-                castles: widget.castles,
-                castleBadges: widget.castleBadges,
-                hoveredCastle: _hoveredCastle,
-                plots: _visiblePlots(size),
-                hoveredPlot: _hoveredPlot,
-                hoveredRoom: _hovered,
-                selectedRoom: widget.selectedRoom,
-                badges: widget.badges,
-                fontFamily: family,
+              },
+              // Its own layer. The map repaints every frame — the sprites
+              // breathe — and without a boundary that invalidation travels up
+              // and repaints whatever is drawn OVER it, which is every panel
+              // and every dialog. Opening a menu then costs a full map repaint
+              // per frame of its fade, on top of the map's own.
+              child: RepaintBoundary(
+                child: CustomPaint(
+                  size: size,
+                  painter: WorldPainter(
+                    rooms: widget.rooms,
+                    agents: widget.agents,
+                    camera: _camera,
+                    zoom: _zoom,
+                    iso: _iso,
+                    tick: _tick,
+                    castles: widget.castles,
+                    castleBadges: widget.castleBadges,
+                    hoveredCastle: _hoveredCastle,
+                    plots: _visiblePlots(size),
+                    hoveredPlot: _hoveredPlot,
+                    hoveredRoom: _hovered,
+                    selectedRoom: widget.selectedRoom,
+                    badges: widget.badges,
+                    fontFamily: family,
+                  ),
+                ),
               ),
             ),
           ),
-        ),
-      );
-    });
+        );
+      },
+    );
   }
 }
 

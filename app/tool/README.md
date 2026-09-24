@@ -38,3 +38,17 @@ with TestClient(app) as c:
             json.dumps(c.get(name).json()))
 "
 ```
+
+## Running it fast
+
+`flutter run -d linux` builds in DEBUG, which is un-optimised JIT with every
+assertion on — Flutter's own docs say never to judge performance from it, and
+for a map that repaints every frame the difference is not subtle. For anything
+you are going to *use* rather than edit:
+
+```bash
+flutter build linux --release
+./build/linux/x64/release/bundle/tanrim
+```
+
+or `flutter run -d linux --release`.
