@@ -161,11 +161,16 @@ class WorldPainter extends CustomPainter {
     // then sprites separately is how an isometric scene ends up with figures
     // showing through walls.
     final items = <_Drawable>[];
+    // Kept as we go, so the label pass below does not re-run `_onScreen`.
+    // Named for what it holds rather than `labelled`, which is already a
+    // getter on this painter meaning "is the zoom close enough for text".
+    final onScreen = <Room>[];
     for (final room in rooms) {
       if (!_onScreen(room.position.x, room.position.y,
                      room.size.x, room.size.y)) {
         continue;
       }
+      onScreen.add(room);
       items.add(_Drawable(
         depth: isoDepth(room.position.x, room.position.y),
         paint: (c) => _room(c, room),
@@ -182,6 +187,17 @@ class WorldPainter extends CustomPainter {
     items.sort((a, b) => a.depth.compareTo(b.depth));
     for (final it in items) {
       it.paint(canvas);
+    }
+
+    // Names and badges LAST, over everything, in their own pass.
+    //
+    // Drawn with their room they were part of the depth sort, so the next
+    // room's wall and anyone standing in front of it covered them — a label
+    // that disappears behind the scene is not a label. They name a place
+    // rather than occupy one, so they do not belong in painter's order at
+    // all.
+    for (final room in onScreen) {
+      _roomLabel(canvas, room);
     }
 
     canvas.restore();
@@ -394,7 +410,6 @@ class WorldPainter extends CustomPainter {
     for (final bench in room.workbenches) {
       _bench(canvas, room, bench, p);
     }
-    _roomLabel(canvas, room);
   }
 
   void _bench(Canvas canvas, Room room, Workbench bench, RoomPalette p) {

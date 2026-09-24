@@ -50,7 +50,10 @@ class Blocks extends StatelessWidget {
       'list' => _titled(title, _list(b)),
       'table' => _titled(title, _table(b)),
       'images' => _titled(title, _images(b)),
-      'timeline' => _titled(title, _timeline(b)),
+      // Open. The history has a tab to itself, so there is nothing for
+      // folding it to reveal — closed, that tab is one grey heading and the
+      // click to open it is the only thing you can do there.
+      'timeline' => _titled(title, _timeline(b), open: true),
       _ => _titled(title.isEmpty ? 'Raw' : title, _raw(b['value'])),
     };
   }
