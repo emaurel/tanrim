@@ -123,14 +123,14 @@ class Castle {
 /// from the server precisely so the two cannot drift; this is the one place
 /// they have to agree by construction.
 class Web {
-  const Web({this.span = 64, this.ringSpacing = 1.6});
+  const Web({this.span = 64, this.ringSpacing = 1.25});
 
   final double span;
   final double ringSpacing;
 
   static Web fromJson(Map<String, dynamic> j) => Web(
         span: ((j['span'] ?? 64) as num).toDouble(),
-        ringSpacing: ((j['ring_spacing'] ?? 1.6) as num).toDouble(),
+        ringSpacing: ((j['ring_spacing'] ?? 1.25) as num).toDouble(),
       );
 
   /// Ring `n` holds `6n` plots. The hub is ring 0 and holds none.

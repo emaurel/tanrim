@@ -284,7 +284,51 @@ void main() {
     final s = await _map(t);
     await _zoomOut(t, 90);
     // ignore: avoid_dynamic_calls
-    expect(s.debugZoom, closeTo(0.06, 0.0001));
+    expect(s.debugZoom, closeTo(0.02, 0.0001));
+  });
+
+  testWidgets('empty land can be built on at the layout step', (t) async {
+    // The step this is here for: rooms still drawn, nothing lettered. The
+    // plots used to appear only in the estate view, so the one distance where
+    // you can see a castle's shape AND the ground around it showed no ground.
+    final tapped = <(int, int)>[];
+    final s = await _map(t, onPlotTapped: (r, sl) => tapped.add((r, sl)));
+
+    // Out to the layout band, and no further.
+    for (var i = 0; i < 40; i++) {
+      // ignore: avoid_dynamic_calls
+      if ((s.debugZoom as double) < WorldPainter.labelZoom) break;
+      await _zoomOut(t, 1);
+    }
+    // ignore: avoid_dynamic_calls
+    final zoom = s.debugZoom as double;
+    expect(zoom, lessThan(WorldPainter.labelZoom));
+    expect(zoom, greaterThan(WorldPainter.farZoom),
+        reason: 'the layout step, not the estate');
+
+    final size = t.getSize(find.byType(MapView));
+    // Find a screen point that genuinely lands on empty ground. Working back
+    // from a plot's centre does not: the isometric view is a diamond and a
+    // plot can be inside its bounding box while sitting off the corner.
+    Offset? spot;
+    Plot? want;
+    for (var gx = 1; gx < 10 && spot == null; gx++) {
+      for (var gy = 1; gy < 8 && spot == null; gy++) {
+        final at = Offset(size.width * gx / 10, size.height * gy / 8);
+        // ignore: avoid_dynamic_calls
+        final hit = s.debugPlotAt(at, size) as Plot?;
+        if (hit != null) {
+          spot = at;
+          want = hit;
+        }
+      }
+    }
+    expect(spot, isNotNull, reason: 'land should be visible at this step');
+
+    await t.tapAt(spot!);
+    await t.pump();
+    expect(tapped, [(want!.ring, want.slot)],
+        reason: 'land is clickable before the estate view');
   });
 
   testWidgets('the wheel zooms about the pointer, not the middle', (t) async {

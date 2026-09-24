@@ -46,10 +46,14 @@ SEP = "@"
 #: leaves room for a label between them.
 PLOT = 64
 
-#: How far apart ring `n` sits, in plots. 1.6 rather than 1.0 because six slots
-#: on ring 1 would otherwise be exactly one plot apart along the ring and
-#: overlap at the corners.
-RING_SPACING = 1.6
+#: How far apart ring `n` sits, in plots.
+#:
+#: 1.0 is the hard floor — at that spacing the radial gap is exactly one plot
+#: and neighbours touch edge to edge. 1.25 leaves 16 tiles of ground between
+#: plot edges and 80 between centres, which is close enough to read as one
+#: estate rather than a scattering, and the along-ring gap (83.8) stays the
+#: looser of the two at every ring.
+RING_SPACING = 1.25
 
 
 #: Which castle the work in hand belongs to.

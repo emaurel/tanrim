@@ -64,7 +64,7 @@ class _MapViewState extends State<MapView>
   /// construction, so a fixed floor is a promise that stops being true as soon
   /// as somebody builds far enough out: past about ring 4 the whole estate no
   /// longer fits on screen at 0.06 and there is no way to pull back further.
-  static const _baseMinZoom = 0.06;
+  static const _baseMinZoom = 0.02;
 
   /// The zoom at which everything that exists fits on screen, or
   /// [_baseMinZoom] — whichever is further out.
@@ -138,6 +138,19 @@ class _MapViewState extends State<MapView>
 
   @visibleForTesting
   double get debugTick => _tick;
+
+  /// For tests: the free plots the viewport currently covers.
+  ///
+  /// A bounding box of the view's four corners in tile space, so it OVER-
+  /// covers — the visible region is a diamond and this is the rectangle
+  /// around it. The painter culls the difference; a test that wants a plot
+  /// genuinely under a screen point should use [debugPlotAt].
+  @visibleForTesting
+  List<Plot> debugVisiblePlots(Size size) => _visiblePlots(size);
+
+  /// For tests: the free plot under a screen point, if any.
+  @visibleForTesting
+  Plot? debugPlotAt(Offset local, Size size) => _plotAt(local, size);
 
   /// For tests: which tile is under a screen point. The inverse of
   /// [debugScreenOf], and what a zoom anchored at the pointer has to keep
@@ -380,7 +393,17 @@ class _MapViewState extends State<MapView>
               return;
             }
             final r = _roomAt(e.localPosition, size);
-            if (r?.id != _hovered) setState(() => _hovered = r?.id);
+            // Land is hoverable at every distance now that it is drawn at
+            // every distance — a plot you can see and not point at reads as
+            // decoration.
+            final p = r == null ? _plotAt(e.localPosition, size) : null;
+            final plotKey = p == null ? null : '${p.ring}:${p.slot}';
+            if (r?.id != _hovered || plotKey != _hoveredPlot) {
+              setState(() {
+                _hovered = r?.id;
+                _hoveredPlot = plotKey;
+              });
+            }
           },
           onExit: (_) => setState(() {
             _hovered = null;
@@ -431,7 +454,18 @@ class _MapViewState extends State<MapView>
                 return;
               }
               final r = _roomAt(d.localPosition, size);
-              if (r != null) widget.onRoomTapped(r);
+              if (r != null) {
+                widget.onRoomTapped(r);
+                return;
+              }
+              // Close up, empty land still offers to be built on. Nothing else
+              // is there to click, and having to zoom out to build would be a
+              // rule with no reason behind it.
+              final p = _plotAt(d.localPosition, size);
+              if (p != null) {
+                setState(() => _hoveredPlot = null);
+                widget.onPlotTapped?.call(p.ring, p.slot);
+              }
             },
             child: CustomPaint(
               size: size,

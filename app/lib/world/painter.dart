@@ -143,8 +143,13 @@ class WorldPainter extends CustomPainter {
     canvas.translate(size.width / 2 + camera.dx, size.height / 3 + camera.dy);
     canvas.scale(zoom);
 
+    // Ground first, at every distance. The plots used to appear only in the
+    // estate view, so the step where you can see a castle's layout AND the
+    // land around it — which is the step you would actually build from —
+    // showed no land at all.
+    _plots(canvas);
+
     if (far) {
-      _plots(canvas);
       _estate(canvas);
       canvas.restore();
       return;
