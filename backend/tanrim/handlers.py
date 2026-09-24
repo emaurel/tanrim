@@ -155,6 +155,16 @@ class RecordRoomHandler(RoomHandler):
         return await super().action(name, payload)
 
     async def _guarded(self, payload: dict[str, Any]) -> None:
+        # The castle this panel belongs to, set for the whole run.
+        #
+        # The orchestrator's dispatcher does this from the record; a panel's
+        # Run button calls the plugin's agent DIRECTLY, so nothing did. The
+        # agent then asked the world for `forge` while the world only has
+        # `forge@<castle>`, and every run started from a room panel died with
+        # `KeyError: unknown role` after rolling its build directory back.
+        from .castles import CURRENT
+
+        token = CURRENT.set(self.castle_id)
         try:
             self._last_result = await self.run(payload)
         except asyncio.CancelledError:
@@ -172,6 +182,8 @@ class RecordRoomHandler(RoomHandler):
             self._last_result = {"ok": False, "error": str(e)}
         except Exception as e:  # noqa: BLE001
             self._last_error = f"{type(e).__name__}: {e}"
+        finally:
+            CURRENT.reset(token)
 
 
 def build_handlers(world: "World") -> dict[str, RoomHandler]:

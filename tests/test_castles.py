@@ -272,3 +272,49 @@ def test_the_world_resyncs_when_a_castle_is_built(plugins, ledger):
     assert f"alpha_agent@{made['id']}" in world.agents
     assert moved["removed"] == ["alpha_agent"], \
         "the unscoped sprite belongs to a room that no longer exists"
+
+
+def test_a_run_started_from_a_panel_knows_its_castle(real_env, ledger):
+    """The bug that made every panel's Run button fail.
+
+    The orchestrator's dispatcher sets the castle from the record. A panel
+    calls the plugin's agent DIRECTLY, so nothing did — the agent then asked
+    the world for `forge` while the world only has `forge@<castle>`, and the
+    run died with `KeyError: unknown role: forge` after rolling its build
+    directory back.
+    """
+    from tanrim import castles as geom
+    from tanrim import state
+    from tanrim.handlers import RecordRoomHandler
+
+    made = state.add_castle("web_agency", "Under test")
+    seen: list[str] = []
+
+    class Probe(RecordRoomHandler):
+        agent_id = "forge"
+
+        async def run(self, payload):
+            seen.append(geom.here())
+            return {"ok": True}
+
+    handler = Probe(None)
+    handler.castle_id = made["id"]
+    asyncio.run(handler._guarded({}))
+
+    assert seen == [made["id"]], "the run did not know which castle it was in"
+    # And it is put back afterwards, so one run cannot leak into the next.
+    assert geom.here() == ""
+
+
+def test_a_panel_run_resolves_the_scoped_worker(real_env, ledger):
+    """What the castle context is FOR: a plugin says `role="forge"` and the
+    world hires `forge@<castle>`."""
+    from tanrim import castles as geom
+
+    made = __import__("tanrim.state", fromlist=["state"]).add_castle(
+        "web_agency", "Under test")
+    token = geom.CURRENT.set(made["id"])
+    try:
+        assert geom.scoped_here("forge") == f"forge@{made['id']}"
+    finally:
+        geom.CURRENT.reset(token)
