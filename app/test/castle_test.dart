@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:io';
 import 'dart:ui' show PictureRecorder;
 
@@ -283,6 +284,42 @@ void main() {
       final away = seen(4000);
       expect(mid, greaterThan(near));
       expect(away, greaterThan(mid));
+    });
+
+    test('no two plots overlap', () {
+      // Measured on the AXES, not as a distance. A plot is an axis-aligned
+      // square in tile space, so two are clear only when their centres differ
+      // by a full span along one axis — two plots 80 apart on a 45-degree
+      // diagonal are 57 apart on each axis and overlap. The first version of
+      // this check measured the distance and passed while the map plainly
+      // showed them on top of one another.
+      final w = web();
+      final all = <(int, int, double, double)>[];
+      for (var ring = 1; ring <= 8; ring++) {
+        for (var slot = 0; slot < w.slotsOn(ring); slot++) {
+          final (x, y) = w.centre(ring, slot);
+          all.add((ring, slot, x, y));
+        }
+      }
+      for (var i = 0; i < all.length; i++) {
+        for (var j = i + 1; j < all.length; j++) {
+          final a = all[i], b = all[j];
+          if ((a.$1 - b.$1).abs() > 1) continue;   // far rings cannot reach
+          final gap = math.max((a.$3 - b.$3).abs(), (a.$4 - b.$4).abs());
+          expect(gap, greaterThanOrEqualTo(w.span),
+              reason: 'ring${a.$1}s${a.$2} and ring${b.$1}s${b.$2} overlap');
+        }
+      }
+    });
+
+    test('a plot is big enough for what gets built on it', () {
+      // The span cannot go below the largest plugin footprint, or a castle
+      // spills out of its own ground.
+      for (final c in castles()) {
+        final (_, _, bw, bh) = c.bounds;
+        expect(bw, lessThanOrEqualTo(web().span));
+        expect(bh, lessThanOrEqualTo(web().span));
+      }
     });
 
     test('land that is built on is never offered', () {

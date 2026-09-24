@@ -38,15 +38,35 @@ def test_plots_fill_ring_by_ring():
     assert len({(p["ring"], p["slot"]) for p in got}) == 9
 
 
-def test_no_two_plots_on_a_ring_are_closer_than_a_plot_wide():
-    """Otherwise two castles' rooms would overlap, and the map draws one
-    through the other."""
-    for ring in (1, 2, 3):
-        centres = [geom.plot_centre(ring, s) for s in range(geom.slots_on(ring))]
-        for i, (ax, ay) in enumerate(centres):
-            for bx, by in centres[i + 1:]:
-                gap = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
-                assert gap >= geom.PLOT, f"ring {ring}: {gap:.0f} < {geom.PLOT}"
+def test_no_two_plots_overlap():
+    """Measured on the AXES, not as a distance.
+
+    A plot is an axis-aligned square in tile space, so two are clear only when
+    their centres differ by a full span along one axis. The first version of
+    this measured the distance between centres, which is necessary and not
+    sufficient: two plots 80 apart on a 45-degree diagonal are 57 apart on each
+    axis and overlap. The test passed while the map plainly showed them on top
+    of one another.
+
+    Checked ACROSS rings as well as along them, and deep enough that a ring
+    whose tangent happens to fall near 45 degrees is included — the worst pair
+    is on ring 2 and stays there however many rings exist.
+    """
+    plots = [(ring, slot, *geom.plot_centre(ring, slot))
+             for ring in range(1, 13)
+             for slot in range(geom.slots_on(ring))]
+
+    worst, where = float("inf"), ""
+    for i, (r1, s1, x1, y1) in enumerate(plots):
+        for r2, s2, x2, y2 in plots[i + 1:]:
+            if abs(r1 - r2) > 1:          # non-adjacent rings cannot reach
+                continue
+            gap = max(abs(x1 - x2), abs(y1 - y2))
+            if gap < worst:
+                worst, where = gap, f"ring{r1}s{s1} vs ring{r2}s{s2}"
+    assert worst >= geom.PLOT, (
+        f"plots overlap: {where} are {worst:.1f} apart on their tightest axis, "
+        f"against a span of {geom.PLOT}")
 
 
 def test_the_next_free_plot_skips_what_is_built_on():
