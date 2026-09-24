@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import '../model/world.dart';
 
 /// The live wire: `/ws`.
@@ -58,6 +60,12 @@ class Live {
         : next;
   }
 
+  /// Feed one frame in, as the socket would. For tests: the wire format is
+  /// the contract between this app and the server, and it is exactly where a
+  /// key can be misspelt and nothing complain.
+  @visibleForTesting
+  void deliver(String frame) => _onFrame(frame);
+
   void _onFrame(dynamic raw) {
     late final Map<String, dynamic> msg;
     try {
@@ -78,7 +86,11 @@ class Live {
         _agents[s.id] = s;
         _controller.add(const LiveEvent.agentsChanged());
       case 'agent_removed':
-        _agents.remove(msg['id']);
+        // `agent_id`, not `id`. The server has always sent the first and this
+        // read the second, so a retired worker's sprite never left the map —
+        // the sweep retires one after every finished record, so the room
+        // slowly filled with agents that were not there.
+        _agents.remove(msg['agent_id']);
         _controller.add(const LiveEvent.agentsChanged());
       case 'agent_talk':
         _controller.add(LiveEvent.talk(
@@ -88,6 +100,12 @@ class Live {
         ));
       case 'approvals_updated':
         _controller.add(const LiveEvent.approvalsChanged());
+      case 'rooms_changed':
+      case 'plugins_changed':
+        // A plugin was installed or removed on the server. Every client is
+        // told, not just the one that pressed the button: the map it is
+        // drawing has rooms that no longer exist, or is missing a castle.
+        _controller.add(const LiveEvent.worldChanged());
       default:
         // A type this build does not know. The environment gains behaviour by
         // gaining plugins, so this is expected, not an error.
@@ -102,7 +120,14 @@ class Live {
   }
 }
 
-enum LiveKind { connected, disconnected, agentsChanged, approvalsChanged, talk }
+enum LiveKind {
+  connected,
+  disconnected,
+  agentsChanged,
+  approvalsChanged,
+  worldChanged,
+  talk,
+}
 
 class LiveEvent {
   const LiveEvent(this.kind, {this.from = '', this.to = '', this.label = ''});
@@ -110,6 +135,7 @@ class LiveEvent {
   const LiveEvent.disconnected() : this(LiveKind.disconnected);
   const LiveEvent.agentsChanged() : this(LiveKind.agentsChanged);
   const LiveEvent.approvalsChanged() : this(LiveKind.approvalsChanged);
+  const LiveEvent.worldChanged() : this(LiveKind.worldChanged);
   const LiveEvent.talk(String from, String to, String label)
       : this(LiveKind.talk, from: from, to: to, label: label);
 

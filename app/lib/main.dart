@@ -102,14 +102,8 @@ class _WorldPageState extends State<WorldPage> {
     final api = Api(_server.text.trim().replaceAll(RegExp(r'/+$'), ''));
     _api = api;
     try {
-      final rooms = (await api.get('/rooms') as List)
-          .map((r) => Room.fromJson(r as Map<String, dynamic>))
-          .toList();
-      setState(() {
-        _rooms = rooms;
-        _state = '${rooms.length} rooms';
-        _connected = true;
-      });
+      await _loadRooms();
+      setState(() => _connected = true);
       await _loadPlugins();
       await _loadApprovals();
       await _loadBoard();
@@ -127,6 +121,10 @@ class _WorldPageState extends State<WorldPage> {
         case LiveKind.approvalsChanged:
           await _loadApprovals();
           await _loadBoard();
+        case LiveKind.worldChanged:
+          // Someone reloaded the plugins — possibly in another window.
+          await _loadRooms();
+          await _loadPlugins();
         case LiveKind.disconnected:
           setState(() => _state = 'reconnecting…');
         case LiveKind.connected:
@@ -158,6 +156,24 @@ class _WorldPageState extends State<WorldPage> {
     } catch (_) {
       // A board that will not load is not worth killing the map for.
     }
+  }
+
+  /// The map itself.
+  ///
+  /// Extracted from `_connect` because a plugin reload changes the rooms too,
+  /// and a second copy of "parse /rooms into Room objects" is how one of them
+  /// ends up not setting `_state`.
+  Future<void> _loadRooms() async {
+    final api = _api;
+    if (api == null) return;
+    final rooms = (await api.get('/rooms') as List)
+        .map((r) => Room.fromJson(r as Map<String, dynamic>))
+        .toList();
+    if (!mounted) return;
+    setState(() {
+      _rooms = rooms;
+      _state = '${rooms.length} rooms';
+    });
   }
 
   /// Castles come from `/plugins`: a plugin that declares rooms is a castle,
@@ -325,7 +341,46 @@ class _WorldPageState extends State<WorldPage> {
         plugins: _plugins,
         stages: _stages,
         kinds: _kinds,
+        onReload: _reloadPlugins,
       );
+
+  /// Re-read `plugins/` on the server, then refetch everything derived from it.
+  ///
+  /// The refetch is the point: rooms, the castles and the pipeline are all
+  /// answers the server gave once and this app cached, so a reload that
+  /// changed them server-side without this would leave the map drawing a
+  /// world that no longer exists.
+  Future<String> _reloadPlugins() async {
+    final api = _api;
+    if (api == null) return 'not connected to a server';
+    final out = (await api.post('/plugins/reload')) as Map<String, dynamic>;
+
+    if (out['ok'] != true) {
+      final detail = '${out['detail'] ?? ''}';
+      return '${out['error']}'
+          '${detail.isEmpty ? '' : '\n\n$detail'}';
+    }
+
+    await _loadRooms();
+    await _loadPlugins();
+
+    final added = ((out['added'] ?? []) as List).cast<String>();
+    final removed = ((out['removed'] ?? []) as List).cast<String>();
+    final problems = ((out['problems'] ?? []) as List).cast<String>();
+
+    final lines = <String>[
+      if (added.isEmpty && removed.isEmpty)
+        'No change — the same ${(out['plugins'] as List).length} plugin(s), '
+            '${out['rooms']} rooms.'
+      else ...[
+        if (added.isNotEmpty) 'Installed: ${added.join(', ')}',
+        if (removed.isNotEmpty) 'Removed: ${removed.join(', ')}',
+        '${out['rooms']} rooms now.',
+      ],
+      if (problems.isNotEmpty) '\nReported at boot:\n  ${problems.join('\n  ')}',
+    ];
+    return lines.join('\n');
+  }
 
   /// The only chrome: fold the panel, and the menu. Everything that was in
   /// the old top bar lives in Settings now — a bar across the top of a map is

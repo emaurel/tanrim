@@ -103,10 +103,45 @@ app.add_middleware(
 )
 
 
-for _plugin_id, _router in _env.routers():
-    app.include_router(_router)
-    print(f"[boot] {_plugin_id}: "
-          + ", ".join(sorted({r.path for r in _router.routes})))
+#: Which routes each plugin put on the app, so that removing a plugin can take
+#: them back off. `include_router` only appends, and without a record of what
+#: it appended an uninstalled plugin keeps serving its endpoints until the
+#: process restarts — which is precisely the restart this is here to avoid.
+_plugin_routes: dict[str, list[Any]] = {}
+
+
+def _install_routers(env: Any, announce: bool = True) -> list[str]:
+    """Mount the routers of any plugin that is not already mounted."""
+    added: list[str] = []
+    for plugin_id, router in env.routers():
+        if plugin_id in _plugin_routes:
+            continue
+        mark = len(app.router.routes)
+        app.include_router(router)
+        _plugin_routes[plugin_id] = app.router.routes[mark:]
+        added.append(plugin_id)
+        if announce:
+            print(f"[boot] {plugin_id}: "
+                  + ", ".join(sorted({r.path for r in router.routes})))
+    return added
+
+
+def _uninstall_routers(keep: set[str]) -> list[str]:
+    """Take down the routes of every plugin no longer installed."""
+    removed: list[str] = []
+    for plugin_id in list(_plugin_routes):
+        if plugin_id in keep:
+            continue
+        for route in _plugin_routes.pop(plugin_id):
+            try:
+                app.router.routes.remove(route)
+            except ValueError:          # already gone; nothing to undo
+                pass
+        removed.append(plugin_id)
+    return removed
+
+
+_install_routers(_env)
 
 @app.post("/agents/{worker_id}/stop")
 async def stop_agent(worker_id: str, body: dict[str, Any] | None = None):
@@ -311,6 +346,91 @@ async def get_plugins() -> dict[str, Any]:
         "dead_stages": list(state.DEAD_STAGES),
         "lead_kinds": list(state.KINDS),
         "edges": len(state.PIPELINE),
+    }
+
+
+@app.post("/plugins/reload")
+async def reload_plugins() -> dict[str, Any]:
+    """Re-read `plugins/` without restarting the process.
+
+    Installing a plugin is putting a directory in `plugins/`, and until now the
+    only way to make the environment notice was a restart — which drops every
+    sprite's position, every open client, and anything mid-flight.
+
+    What this DOES cover is a plugin appearing or disappearing. What it does
+    NOT cover is a plugin whose code CHANGED: Python caches modules, so the
+    already-imported one is what gets used again, and reloading a package
+    properly means chasing every stale reference held in a closure, a
+    dataclass default or another plugin's table. That is the case where you are
+    editing anyway, so restart — `uvicorn --reload` does it for you.
+
+    Three things make this safe enough to expose:
+
+    - **A broken plugin cannot take the server down.** `environment.boot`
+      only replaces the live environment once the new one has validated, so a
+      plugin that fails to import, or declares a job at a stage no bench works,
+      leaves the running environment exactly as it was and reports why.
+    - **It refuses while an agent is running.** A run holds a role, a worker
+      and a lock that the reload is about to rebuild underneath it.
+    - **The world is mutated, not rebuilt.** Rooms that survive keep their
+      sprites where they were standing.
+    """
+    global HANDLERS
+
+    busy = agent_helpers.every_in_flight()
+    if busy:
+        return {
+            "ok": False,
+            "error": f"{len(busy)} agent run(s) in flight",
+            "detail": "reloading would rebuild the rooms and the dispatch "
+                      "table underneath a run that is holding them. Wait for "
+                      "them to finish, or stop them first.",
+            "in_flight": [{"worker_id": b.get("worker_id"),
+                           "role": b.get("role")} for b in busy],
+        }
+
+    was = {p.id for p in environment.current().plugins}
+    try:
+        found = discovery.find()
+        env = environment.boot(found)
+    except Exception as exc:                          # noqa: BLE001
+        # `environment.boot` assigns the module global only on success, so the
+        # environment being served is still the one that worked.
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+            "detail": "nothing changed — the environment that was already "
+                      "running is still the one being served.",
+            "plugins": sorted(was),
+        }
+
+    now = {p.id for p in env.plugins}
+    _uninstall_routers(now)
+    _install_routers(env, announce=False)
+    app.openapi_schema = None          # or /docs keeps describing the old set
+
+    tool_registry.reload()
+    HANDLERS = build_handlers(world)
+    moved = await world.resync()
+
+    await world.publish({"type": "plugins_changed"})
+    state.log_event(
+        "run_end", from_="operator",
+        summary=(f"plugins reloaded: {len(now)} installed"
+                 + (f", added {', '.join(sorted(now - was))}" if now - was else "")
+                 + (f", removed {', '.join(sorted(was - now))}" if was - now else "")),
+        outcome="completed",
+        details={"added": sorted(now - was), "removed": sorted(was - now)})
+
+    return {
+        "ok": True,
+        "plugins": sorted(now),
+        "added": sorted(now - was),
+        "removed": sorted(was - now),
+        "rooms": len(world.rooms),
+        "agents_added": moved["added"],
+        "agents_removed": moved["removed"],
+        "problems": env.check(),
     }
 
 

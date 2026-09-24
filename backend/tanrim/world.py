@@ -131,6 +131,59 @@ class World:
         await self.publish({"type": "agent_update", "agent": worker.__dict__})
         return worker
 
+    async def resync(self) -> dict[str, list[str]]:
+        """Bring the world back in line with the installed plugins.
+
+        Called after the environment is re-booted, so that installing or
+        removing a plugin changes the map without restarting the process.
+
+        It MUTATES rather than rebuilding. A fresh `World.boot()` would be
+        two lines, and would also throw away every sprite's position, the
+        ephemeral workers that were hired for records in flight, and the
+        subscriber queues every open client is reading from — so the map would
+        go blank and every browser would have to reconnect to learn that a
+        plugin it does not care about had arrived.
+
+        Rooms that survive keep their agents exactly where they were standing.
+        """
+        from .rooms import load_rooms
+
+        before = {a.id for a in self.agents.values()}
+        self.rooms = load_rooms()
+        known = {room.id for room in self.rooms}
+
+        # Agents whose room is gone go with it, ephemeral or not. A base agent
+        # is normally permanent — a room should never look abandoned — but its
+        # room no longer exists, so there is nothing for it to be standing in.
+        for agent_id, agent in list(self.agents.items()):
+            if agent.home_room not in known:
+                del self.agents[agent_id]
+
+        for room in self.rooms:
+            for spec in room.agents:
+                held = self.agents.get(spec.id)
+                if held is not None:
+                    # Already staffed. Its position is its own business.
+                    continue
+                x, y = self._idle_spot(room, spec.station)
+                self.agents[spec.id] = AgentState(
+                    id=spec.id, name=spec.name, color=spec.color,
+                    home_room=room.id, room_id=room.id,
+                    x=x, y=y, target_x=x, target_y=y,
+                    role=spec.id, station=spec.station,
+                    workbench=spec.station,
+                )
+
+        now = {a.id for a in self.agents.values()}
+        for agent_id in sorted(before - now):
+            await self.publish({"type": "agent_removed", "agent_id": agent_id})
+        for agent_id in sorted(now - before):
+            await self.publish(
+                {"type": "agent_update", "agent": self.agents[agent_id].__dict__})
+        # The map itself is rebuilt from `/rooms`, which the client refetches.
+        await self.publish({"type": "rooms_changed"})
+        return {"added": sorted(now - before), "removed": sorted(before - now)}
+
     async def despawn_worker(self, agent_id: str) -> bool:
         """Retire an ephemeral worker. The base agent of a role is never
         removed — a room should never look abandoned."""

@@ -17,6 +17,7 @@ class Settings {
     required this.plugins,
     required this.stages,
     required this.kinds,
+    required this.onReload,
   });
 
   final TextEditingController server;
@@ -29,6 +30,11 @@ class Settings {
   final List<Map<String, dynamic>> plugins;
   final List<String> stages;
   final List<String> kinds;
+
+  /// Re-read `plugins/` on the server. Returns what happened, for the panel
+  /// to show — including a refusal, which is a normal outcome rather than an
+  /// error: a reload while an agent is running is declined on purpose.
+  final Future<String> Function() onReload;
 
   Future<void> open(BuildContext context, {String? tab}) => MenuPanel.show(
         context,
@@ -104,51 +110,107 @@ class Settings {
         ],
       );
 
-  Widget _plugins(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          MenuSection(
-            title: 'Installed',
-            note: 'Everything on the map arrives from these. An install with '
-                'none has no rooms and nothing to do, which is the correct '
-                'empty state rather than an error.',
-            children: [
-              if (plugins.isEmpty)
-                const Text('nothing installed',
-                    style: TextStyle(color: Colors.white38)),
-              for (final p in plugins) _plugin(p),
-            ],
-          ),
-          const MenuSection(
-            title: 'Adding one',
-            note: 'Installing a plugin is putting a directory in plugins/ and '
-                'restarting the server. Doing it from here needs the app to '
-                'manage the server process, which it does not yet.',
-            children: [],
-          ),
-        ],
-      );
+  /// Which plugin each one hangs off, if any.
+  ///
+  /// An extension declares what it `requires`, and that is the edge — the same
+  /// declaration that orders the boot. `website_recreation` requires
+  /// `web_agency`, adds benches to two of its rooms and declares none of its
+  /// own, so it belongs INSIDE that castle rather than beside it. Flat, the
+  /// list said "3 plugins" while the map showed two castles, and nothing
+  /// explained the difference.
+  String? _parentOf(Map<String, dynamic> p) {
+    final ids = {for (final q in plugins) q['id'] as String};
+    for (final need in (p['requires'] as List?) ?? const []) {
+      if (ids.contains(need)) return need as String;
+    }
+    return null;
+  }
 
-  Widget _plugin(Map<String, dynamic> p) {
+  Widget _plugins(BuildContext context) {
+    final children = <Widget>[];
+    for (final p in plugins) {
+      if (_parentOf(p) != null) continue;          // drawn under its parent
+      children.add(_plugin(p));
+      for (final q in plugins) {
+        if (_parentOf(q) == p['id']) {
+          children.add(Padding(
+            padding: const EdgeInsets.only(left: 18, bottom: 8),
+            child: _plugin(q, extension: true),
+          ));
+        }
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        MenuSection(
+          title: 'Installed',
+          note: 'Everything on the map arrives from these. An install with '
+              'none has no rooms and nothing to do, which is the correct '
+              'empty state rather than an error. An indented one is an '
+              'extension: it patches another plugin rather than standing on '
+              'its own, so it has no castle of its own either.',
+          children: [
+            if (plugins.isEmpty)
+              const Text('nothing installed',
+                  style: TextStyle(color: Colors.white38)),
+            ...children,
+          ],
+        ),
+        MenuSection(
+          title: 'Adding one',
+          note: 'Installing a plugin is putting a directory in plugins/. '
+              'Reload re-reads that directory without restarting the server, '
+              'so a plugin appearing or disappearing takes effect now and the '
+              'map keeps its sprites where they were. A plugin whose CODE '
+              'changed still needs a restart: Python caches modules, so the '
+              'old one is what would be used again.',
+          children: [_ReloadButton(onReload: onReload)],
+        ),
+      ],
+    );
+  }
+
+  Widget _plugin(Map<String, dynamic> p, {bool extension = false}) {
     final rooms = (p['rooms'] as List?) ?? const [];
     final patches = (p['patches'] as List?) ?? const [];
+    final agentPatches = (p['agent_patches'] as List?) ?? const [];
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: EdgeInsets.only(bottom: extension ? 0 : 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: .04),
+        color: Colors.white.withValues(alpha: extension ? .025 : .04),
         borderRadius: BorderRadius.circular(7),
+        border: extension
+            ? Border(
+                left: BorderSide(
+                    color: Colors.white.withValues(alpha: .16), width: 2))
+            : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: [
-            Text('${p['name'] ?? p['id']}',
-                style: const TextStyle(fontWeight: FontWeight.w700)),
+            if (extension) ...[
+              Icon(Icons.subdirectory_arrow_right,
+                  size: 13, color: Colors.white.withValues(alpha: .35)),
+              const SizedBox(width: 6),
+            ],
+            // Flexible, not bare Text. An indented extension with a long
+            // name overflowed the row by 37px, and the id is the part that can
+            // afford to be cut.
+            Flexible(
+              child: Text('${p['name'] ?? p['id']}',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+            ),
             const SizedBox(width: 8),
-            Text('${p['id']}',
-                style:
-                    const TextStyle(fontSize: 11, color: Colors.white38)),
+            Flexible(
+              child: Text('${p['id']}',
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      const TextStyle(fontSize: 11, color: Colors.white38)),
+            ),
           ]),
           if ('${p['description'] ?? ''}'.isNotEmpty) ...[
             const SizedBox(height: 4),
@@ -161,7 +223,11 @@ class Settings {
             if (rooms.isNotEmpty) _chip('${rooms.length} rooms'),
             // A plugin that only patches is an EXTENSION — it lives inside
             // another's castle rather than beside it.
-            if (patches.isNotEmpty) _chip('extends ${patches.join(", ")}'),
+            if (rooms.isEmpty && (patches.isNotEmpty || agentPatches.isNotEmpty))
+              _chip('no castle of its own'),
+            if (patches.isNotEmpty) _chip('rooms: ${patches.join(", ")}'),
+            if (agentPatches.isNotEmpty)
+              _chip('agents: ${agentPatches.join(", ")}'),
             for (final k in (p['pipelines'] as List?) ?? const [])
               _chip('$k'),
             if ((p['tools'] as List?)?.isNotEmpty ?? false)
@@ -229,5 +295,77 @@ class Settings {
           borderRadius: BorderRadius.circular(5),
         ),
         child: Text(s, style: const TextStyle(fontSize: 11.5)),
+      );
+}
+
+/// The reload button, and what the server said.
+///
+/// Its own widget because the panel it sits in is a plain builder, and because
+/// the interesting part is the ANSWER: a refusal ("3 agent runs in flight") and
+/// a plugin that would not boot are both normal outcomes worth reading, not
+/// errors to swallow. A reload that silently did nothing would be worse than
+/// no button.
+class _ReloadButton extends StatefulWidget {
+  const _ReloadButton({required this.onReload});
+
+  final Future<String> Function() onReload;
+
+  @override
+  State<_ReloadButton> createState() => _ReloadButtonState();
+}
+
+class _ReloadButtonState extends State<_ReloadButton> {
+  bool _busy = false;
+  String? _said;
+
+  Future<void> _go() async {
+    setState(() {
+      _busy = true;
+      _said = null;
+    });
+    String out;
+    try {
+      out = await widget.onReload();
+    } catch (e) {
+      out = '$e';
+    }
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _said = out;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            FilledButton.tonalIcon(
+              onPressed: _busy ? null : _go,
+              icon: _busy
+                  ? const SizedBox(
+                      width: 13,
+                      height: 13,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh, size: 16),
+              label: Text(_busy ? 'Reading plugins/…' : 'Reload plugins'),
+            ),
+          ]),
+          if (_said != null) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: .04),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(_said!,
+                  style: const TextStyle(
+                      fontSize: 12, color: Colors.white70, height: 1.45)),
+            ),
+          ],
+        ],
       );
 }
