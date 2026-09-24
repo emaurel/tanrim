@@ -29,7 +29,10 @@ class _FakeApi extends Api {
   }
 }
 
-Map<String, dynamic> _state({Map<String, dynamic>? lastResult}) => {
+Map<String, dynamic> _state({
+  Map<String, dynamic>? lastResult,
+  List<Map<String, dynamic>> inFlight = const [],
+}) => {
       'agent_id': 'forge',
       'action_name': 'run_build',
       'accepts_stages': ['visualised'],
@@ -37,7 +40,7 @@ Map<String, dynamic> _state({Map<String, dynamic>? lastResult}) => {
       'at_capacity': false,
       'worker_limit': 10,
       'workers_busy': 0,
-      'in_flight': [],
+      'in_flight': inFlight,
       'queue': [
         {
           'id': 'rec-1',
@@ -51,13 +54,15 @@ Map<String, dynamic> _state({Map<String, dynamic>? lastResult}) => {
       'last_result': ?lastResult,
     };
 
-Future<_FakeApi> _panel(WidgetTester t, {Map<String, dynamic>? lastResult}) async {
+Future<_FakeApi> _panel(WidgetTester t,
+    {Map<String, dynamic>? lastResult,
+    List<Map<String, dynamic>> inFlight = const []}) async {
   t.view
     ..physicalSize = const Size(520, 900)
     ..devicePixelRatio = 1.0;
   addTearDown(t.view.reset);
 
-  final api = _FakeApi(_state(lastResult: lastResult));
+  final api = _FakeApi(_state(lastResult: lastResult, inFlight: inFlight));
   await t.pumpWidget(MaterialApp(
     home: Scaffold(
       body: RoomPanel(
@@ -76,7 +81,11 @@ Future<_FakeApi> _panel(WidgetTester t, {Map<String, dynamic>? lastResult}) asyn
       ),
     ),
   ));
-  await t.pumpAndSettle();
+  // Pumped, not settled. A run in flight draws a `CircularProgressIndicator`,
+  // which animates for ever — `pumpAndSettle` waits for the frames to stop and
+  // so never returns.
+  await t.pump();
+  await t.pump(const Duration(milliseconds: 50));
   return api;
 }
 
@@ -92,7 +101,8 @@ void main() {
     expect(find.text('Piscines Bellerive'), findsOneWidget);
 
     await t.tap(find.byIcon(Icons.play_arrow).first);
-    await t.pumpAndSettle();
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 50));
 
     expect(api.posts, hasLength(1));
     final (path, body) = api.posts.single;
@@ -127,5 +137,35 @@ void main() {
     // work, and the queue gave no way to tell one row from another.
     await _panel(t);
     expect(find.text('port'), findsOneWidget);
+  });
+
+  testWidgets('a record being worked is not listed as waiting', (t) async {
+    // A record stays at its stage until the run finishes, so a build in its
+    // tenth minute sat in a list headed "Waiting" with a Run button beside it.
+    await _panel(t, inFlight: [
+      {
+        'worker_id': 'forge@c1',
+        'role': 'forge@c1',
+        'lead_id': 'rec-1',
+        'summary': 'building site: Piscines Bellerive',
+        'workbench': 'site',
+        'started_ts':
+            DateTime.now().millisecondsSinceEpoch / 1000 - 90,
+      }
+    ]);
+
+    expect(find.textContaining('WAITING'), findsNothing);
+    expect(find.textContaining('1 RUNNING'), findsOneWidget);
+    // What it is doing, and for how long, instead of a stage and a Run button.
+    expect(find.textContaining('building site: Piscines Bellerive'), findsOneWidget);
+    expect(find.textContaining('1m'), findsOneWidget);
+    expect(find.byIcon(Icons.play_arrow), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+  });
+
+  testWidgets('a record nobody is working still offers Run', (t) async {
+    await _panel(t);
+    expect(find.textContaining('WAITING'), findsOneWidget);
+    expect(find.byIcon(Icons.play_arrow), findsOneWidget);
   });
 }

@@ -198,6 +198,15 @@ class _WorldPageState extends State<WorldPage> {
       switch (e.kind) {
         case LiveKind.agentsChanged:
           setState(() {});
+          // A castle is `working` when a run is in flight in it, and that
+          // comes from `/castles` — which was fetched on connect and never
+          // again. So a build could run for fifteen minutes with the sprite
+          // walking to its bench and the castle still drawn idle.
+          //
+          // Refetched only when the set of BUSY workers changes, not on every
+          // sprite move: positions arrive many times a second, and the answer
+          // cannot have changed unless somebody started or stopped.
+          await _castleStatusMayHaveChanged();
         case LiveKind.approvalsChanged:
           await _loadApprovals();
           await _loadBoard();
@@ -336,6 +345,21 @@ class _WorldPageState extends State<WorldPage> {
     } catch (_) {
       // The map still works without them; it just cannot group.
     }
+  }
+
+  /// Who was busy last time we looked, so a sprite walking does not refetch.
+  String _busyKey = '';
+
+  Future<void> _castleStatusMayHaveChanged() async {
+    final busy = (_live?.agents.values ?? const <AgentState>[])
+        .where((a) => a.busy)
+        .map((a) => a.id)
+        .toList()
+      ..sort();
+    final key = busy.join(',');
+    if (key == _busyKey) return;
+    _busyKey = key;
+    await _loadCastles();
   }
 
   /// The castles, the empty land around them, and what can be built on it.

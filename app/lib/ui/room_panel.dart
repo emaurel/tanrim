@@ -36,6 +36,7 @@ class _RoomPanelState extends State<RoomPanel> {
   Map<String, dynamic>? _state;
   String? _error;
   bool _busy = false;
+  int _lastLoad = 0;
 
   @override
   void initState() {
@@ -46,6 +47,18 @@ class _RoomPanelState extends State<RoomPanel> {
   @override
   void didUpdateWidget(RoomPanel old) {
     super.didUpdateWidget(old);
+    // While a run is in flight this panel is showing a clock, and a run
+    // reports nothing between starting and finishing. Refreshed off the
+    // rebuilds the live socket already causes — a working agent says and
+    // moves constantly — rather than a timer: a periodic timer never lets
+    // `pumpAndSettle` settle, so it would make every test using this panel
+    // hang.
+    final running = (_state?['in_flight'] as List?)?.isNotEmpty ?? false;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (running && now - _lastLoad > 3000) {
+      _lastLoad = now;
+      _load();
+    }
     if (old.room.id != widget.room.id) {
       setState(() {
         _state = null;
@@ -147,10 +160,18 @@ class _RoomPanelState extends State<RoomPanel> {
                         ),
                       if (queue.isNotEmpty)
                         _section(
-                          'Waiting  ·  ${queue.length}',
+                          // The ones being worked are not waiting. A record
+                          // stays at its stage until the run finishes, so a
+                          // build in its tenth minute sat in a list headed
+                          // "Waiting" with a Run button beside it.
+                          _inFlight(s).isEmpty
+                              ? 'Waiting  ·  ${queue.length}'
+                              : 'Queue  ·  ${queue.length}'
+                                  '  (${_inFlight(s).length} running)',
                           [
                             for (final r in queue)
-                              _queueRow(r, running || atCapacity || _busy),
+                              _queueRow(r, running || atCapacity || _busy,
+                                  _inFlight(s)[r.id]),
                           ],
                         ),
                       if (queue.isEmpty && (s['has_handler'] ?? false) == true)
@@ -203,6 +224,17 @@ class _RoomPanelState extends State<RoomPanel> {
     );
   }
 
+  /// How long a run has been going, in the same shape as `ago`.
+  static String _since(Object? startedTs) {
+    final started = (startedTs is num) ? startedTs.toDouble() : 0.0;
+    if (started <= 0) return 'running';
+    final secs =
+        DateTime.now().millisecondsSinceEpoch / 1000 - started;
+    if (secs < 60) return '${secs.round()}s';
+    if (secs < 3600) return '${(secs / 60).floor()}m';
+    return '${(secs / 3600).floor()}h';
+  }
+
   /// A stable colour per kind.
   ///
   /// Derived from the name rather than listed, because the kinds come from
@@ -220,7 +252,18 @@ class _RoomPanelState extends State<RoomPanel> {
     return palette[kind.hashCode.abs() % palette.length];
   }
 
-  Widget _queueRow(WorkRecord r, bool blocked) {
+  /// record id -> the run working it, for the rows that have one.
+  Map<String, Map<String, dynamic>> _inFlight(Map<String, dynamic> s) {
+    final out = <String, Map<String, dynamic>>{};
+    for (final f in (s['in_flight'] as List?) ?? const []) {
+      final run = (f as Map).cast<String, dynamic>();
+      final id = run['lead_id'];
+      if (id is String) out[id] = run;
+    }
+    return out;
+  }
+
+  Widget _queueRow(WorkRecord r, bool blocked, [Map<String, dynamic>? run]) {
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
@@ -263,17 +306,36 @@ class _RoomPanelState extends State<RoomPanel> {
                   ),
                 ]),
                 const SizedBox(height: 2),
-                Text('${r.stage} · ${ago(r.updated)}',
-                    style: const TextStyle(
-                        fontSize: 11, color: Colors.white38)),
+                Text(
+                  run == null
+                      ? '${r.stage} · ${ago(r.updated)}'
+                      : '${run['summary'] ?? 'running'} · '
+                          '${_since(run['started_ts'])}',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: run == null
+                          ? Colors.white38
+                          : const Color(0xFF8FD9A6)),
+                ),
               ],
             ),
           ),
-          IconButton(
-            tooltip: blocked ? 'the room is busy' : 'run',
-            onPressed: blocked ? null : () => _run(r.id),
-            icon: const Icon(Icons.play_arrow, size: 20),
-          ),
+          if (run != null)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12),
+              child: SizedBox(
+                width: 15,
+                height: 15,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Color(0xFF8FD9A6)),
+              ),
+            )
+          else
+            IconButton(
+              tooltip: blocked ? 'the room is busy' : 'run',
+              onPressed: blocked ? null : () => _run(r.id),
+              icon: const Icon(Icons.play_arrow, size: 20),
+            ),
         ],
       ),
     );
