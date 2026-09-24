@@ -28,6 +28,16 @@ PLUGINS_DIR = ROOT / "plugins"
 #: `from .agents import forge` and have it resolve.
 PACKAGE = "tanrim_plugins"
 
+#: A plugin directory holding this file is on disk but not installed.
+#:
+#: A marker file rather than a list in a config somewhere, for three reasons:
+#: it is visible when you look at the directory, it survives a restart without
+#: anything having to write it down twice, and turning a plugin off does not
+#: destroy anything — which matters more here than it looks, because a
+#: plugin's prompts are deliberately gitignored and deleting the directory
+#: takes them with it.
+DISABLED = ".disabled"
+
 
 class DiscoveryError(RuntimeError):
     """A plugin directory exists but could not be loaded."""
@@ -52,25 +62,75 @@ def _register_package(directory: Path) -> None:
 
 
 def find(directory: Path | None = None) -> list[Plugin]:
-    """Every contract plugin in a directory, unordered.
+    """Every ENABLED contract plugin in a directory, unordered.
 
     Ordering is `environment.order`'s job — it is the thing that knows what
     `requires` means. This returns what is installed, sorted by directory name
     so the result is stable and a boot log is diffable.
     """
-    directory = Path(directory or PLUGINS_DIR)
     found: list[Plugin] = []
-    if not directory.is_dir():
-        return found
-    _register_package(directory)
-    for entry in sorted(directory.iterdir()):
-        manifest = entry / "plugin.py"
-        if not manifest.is_file():
+    for entry in _candidates(directory):
+        if (entry / DISABLED).exists():
             continue
-        plugin = _load(entry, manifest)
+        plugin = _load(entry, entry / "plugin.py")
         if plugin is not None:
             found.append(plugin)
     return found
+
+
+def _candidates(directory: Path | None = None) -> list[Path]:
+    """Every directory that looks like a plugin, enabled or not."""
+    directory = Path(directory or PLUGINS_DIR)
+    if not directory.is_dir():
+        return []
+    _register_package(directory)
+    return [entry for entry in sorted(directory.iterdir())
+            if (entry / "plugin.py").is_file()]
+
+
+def catalog(directory: Path | None = None) -> list[dict]:
+    """What is on disk, whether or not it is installed.
+
+    `find` answers "what is running", which cannot describe a plugin that is
+    present and switched off — and something you cannot see is something you
+    cannot switch back on.
+
+    A disabled plugin is NOT imported to describe it. Importing is what runs a
+    plugin's code, and a plugin that was disabled because it misbehaves must
+    not get to run merely by being listed.
+    """
+    out: list[dict] = []
+    for entry in _candidates(directory):
+        disabled = (entry / DISABLED).exists()
+        out.append({
+            "id": entry.name,
+            "path": str(entry),
+            "enabled": not disabled,
+            "reason": (entry / DISABLED).read_text().strip()[:200]
+                      if disabled else "",
+            "git": _git_origin(entry),
+        })
+    return out
+
+
+def _git_origin(entry: Path) -> str:
+    """The remote this plugin was cloned from, if it is its own repository.
+
+    Empty for a plugin that is just a directory in this repository — which is
+    also the answer to "can this be deleted and got back", and the reason
+    deleting one is guarded rather than offered.
+    """
+    import subprocess
+
+    if not (entry / ".git").exists():
+        return ""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(entry), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=10)
+    except Exception:                                 # noqa: BLE001
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
 
 
 def _load(entry: Path, manifest: Path) -> Plugin | None:

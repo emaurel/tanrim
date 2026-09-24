@@ -15,6 +15,7 @@ from . import config
 from . import agent_helpers
 from . import discovery
 from . import environment
+from . import plugin_admin
 from . import secrets as secrets_store
 from . import skills as skills_mod
 from . import rooms as rooms_mod
@@ -349,9 +350,12 @@ async def get_plugins() -> dict[str, Any]:
     }
 
 
-@app.post("/plugins/reload")
-async def reload_plugins() -> dict[str, Any]:
-    """Re-read `plugins/` without restarting the process.
+async def _reload_now() -> dict[str, Any]:
+    """Re-read `plugins/` and rebuild everything derived from it.
+
+    Shared by the reload endpoint and by every operation that CHANGES what is
+    installed, so enabling a plugin takes effect without a second call the
+    caller has to remember to make.
 
     Installing a plugin is putting a directory in `plugins/`, and until now the
     only way to make the environment notice was a restart — which drops every
@@ -432,6 +436,106 @@ async def reload_plugins() -> dict[str, Any]:
         "agents_removed": moved["removed"],
         "problems": env.check(),
     }
+
+
+@app.post("/plugins/reload")
+async def reload_plugins() -> dict[str, Any]:
+    """Re-read `plugins/` without restarting the process.
+
+    Installing a plugin is putting a directory in `plugins/`, and until this
+    existed the only way to make the environment notice was a restart — which
+    drops every sprite's position, every open client, and anything mid-flight.
+
+    What this covers is a plugin appearing or disappearing. What it does NOT
+    cover is a plugin whose code CHANGED: Python caches modules, so the
+    already-imported one is what gets used again, and reloading a package
+    properly means chasing every stale reference held in a closure, a
+    dataclass default or another plugin's table. That is the case where you
+    are editing anyway, so restart — `uvicorn --reload` does it for you.
+    """
+    return await _reload_now()
+
+
+@app.get("/plugins/catalog")
+async def plugins_catalog() -> dict[str, Any]:
+    """Everything on disk, installed or not.
+
+    `/plugins` answers "what is running", which cannot describe a plugin that
+    is present and switched off — and something you cannot see is something
+    you cannot switch back on.
+    """
+    running = {p.id for p in environment.current().plugins}
+    out = []
+    for entry in discovery.catalog():
+        out.append({
+            **entry,
+            "running": entry["id"] in running,
+            # What deleting it would destroy. Shown BEFORE anyone asks to
+            # delete, because the answer is almost always "this plugin's only
+            # copy of its prompts" and that is worth knowing unprompted.
+            "unrecoverable": plugin_admin.unrecoverable(entry["id"]),
+        })
+    return {"plugins": out, "dir": str(discovery.PLUGINS_DIR)}
+
+
+class InstallBody(BaseModel):
+    source: str = ""
+    id: str = ""
+
+
+@app.post("/plugins/install")
+async def plugins_install(body: InstallBody) -> dict[str, Any]:
+    """Clone a plugin repository into `plugins/`, then reload."""
+    try:
+        got = plugin_admin.install(body.source, body.id)
+    except plugin_admin.PluginAdminError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "installed": got, "reload": await _reload_now()}
+
+
+class DisableBody(BaseModel):
+    reason: str = ""
+
+
+@app.post("/plugins/{plugin_id}/disable")
+async def plugins_disable(plugin_id: str, body: DisableBody | None = None
+                          ) -> dict[str, Any]:
+    """Switch a plugin off, leaving it on disk.
+
+    The answer to almost every reason someone reaches for delete: one file, it
+    survives a restart, it is visible in the directory, and it destroys
+    nothing.
+    """
+    try:
+        got = plugin_admin.disable(plugin_id, (body.reason if body else ""))
+    except plugin_admin.PluginAdminError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "plugin": got, "reload": await _reload_now()}
+
+
+@app.post("/plugins/{plugin_id}/enable")
+async def plugins_enable(plugin_id: str) -> dict[str, Any]:
+    try:
+        got = plugin_admin.enable(plugin_id)
+    except plugin_admin.PluginAdminError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "plugin": got, "reload": await _reload_now()}
+
+
+@app.delete("/plugins/{plugin_id}")
+async def plugins_remove(plugin_id: str, force: bool = False) -> dict[str, Any]:
+    """Delete a plugin's directory.
+
+    Refuses whenever the directory holds anything git would not bring back —
+    which for every plugin here means its prompts, kept out of version control
+    on purpose and therefore existing on exactly one machine.
+    """
+    try:
+        got = plugin_admin.remove(plugin_id, force=force)
+    except plugin_admin.PluginAdminError as e:
+        return {"ok": False, "error": str(e),
+                "unrecoverable": plugin_admin.unrecoverable(plugin_id)}
+    return {"ok": True, "plugin": got, "reload": await _reload_now()}
 
 
 @app.get("/pipeline")

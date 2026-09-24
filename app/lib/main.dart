@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'api/client.dart';
+import 'server/prefs.dart';
+import 'server/process.dart';
 import 'api/live.dart';
 import 'model/approval.dart';
 import 'model/castle.dart';
@@ -46,7 +48,20 @@ class WorldPage extends StatefulWidget {
 class _WorldPageState extends State<WorldPage> {
   /// Where the environment is. One field, because the app is meant to point at
   /// a server the operator chooses — and later at one castle among several.
-  final _server = TextEditingController(text: 'http://127.0.0.1:8765');
+  final _prefs = Prefs.load();
+  late final _server = TextEditingController(
+      text: _prefs.string('server', 'http://127.0.0.1:8765'));
+
+  /// Where the checkout is, so the app can run the server itself. Remembered,
+  /// because typing a path every launch is the kind of friction that sends
+  /// you back to the terminal.
+  late final _repo = TextEditingController(
+      text: _prefs.string('repo', ServerProcess.guess()))
+    ..addListener(_rememberRepo);
+  late final ServerProcess _process = ServerProcess(repo: _repo.text);
+
+  /// Every plugin on disk, running or not — `/plugins/catalog`.
+  List<Map<String, dynamic>> _catalog = const [];
 
   Api? _api;
   Live? _live;
@@ -86,8 +101,47 @@ class _WorldPageState extends State<WorldPage> {
   void dispose() {
     _live?.close();
     _api?.close();
+    // A server this app started goes with it. Left behind it holds the port,
+    // and the next launch would find it, adopt it, and be unable to stop it.
+    _process.disposeSync();
     _server.dispose();
+    _repo.dispose();
     super.dispose();
+  }
+
+  void _rememberRepo() {
+    _process.repo = _repo.text.trim();
+    _prefs.set('repo', _repo.text.trim());
+  }
+
+  /// Start the server, then connect to it.
+  ///
+  /// One action rather than two, because a started server nobody connected to
+  /// looks exactly like a server that failed to start.
+  Future<String> _startServer() async {
+    final problem = await _process.start();
+    if (problem != null) return problem;
+    _server.text = _process.base;
+    _prefs.set('server', _server.text);
+    await _connect();
+    return 'started, and connected to ${_process.base}';
+  }
+
+  Future<String> _stopServer() async {
+    final problem = await _process.stop();
+    if (problem != null) return problem;
+    _live?.close();
+    _api?.close();
+    _api = null;
+    if (mounted) {
+      setState(() {
+        _connected = false;
+        _state = 'stopped';
+        _rooms = const [];
+        _castles = const [];
+      });
+    }
+    return 'stopped';
   }
 
   Future<void> _connect() async {
@@ -105,6 +159,7 @@ class _WorldPageState extends State<WorldPage> {
       await _loadRooms();
       setState(() => _connected = true);
       await _loadPlugins();
+      await _loadCatalog();
       await _loadApprovals();
       await _loadBoard();
     } catch (e) {
@@ -163,6 +218,67 @@ class _WorldPageState extends State<WorldPage> {
   /// Extracted from `_connect` because a plugin reload changes the rooms too,
   /// and a second copy of "parse /rooms into Room objects" is how one of them
   /// ends up not setting `_state`.
+  /// Every plugin directory, running or not.
+  Future<void> _loadCatalog() async {
+    final api = _api;
+    if (api == null) return;
+    try {
+      final d = await api.get('/plugins/catalog') as Map<String, dynamic>;
+      final list = ((d['plugins'] ?? []) as List)
+          .map((p) => (p as Map).cast<String, dynamic>())
+          .toList();
+      if (!mounted) return;
+      setState(() => _catalog = list);
+    } catch (_) {
+      // An older server has no catalog. The rest of the panel still works.
+    }
+  }
+
+  /// After anything that changes what is installed.
+  Future<String> _afterPluginChange(Map<String, dynamic> out,
+      String Function() describe) async {
+    if (out['ok'] != true) {
+      return '${out['error'] ?? 'it did not work'}';
+    }
+    await _loadRooms();
+    await _loadPlugins();
+    await _loadCatalog();
+    return describe();
+  }
+
+  Future<String> _installPlugin(String source) async {
+    final api = _api;
+    if (api == null) return 'not connected to a server';
+    final out = (await api.post('/plugins/install', {'source': source}))
+        as Map<String, dynamic>;
+    return _afterPluginChange(out, () {
+      final id = ((out['installed'] ?? {}) as Map)['id'];
+      final problems =
+          (((out['reload'] ?? {}) as Map)['problems'] as List?) ?? const [];
+      return 'Installed $id.'
+          '${problems.isEmpty ? '' : '\n\nReported at boot:\n  '
+              '${problems.join('\n  ')}'}';
+    });
+  }
+
+  Future<String> _setPluginEnabled(String id, bool enabled) async {
+    final api = _api;
+    if (api == null) return 'not connected to a server';
+    final out = (await api
+            .post('/plugins/$id/${enabled ? 'enable' : 'disable'}', {}))
+        as Map<String, dynamic>;
+    return _afterPluginChange(out, () => enabled ? 'enabled' : 'disabled');
+  }
+
+  Future<String> _removePlugin(String id, bool force) async {
+    final api = _api;
+    if (api == null) return 'not connected to a server';
+    final out = (await api.send(
+            'DELETE', '/plugins/$id${force ? '?force=true' : ''}'))
+        as Map<String, dynamic>;
+    return _afterPluginChange(out, () => 'deleted');
+  }
+
   Future<void> _loadRooms() async {
     final api = _api;
     if (api == null) return;
@@ -342,6 +458,14 @@ class _WorldPageState extends State<WorldPage> {
         stages: _stages,
         kinds: _kinds,
         onReload: _reloadPlugins,
+        repo: _repo,
+        process: _process,
+        onStartServer: _startServer,
+        onStopServer: _stopServer,
+        catalog: _catalog,
+        onInstall: _installPlugin,
+        onSetEnabled: _setPluginEnabled,
+        onRemove: _removePlugin,
       );
 
   /// Re-read `plugins/` on the server, then refetch everything derived from it.

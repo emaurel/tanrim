@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:tanrim/server/process.dart';
 import 'package:tanrim/ui/settings.dart';
 
 /// Shaped like what `/plugins` really returns.
@@ -47,6 +48,11 @@ Future<void> _openPlugins(
   WidgetTester t, {
   Future<String> Function()? onReload,
   List<Map<String, dynamic>>? plugins,
+  List<Map<String, dynamic>>? catalog,
+  Future<String> Function(String id, bool enabled)? onSetEnabled,
+  Future<String> Function(String id, bool force)? onRemove,
+  Future<String> Function(String source)? onInstall,
+  String tab = 'plugins',
 }) async {
   t.view
     ..physicalSize = const Size(1200, 900)
@@ -63,6 +69,15 @@ Future<void> _openPlugins(
     stages: const ['spotted', 'screened'],
     kinds: const ['prospect', 'application'],
     onReload: onReload ?? () async => 'nothing happened',
+    repo: TextEditingController(text: '/nowhere'),
+    // A port nothing is on, so `refresh` fails fast with connection refused.
+    process: ServerProcess(repo: '/nowhere', port: 59997),
+    onStartServer: () async => 'not in this test',
+    onStopServer: () async => 'not in this test',
+    catalog: catalog ?? const [],
+    onInstall: onInstall ?? (_) async => 'not in this test',
+    onSetEnabled: onSetEnabled ?? (_, _) async => 'ok',
+    onRemove: onRemove ?? (_, _) async => 'deleted',
   );
 
   await t.pumpWidget(MaterialApp(
@@ -70,7 +85,7 @@ Future<void> _openPlugins(
       builder: (context) => Scaffold(
         body: Center(
           child: ElevatedButton(
-            onPressed: () => settings.open(context, tab: 'plugins'),
+            onPressed: () => settings.open(context, tab: tab),
             child: const Text('open'),
           ),
         ),
@@ -149,5 +164,108 @@ void main() {
     await t.tap(find.text('Reload plugins'));
     await t.pumpAndSettle();
     expect(find.textContaining('in flight'), findsOneWidget);
+  });
+
+  testWidgets('a disabled plugin is still listed, with why', (t) async {
+    // Something you cannot see is something you cannot switch back on.
+    await _openPlugins(t, plugins: const [], catalog: [
+      {
+        'id': 'job_hunt',
+        'enabled': false,
+        'running': false,
+        'reason': 'misbehaving',
+        'git': '',
+        'unrecoverable': ['plugins/job_hunt/prompts/'],
+      },
+    ]);
+    await t.ensureVisible(find.text('job_hunt'));
+    await t.pumpAndSettle();
+    expect(find.text('job_hunt'), findsOneWidget);
+    expect(find.text('misbehaving'), findsOneWidget);
+    expect(t.widget<Switch>(find.byType(Switch)).value, isFalse);
+  });
+
+  testWidgets('the switch turns a plugin on', (t) async {
+    final calls = <(String, bool)>[];
+    await _openPlugins(
+      t,
+      plugins: const [],
+      catalog: [
+        {'id': 'job_hunt', 'enabled': false, 'running': false,
+         'reason': '', 'git': '', 'unrecoverable': <String>[]},
+      ],
+      onSetEnabled: (id, on) async {
+        calls.add((id, on));
+        return 'enabled';
+      },
+    );
+    await t.ensureVisible(find.byType(Switch));
+    await t.pumpAndSettle();
+    await t.tap(find.byType(Switch));
+    await t.pumpAndSettle();
+    expect(calls, [('job_hunt', true)]);
+  });
+
+  testWidgets('deleting names what would be lost, and can be cancelled',
+      (t) async {
+    // The one thing here that cannot be undone. A plugin's prompts are
+    // gitignored on purpose, so they exist on exactly one machine, and the
+    // directory gives no sign of it.
+    var removed = 0;
+    await _openPlugins(
+      t,
+      plugins: const [],
+      catalog: [
+        {'id': 'web_agency', 'enabled': true, 'running': true,
+         'reason': '', 'git': '',
+         'unrecoverable': ['plugins/web_agency/prompts/']},
+      ],
+      onRemove: (_, _) async {
+        removed++;
+        return 'deleted';
+      },
+    );
+    await t.ensureVisible(find.byIcon(Icons.delete_outline));
+    await t.pumpAndSettle();
+    await t.tap(find.byIcon(Icons.delete_outline));
+    await t.pumpAndSettle();
+
+    expect(find.text('Delete web_agency?'), findsOneWidget);
+    expect(find.textContaining('only copy'), findsOneWidget);
+    expect(find.textContaining('prompts/'), findsOneWidget);
+    // It says "Delete anyway", not "Delete": the wording is the warning.
+    expect(find.text('Delete anyway'), findsOneWidget);
+
+    await t.tap(find.text('Cancel'));
+    await t.pumpAndSettle();
+    expect(removed, 0, reason: 'cancelling must not delete anything');
+  });
+
+  testWidgets('cloning a plugin reports what the server said', (t) async {
+    await _openPlugins(t,
+        onInstall: (src) async => 'Installed tanrim_job_hunt.');
+
+    await t.ensureVisible(find.text('Clone'));
+    await t.pumpAndSettle();
+    await t.enterText(find.byType(TextField).last,
+        'git@github.com:you/tanrim-job-hunt.git');
+    await t.tap(find.text('Clone'));
+    await t.pumpAndSettle();
+    expect(find.textContaining('Installed tanrim_job_hunt'), findsOneWidget);
+  });
+
+  testWidgets('the server panel will not offer Stop for one it did not start',
+      (t) async {
+    // Stop would look like it worked while taking down something else, with
+    // its own flags and its own log.
+    await _openPlugins(t, tab: 'connection');
+    await t.pumpAndSettle();
+
+    expect(find.text('not running'), findsOneWidget);
+    final stop = t.widget<OutlinedButton>(
+        find.widgetWithText(OutlinedButton, 'Stop'));
+    expect(stop.onPressed, isNull);
+    // And it says what is wrong with the checkout rather than just failing.
+    expect(find.textContaining('no directory at /nowhere'), findsOneWidget);
   });
 }

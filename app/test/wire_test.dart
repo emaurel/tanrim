@@ -2,7 +2,10 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'dart:io';
+
 import 'package:tanrim/api/live.dart';
+import 'package:tanrim/server/process.dart';
 
 /// The wire format between this app and the environment.
 ///
@@ -63,5 +66,13 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(seen, isEmpty);
+  });
+
+  test('the checkout is found from where the app was built into it', () {
+    // `<repo>/app/build/linux/.../tanrim`, so walking up finds it — which is
+    // why the path setting is one you never have to type.
+    final guess = ServerProcess.guess();
+    expect(guess, isNotEmpty, reason: 'running inside the checkout');
+    expect(Directory('$guess/backend/tanrim').existsSync(), isTrue);
   });
 }
