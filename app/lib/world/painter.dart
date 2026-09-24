@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+import 'dart:ui' show Picture, PictureRecorder;
+
 import 'package:flutter/material.dart';
 
 import '../model/castle.dart';
@@ -32,11 +34,14 @@ class WorldPainter extends CustomPainter {
     this.hoveredPlot,
   });
 
-  /// Below this zoom a room is a few pixels across and its name does not fit,
-  /// so the map stops drawing rooms and draws one block per castle instead.
-  /// Zooming out should show you the estate, not a smaller illegible copy of
-  /// the same thing.
-  static const farZoom = 0.38;
+  /// Below this zoom a room is a few pixels across, so the map stops drawing
+  /// rooms and draws one block per castle instead. Zooming out should show you
+  /// the estate, not a smaller illegible copy of the same thing.
+  ///
+  /// Three times further out than it was. The layout step turned out to be the
+  /// one you spend time in — it is where you compare castles — and it was only
+  /// a notch and a half wide before the blocks took over.
+  static const farZoom = 0.38 / 3;
 
   final List<Room> rooms;
   final List<AgentState> agents;
@@ -83,9 +88,13 @@ class WorldPainter extends CustomPainter {
   ///
   /// The middle step. Between this and [farZoom] the rooms are still drawn —
   /// the LAYOUT is the useful thing at that distance, and it is what tells one
-  /// castle from another — but nothing is lettered, because 13px of text at
-  /// 0.45 zoom is six pixels of grey fuzz over the thing you are looking at.
-  static const labelZoom = 0.62;
+  /// castle from another — but nothing is lettered, because text this small is
+  /// grey fuzz over the thing you are looking at.
+  ///
+  /// Set where [farZoom] used to be: names were going at 0.62, which is barely
+  /// zoomed out at all and took the labels away while they were still
+  /// perfectly readable.
+  static const labelZoom = 0.38;
 
   bool get labelled => zoom >= labelZoom;
 
@@ -102,16 +111,18 @@ class WorldPainter extends CustomPainter {
 
   bool _onScreen(double x, double y, double w, double h) {
     // Isometric: the four corners of a tile rect are not a screen rect, so
-    // take the extremes of all four rather than two.
-    final a = iso.toScreen(x, y);
-    final b = iso.toScreen(x + w, y);
-    final c = iso.toScreen(x + w, y + h);
-    final d = iso.toScreen(x, y + h);
-    final left = [a.dx, b.dx, c.dx, d.dx].reduce(math.min);
-    final right = [a.dx, b.dx, c.dx, d.dx].reduce(math.max);
-    final top = [a.dy, b.dy, c.dy, d.dy].reduce(math.min);
-    // Walls and labels hang above and below the diamond.
-    final bottom = [a.dy, b.dy, c.dy, d.dy].reduce(math.max);
+    // the extremes come from all four. Written out rather than through a list
+    // and `reduce` — this runs per item per frame, and the allocations were
+    // more expensive than the arithmetic.
+    //
+    // screen.x = (x - y) * tileW / 2, so x is extreme at the corners where
+    // (x - y) is, and screen.y = (x + y) * tileH / 2 likewise.
+    final halfW = iso.tileW / 2, halfH = iso.tileH / 2;
+    final left = (x - (y + h)) * halfW;
+    final right = ((x + w) - y) * halfW;
+    final top = (x + y) * halfH;
+    final bottom = ((x + w) + (y + h)) * halfH;
+    // Walls and labels hang above the diamond.
     return _view.overlaps(Rect.fromLTRB(
         left, top - _wallHeight * iso.tileH - 40, right, bottom + 20));
   }
@@ -259,7 +270,8 @@ class WorldPainter extends CustomPainter {
           size: 15 / zoom,
           weight: FontWeight.w700,
           centre: true,
-          colour: const Color(0xFF12141A));
+          colour: const Color(0xFF12141A),
+          halo: Colors.white);
       _text(
           canvas,
           c.installed
@@ -392,6 +404,39 @@ class WorldPainter extends CustomPainter {
 
   // -- agents --------------------------------------------------------------
 
+  /// One figure, recorded once per pose and colour and replayed thereafter.
+  ///
+  /// Recorded at ONE art pixel per unit, so the caller scales it — a cache
+  /// keyed on the zoom as well would miss on every frame of a zoom, which is
+  /// exactly when there is least to spare.
+  static final Map<String, Picture> _figures = {};
+
+  static Picture _figure(
+      Pose pose, Object colour, Palette pal, List<String> rows) {
+    final key = '${pose.index}|$colour';
+    final hit = _figures[key];
+    if (hit != null) return hit;
+
+    final recorder = PictureRecorder();
+    final canvas = Canvas(recorder);
+    final paint = Paint();
+    for (var ry = 0; ry < rows.length; ry++) {
+      final row = rows[ry];
+      for (var rx = 0; rx < row.length; rx++) {
+        final col = pal.slot(row[rx]);
+        if (col == null) continue;
+        paint.color = col;
+        canvas.drawRect(
+          Rect.fromLTWH(rx.toDouble(), ry.toDouble(), 1, 1),
+          paint,
+        );
+      }
+    }
+    final pic = recorder.endRecording();
+    _figures[key] = pic;
+    return pic;
+  }
+
   void _agent(Canvas canvas, AgentState a) {
     final at = iso.toScreen(a.x, a.y);
     final pal = Palette(a.color);
@@ -418,19 +463,18 @@ class WorldPainter extends CustomPainter {
       Paint()..color = Colors.black.withValues(alpha: 0.30),
     );
 
-    final paint = Paint();
-    for (var ry = 0; ry < rows.length; ry++) {
-      final row = rows[ry];
-      for (var rx = 0; rx < row.length; rx++) {
-        final col = pal.slot(row[rx]);
-        if (col == null) continue;
-        paint.color = col;
-        canvas.drawRect(
-          Rect.fromLTWH(originX + rx * px, originY + ry * px, px, px),
-          paint,
-        );
-      }
-    }
+    // One `drawPicture` instead of one `drawRect` per art pixel.
+    //
+    // This was most of the lag. A figure is about 11x16 art pixels, so drawing
+    // it a pixel at a time is ~150 draw calls per sprite per frame — with
+    // twenty-nine agents on the map, five thousand calls a frame, three
+    // hundred thousand a second, to draw figures that change between four
+    // fixed poses.
+    canvas.save();
+    canvas.translate(originX, originY);
+    canvas.scale(px);
+    canvas.drawPicture(_figure(pose, a.color, pal, rows));
+    canvas.restore();
 
     if (!labelled) return;
     _text(canvas, a.name, Offset(at.dx, originY - 14 / zoom),
@@ -444,26 +488,86 @@ class WorldPainter extends CustomPainter {
 
   // -- text ----------------------------------------------------------------
 
-  void _text(Canvas canvas, String s, Offset at,
-      {double size = 12,
-      FontWeight weight = FontWeight.normal,
-      bool centre = false,
-      Color colour = Colors.white}) {
+  /// Laid-out text, kept between frames.
+  ///
+  /// This was the lag. Every label built a `TextPainter` and laid it out on
+  /// every frame — around fifty of them at 60fps, three thousand text layouts
+  /// a second, to draw words that had not changed. Laying out text is the
+  /// expensive part of drawing it, and none of it was being reused.
+  ///
+  /// Keyed on everything that changes the result, with the size rounded: the
+  /// font size is `13 / zoom`, so it is constant whenever the camera is still
+  /// — which is when you are looking at the map rather than moving it.
+  static final Map<String, TextPainter> _laidOut = {};
+  static const _maxLaidOut = 600;
+
+  TextPainter _measured(String s, double size, FontWeight weight, Color colour,
+      Color? halo, double wrap) {
+    final key = '$s|${size.toStringAsFixed(2)}|${weight.value}|'
+        '${colour.toARGB32()}|${halo?.toARGB32() ?? 0}|'
+        '${wrap.toStringAsFixed(0)}|$fontFamily';
+    final hit = _laidOut[key];
+    if (hit != null) return hit;
+
+    if (_laidOut.length > _maxLaidOut) _laidOut.clear();
     final tp = TextPainter(
       text: TextSpan(
         text: s,
         style: TextStyle(
-          color: colour,
+          color: halo == null ? colour : null,
+          foreground: halo == null ? null : (Paint()..color = colour),
           fontFamily: fontFamily,
           fontSize: size,
           fontWeight: weight,
-          shadows: const [Shadow(color: Colors.black87, blurRadius: 3)],
+          shadows: halo == null
+              ? const [Shadow(color: Colors.black87, blurRadius: 3)]
+              : null,
         ),
       ),
       textDirection: TextDirection.ltr,
       maxLines: 1,
       ellipsis: '…',
-    )..layout(maxWidth: 220 / zoom);
+    )..layout(maxWidth: wrap);
+    _laidOut[key] = tp;
+    return tp;
+  }
+
+  void _text(Canvas canvas, String s, Offset at,
+      {double size = 12,
+      FontWeight weight = FontWeight.normal,
+      bool centre = false,
+      Color colour = Colors.white,
+      Color? halo}) {
+    final wrap = 220 / zoom;
+    // The outline is a second pass in a heavier stroked style UNDER the fill,
+    // rather than a shadow: a castle's name sits on a pale block and over
+    // whatever the map draws behind it, and a blur reads as smudge where an
+    // outline reads as a label.
+    if (halo != null) {
+      final under = _measured(s, size, weight, halo, halo, wrap);
+      final stroke = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.5 / zoom
+        ..strokeJoin = StrokeJoin.round
+        ..color = halo;
+      final outlined = TextPainter(
+        text: TextSpan(
+          text: s,
+          style: TextStyle(
+            foreground: stroke,
+            fontFamily: fontFamily,
+            fontSize: size,
+            fontWeight: weight,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      )..layout(maxWidth: wrap);
+      outlined.paint(
+          canvas, centre ? at - Offset(under.width / 2, 0) : at);
+    }
+    final tp = _measured(s, size, weight, colour, halo, wrap);
     tp.paint(canvas, centre ? at - Offset(tp.width / 2, 0) : at);
   }
 

@@ -211,10 +211,13 @@ void main() {
           .toList();
     }
 
-    List<Plot> plots() =>
-        ((load('castles_fixture.json')['plots'] ?? []) as List)
-            .map((p) => Plot.fromJson((p as Map).cast<String, dynamic>()))
-            .toList();
+    Web web() => Web.fromJson(
+        (load('castles_fixture.json')['web'] as Map).cast<String, dynamic>());
+
+    Set<(int, int)> taken() => {
+          for (final t in (load('castles_fixture.json')['taken'] as List))
+            ((t as List)[0] as int, t[1] as int),
+        };
 
     test('every room belongs to exactly one castle', () {
       final built = castles();
@@ -252,12 +255,45 @@ void main() {
       }
     });
 
-    test('empty plots are offered, and none is under a castle', () {
-      final free = plots();
+    test('this app computes the same plot centres as the server', () {
+      // The equation lives in both languages, which is the one place the two
+      // can drift. Everything ELSE about a castle's position comes from the
+      // server precisely so they cannot.
+      final w = web();
+      for (final c in castles()) {
+        final (x, y) = w.centre(c.ring, c.slot);
+        expect(x, closeTo(c.centre.$1, 0.001),
+            reason: 'ring ${c.ring} slot ${c.slot}');
+        expect(y, closeTo(c.centre.$2, 0.001),
+            reason: 'ring ${c.ring} slot ${c.slot}');
+      }
+    });
+
+    test('zooming out reveals more land', () {
+      // The point of an infinite web. A fixed list of plots meant the map
+      // plainly stopped somewhere, however many were sent.
+      final w = web();
+      final built = taken();
+      int seen(double half) => w
+          .visible(Rect.fromLTRB(-half, -half, half, half), built)
+          .length;
+
+      final near = seen(200);
+      final mid = seen(800);
+      final away = seen(4000);
+      expect(mid, greaterThan(near));
+      expect(away, greaterThan(mid));
+    });
+
+    test('land that is built on is never offered', () {
+      final w = web();
+      final built = taken();
+      expect(built, isNotEmpty);
+      final free = w.visible(
+          const Rect.fromLTRB(-4000, -4000, 4000, 4000), built);
       expect(free, isNotEmpty, reason: 'there must be somewhere to build');
-      final taken = {for (final c in castles()) '${c.ring}:${c.slot}'};
       for (final p in free) {
-        expect(taken.contains('${p.ring}:${p.slot}'), isFalse,
+        expect(built.contains((p.ring, p.slot)), isFalse,
             reason: 'ring ${p.ring} slot ${p.slot} is already built on');
       }
     });
@@ -313,7 +349,8 @@ void main() {
         rooms: const [],
         agents: const [],
         camera: camera,
-        zoom: 0.2,
+        // Below farZoom, so the estate path runs and the plots are drawn.
+        zoom: WorldPainter.farZoom - 0.01,
         iso: const Iso(),
         tick: 0,
         plots: plots,

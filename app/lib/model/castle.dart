@@ -1,3 +1,7 @@
+import 'dart:math' as math;
+
+import 'package:flutter/painting.dart' show Rect, Offset;
+
 import 'world.dart';
 
 /// One running instance of a plugin, and the land it stands on.
@@ -105,11 +109,80 @@ class Castle {
       );
 }
 
-/// Empty land, with an outline on it.
+/// The web of plots, as an equation.
 ///
-/// Served rather than computed for the same reason as a castle's centre: the
-/// rooms of whatever gets built here are positioned from this geometry, and
-/// two sides working it out separately is two sides that can disagree.
+/// The server sends these two numbers and the list of what is built on; the
+/// app generates the plots its viewport actually covers. Sending PLOTS meant
+/// choosing how many, and any number is wrong: too few and zooming out reveals
+/// nothing new, so the web plainly stops; enough to fill a zoomed-out view and
+/// one castle on ring 50 lists eight thousand pieces of empty land.
+///
+/// The equation is duplicated across the two languages, which is a real risk
+/// and the reason `castle_test.dart` checks this side against coordinates
+/// captured from the server. Everything else about a castle's position comes
+/// from the server precisely so the two cannot drift; this is the one place
+/// they have to agree by construction.
+class Web {
+  const Web({this.span = 64, this.ringSpacing = 1.6});
+
+  final double span;
+  final double ringSpacing;
+
+  static Web fromJson(Map<String, dynamic> j) => Web(
+        span: ((j['span'] ?? 64) as num).toDouble(),
+        ringSpacing: ((j['ring_spacing'] ?? 1.6) as num).toDouble(),
+      );
+
+  /// Ring `n` holds `6n` plots. The hub is ring 0 and holds none.
+  int slotsOn(int ring) => ring > 0 ? 6 * ring : 0;
+
+  /// Ring 1 slot 0 is due north, so the first castle built lands at the top
+  /// of the map where it is easy to find.
+  (double, double) centre(int ring, int slot) {
+    if (ring <= 0) return (0, 0);
+    final count = slotsOn(ring);
+    final angle = (2 * math.pi * (slot % count) / count) - (math.pi / 2);
+    final radius = ring * span * ringSpacing;
+    return (radius * math.cos(angle), radius * math.sin(angle));
+  }
+
+  /// How many rings could possibly reach a point this far from the hub.
+  int ringsWithin(double radius) =>
+      (radius / (span * ringSpacing)).ceil() + 1;
+
+  /// Every free plot whose square overlaps [view], in tile space.
+  ///
+  /// Culled per plot rather than per ring, because the visible region is a
+  /// rotated rectangle in tile space and a ring is a circle: the rings that
+  /// matter at the edges of the view are not the rings that matter at its
+  /// centre.
+  List<Plot> visible(
+    Rect view,
+    Set<(int, int)> taken, {
+    int cap = 600,
+  }) {
+    // The furthest corner of the view from the hub decides how far to look.
+    final reach = [
+      view.topLeft, view.topRight, view.bottomLeft, view.bottomRight,
+    ].map((c) => c.distance).reduce(math.max);
+
+    final out = <Plot>[];
+    for (var ring = 1; ring <= ringsWithin(reach) && out.length < cap; ring++) {
+      for (var slot = 0; slot < slotsOn(ring); slot++) {
+        if (taken.contains((ring, slot))) continue;
+        final (cx, cy) = centre(ring, slot);
+        final box = Rect.fromCenter(
+            center: Offset(cx, cy), width: span, height: span);
+        if (!view.overlaps(box)) continue;
+        out.add(Plot(ring: ring, slot: slot, centre: (cx, cy), span: span));
+        if (out.length >= cap) break;
+      }
+    }
+    return out;
+  }
+}
+
+/// Empty land, with an outline on it.
 class Plot {
   const Plot({
     required this.ring,

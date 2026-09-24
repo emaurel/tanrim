@@ -19,7 +19,8 @@ class MapView extends StatefulWidget {
     this.selectedRoom,
     this.castles = const [],
     this.castleBadges = const {},
-    this.plots = const [],
+    this.web = const Web(),
+    this.taken = const {},
     this.onPlotTapped,
     this.onCastleTapped,
   });
@@ -34,8 +35,11 @@ class MapView extends StatefulWidget {
   final List<Castle> castles;
   final Map<String, int> castleBadges;
 
-  /// Empty land you can build on, outlined on the map.
-  final List<Plot> plots;
+  /// The web's equation, and what is already built on. The plots themselves
+  /// are generated per frame for whatever the viewport covers — which is what
+  /// makes zooming out reveal more land instead of running out of it.
+  final Web web;
+  final Set<(int, int)> taken;
 
   /// Tapped an empty plot: `(ring, slot)`.
   final void Function(int ring, int slot)? onPlotTapped;
@@ -105,9 +109,13 @@ class _MapViewState extends State<MapView>
     for (final r in widget.rooms) {
       take(r.position.x, r.position.y, r.size.x, r.size.y);
     }
-    for (final p in widget.plots) {
-      final (x, y, w, h) = p.bounds;
-      take(x, y, w, h);
+    // The castles, not the plots: the web is infinite, so measuring the land
+    // would make the floor drop until the map was a dot. What must always fit
+    // is what has been BUILT, plus a ring of room around it to build in.
+    for (final c in widget.castles) {
+      final (x, y, w, h) = c.plot;
+      take(x - widget.web.span, y - widget.web.span,
+           w + widget.web.span * 2, h + widget.web.span * 2);
     }
     return any ? (minX, minY, maxX, maxY) : null;
   }
@@ -130,6 +138,12 @@ class _MapViewState extends State<MapView>
 
   @visibleForTesting
   double get debugTick => _tick;
+
+  /// For tests: which tile is under a screen point. The inverse of
+  /// [debugScreenOf], and what a zoom anchored at the pointer has to keep
+  /// still.
+  @visibleForTesting
+  Offset debugTileAt(Offset local, Size size) => _tileAt(local, size);
 
   @visibleForTesting
   Offset debugScreenOf(double x, double y, Size size) {
@@ -271,12 +285,35 @@ class _MapViewState extends State<MapView>
     return null;
   }
 
+  /// The free plots the viewport covers, in tile space.
+  ///
+  /// The visible region is a diamond in tile coordinates, so this is its
+  /// bounding box — which over-covers, and the painter culls the difference.
+  List<Plot> _visiblePlots(Size size) {
+    final corners = [
+      _tileAt(Offset.zero, size),
+      _tileAt(Offset(size.width, 0), size),
+      _tileAt(Offset(0, size.height), size),
+      _tileAt(Offset(size.width, size.height), size),
+    ];
+    var minX = double.infinity, maxX = -double.infinity;
+    var minY = double.infinity, maxY = -double.infinity;
+    for (final c in corners) {
+      minX = math.min(minX, c.dx);
+      maxX = math.max(maxX, c.dx);
+      minY = math.min(minY, c.dy);
+      maxY = math.max(maxY, c.dy);
+    }
+    return widget.web.visible(
+        Rect.fromLTRB(minX, minY, maxX, maxY), widget.taken);
+  }
+
   Plot? _plotAt(Offset local, Size size) {
     // Castles first: a castle sits ON a plot, and land that is built on is not
     // empty land however the outlines are ordered.
     if (_castleAt(local, size) != null) return null;
     final t = _tileAt(local, size);
-    for (final p in widget.plots) {
+    for (final p in _visiblePlots(size)) {
       final (x, y, w, h) = p.bounds;
       if (t.dx >= x && t.dx < x + w && t.dy >= y && t.dy < y + h) return p;
     }
@@ -313,10 +350,19 @@ class _MapViewState extends State<MapView>
           setState(() {
             final before = _zoom;
             _flight = null;   // the operator took the wheel
-            _zoom = (_zoom * (e.scrollDelta.dy > 0 ? 0.9 : 1.1))
+            // Twice the travel per notch. 1.1 squared and 0.9 squared, so a
+            // notch moves exactly twice as far in the scale the zoom actually
+            // works in — a multiplier, not an amount.
+            _zoom = (_zoom * (e.scrollDelta.dy > 0 ? 0.81 : 1.21))
                 .clamp(_floor(size), _maxZoom);
             final k = _zoom / before;
-            _camera = Offset(_camera.dx * k, _camera.dy * k);
+            // Zoom about the POINTER, not the middle of the window. Scaling
+            // the camera about the centre means the thing you are pointing at
+            // slides away as you zoom towards it, and you chase it with the
+            // drag — which is most of what made the map feel awkward.
+            final d = e.localPosition -
+                Offset(size.width / 2, size.height / 3);
+            _camera = d * (1 - k) + _camera * k;
           });
         },
         child: MouseRegion(
@@ -399,7 +445,7 @@ class _MapViewState extends State<MapView>
                 castles: widget.castles,
                 castleBadges: widget.castleBadges,
                 hoveredCastle: _hoveredCastle,
-                plots: widget.plots,
+                plots: _visiblePlots(size),
                 hoveredPlot: _hoveredPlot,
                 hoveredRoom: _hovered,
                 selectedRoom: widget.selectedRoom,

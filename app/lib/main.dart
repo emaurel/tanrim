@@ -89,7 +89,8 @@ class _WorldPageState extends State<WorldPage> {
   bool _panelOpen = true;
 
   List<Castle> _castles = const [];
-  List<Plot> _plots = const [];
+  Web _web = const Web();
+  Set<(int, int)> _taken = const {};
   List<Map<String, dynamic>> _buildable = const [];
   List<Map<String, dynamic>> _plugins = const [];
   List<String> _kinds = const [];
@@ -335,16 +336,20 @@ class _WorldPageState extends State<WorldPage> {
           .map((c) => Castle.fromJson((c as Map).cast<String, dynamic>())
               .withRooms(_rooms))
           .toList();
-      final plots = ((d['plots'] ?? []) as List)
-          .map((p) => Plot.fromJson((p as Map).cast<String, dynamic>()))
-          .toList();
+      final web = Web.fromJson(
+          ((d['web'] ?? const {}) as Map).cast<String, dynamic>());
+      final taken = {
+        for (final t in ((d['taken'] ?? []) as List))
+          ((t as List)[0] as int, t[1] as int),
+      };
       final buildable = ((d['buildable'] ?? []) as List)
           .map((p) => (p as Map).cast<String, dynamic>())
           .toList();
       if (!mounted) return;
       setState(() {
         _castles = castles;
-        _plots = plots;
+        _web = web;
+        _taken = taken;
         _buildable = buildable;
       });
     } catch (_) {
@@ -475,7 +480,8 @@ class _WorldPageState extends State<WorldPage> {
                   badges: _badges,
                   castles: _castles,
                   castleBadges: _castleBadges,
-                  plots: _plots,
+                  web: _web,
+                  taken: _taken,
                   onPlotTapped: _onPlotTapped,
                   onCastleTapped: _onCastleTapped,
                   selectedRoom: _selected,

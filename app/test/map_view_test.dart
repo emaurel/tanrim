@@ -50,7 +50,9 @@ List<Castle> castlesFrom(
 
 /// Pump a map and hand back its state.
 Future<dynamic> _map(WidgetTester t,
-    {List<Plot> plots = const [],
+    {Web web = const Web(),
+    Set<(int, int)> taken = const {},
+    List<Castle>? castles,
     void Function(int ring, int slot)? onPlotTapped}) async {
   t.view
     ..physicalSize = const Size(1200, 800)
@@ -65,9 +67,10 @@ Future<dynamic> _map(WidgetTester t,
         rooms: _rooms,
         agents: const [],
         badges: const {},
-        castles: _castles,
+        castles: castles ?? _castles,
         castleBadges: const {},
-        plots: plots,
+        web: web,
+        taken: taken,
         onPlotTapped: onPlotTapped,
         onRoomTapped: (_) {},
       ),
@@ -201,14 +204,15 @@ void main() {
     // it asks rather than travels: flying to somewhere that may not get built
     // on is a camera move you did not want.
     final tapped = <(int, int)>[];
-    const plot = Plot(ring: 1, slot: 3, centre: (200, 200), span: 64);
-    final s = await _map(t,
-        plots: const [plot], onPlotTapped: (r, sl) => tapped.add((r, sl)));
+    final s = await _map(t, onPlotTapped: (r, sl) => tapped.add((r, sl)));
 
     await _zoomOut(t, 30);
     final size = t.getSize(find.byType(MapView));
+    // Ring 1 slot 3 is due south of the hub, and nothing is built there.
+    const web = Web();
+    final (px, py) = web.centre(1, 3);
     // ignore: avoid_dynamic_calls
-    await t.tapAt(s.debugScreenOf(200.0, 200.0, size) as Offset);
+    await t.tapAt(s.debugScreenOf(px, py, size) as Offset);
     await t.pump();
 
     expect(tapped, [(1, 3)]);
@@ -220,13 +224,11 @@ void main() {
     // The plots and the castles come from the same geometry, so one sits on
     // the other. Land that is built on is not empty land.
     final tapped = <(int, int)>[];
-    // Deliberately overlapping the castle's own rooms.
-    const plot = Plot(ring: 1, slot: 0, centre: (7, 4), span: 64);
-    final s = await _map(t,
-        plots: const [plot], onPlotTapped: (r, sl) => tapped.add((r, sl)));
+    final s = await _map(t, onPlotTapped: (r, sl) => tapped.add((r, sl)));
 
     await _zoomOut(t, 30);
     final size = t.getSize(find.byType(MapView));
+    // The castle's own rooms sit around (7, 4), which is inside a plot too.
     // ignore: avoid_dynamic_calls
     await t.tapAt(s.debugScreenOf(7.0, 4.0, size) as Offset);
     await t.pump();
@@ -242,8 +244,19 @@ void main() {
     // a promise that stops being true as soon as somebody builds far enough
     // out — past about ring 4 the estate no longer fits at 0.06 and there is
     // no way to pull back further.
-    const distant = Plot(ring: 9, slot: 0, centre: (4000, 4000), span: 64);
-    final s = await _map(t, plots: const [distant]);
+    // A castle far out: the floor is measured from what is BUILT, because the
+    // web of land is infinite and measuring that would shrink the map to a
+    // dot.
+    const web = Web();
+    final (fx, fy) = web.centre(9, 0);
+    final s = await _map(t, castles: [
+      ..._castles,
+      Castle(
+        id: 'far', pluginId: 'p', pluginName: 'P', name: 'Far',
+        ring: 9, slot: 0, centre: (fx, fy), span: 64,
+        records: 0, installed: true, rooms: const [],
+      ),
+    ]);
 
     await _zoomOut(t, 90);
     // ignore: avoid_dynamic_calls
@@ -260,7 +273,7 @@ void main() {
     // ignore: avoid_dynamic_calls
     final near = s.debugScreenOf(0.0, 0.0, size) as Offset;
     // ignore: avoid_dynamic_calls
-    final far = s.debugScreenOf(4032.0, 4032.0, size) as Offset;
+    final far = s.debugScreenOf(fx, fy, size) as Offset;
     expect((far.dy - near.dy).abs(), lessThanOrEqualTo(size.height));
     expect((far.dx - near.dx).abs(), lessThanOrEqualTo(size.width));
   });
@@ -272,5 +285,48 @@ void main() {
     await _zoomOut(t, 90);
     // ignore: avoid_dynamic_calls
     expect(s.debugZoom, closeTo(0.06, 0.0001));
+  });
+
+  testWidgets('the wheel zooms about the pointer, not the middle', (t) async {
+    // Scaling the camera about the centre means the thing you are pointing at
+    // slides away as you zoom towards it, and you chase it with the drag.
+    final s = await _map(t);
+    final size = t.getSize(find.byType(MapView));
+
+    // A point well off-centre, and whatever tile is under it.
+    final under = Offset(size.width * 0.78, size.height * 0.28);
+    // ignore: avoid_dynamic_calls
+    final before = s.debugTileAt(under, size) as Offset;
+
+    final p = TestPointer(1, PointerDeviceKind.mouse);
+    t.binding.handlePointerEvent(p.hover(under));
+    for (var i = 0; i < 4; i++) {
+      t.binding.handlePointerEvent(p.scroll(const Offset(0, -60)));
+      await t.pump();
+    }
+
+    // ignore: avoid_dynamic_calls
+    final after = s.debugTileAt(under, size) as Offset;
+    expect(after.dx, closeTo(before.dx, 0.6));
+    expect(after.dy, closeTo(before.dy, 0.6));
+    // ignore: avoid_dynamic_calls
+    expect(s.debugZoom, greaterThan(1.0), reason: 'it did zoom in');
+  });
+
+  testWidgets('a notch moves twice as far as it used to', (t) async {
+    final s = await _map(t);
+    // ignore: avoid_dynamic_calls
+    final start = s.debugZoom as double;
+
+    final centre = t.getCenter(find.byType(MapView));
+    final p = TestPointer(1, PointerDeviceKind.mouse);
+    t.binding.handlePointerEvent(p.hover(centre));
+    t.binding.handlePointerEvent(p.scroll(const Offset(0, -60)));
+    await t.pump();
+
+    // 1.1 squared: a notch moves exactly twice as far in the scale the zoom
+    // actually works in, which is a multiplier and not an amount.
+    // ignore: avoid_dynamic_calls
+    expect(s.debugZoom, closeTo(start * 1.21, 0.0001));
   });
 }

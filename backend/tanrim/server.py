@@ -501,10 +501,16 @@ async def get_castles() -> dict[str, Any]:
     env = environment.current()
     names = {d["id"]: d.get("name") or d["id"] for d in env.describe()}
 
-    # Bounded. The web itself is infinite — ring n always exists — but the
-    # land OFFERED is the land near what is already built, or one castle out
-    # on ring 50 would list nearly eight thousand empty plots.
-    empty = geom.plots(geom.OFFERED, skip=taken)
+    # The EQUATION, not a list of plots.
+    #
+    # Sending plots meant choosing how many, and any number is wrong: too few
+    # and zooming out reveals nothing new, so the web plainly stops; enough to
+    # fill a zoomed-out view and one castle on ring 50 lists eight thousand
+    # pieces of empty land. The app generates the plots its viewport actually
+    # covers, from these two constants and the list of what is built on, and
+    # gets more of them the further out it zooms — which is the whole point of
+    # an infinite web.
+    web = {"span": geom.PLOT, "ring_spacing": geom.RING_SPACING}
 
     return {
         "castles": [
@@ -515,14 +521,14 @@ async def get_castles() -> dict[str, Any]:
              **geom.plot_for(c.get("ring", 1), c.get("slot", 0))}
             for c in built
         ],
-        "plots": empty,
+        "web": web,
+        "taken": sorted(taken),
         # Only plugins that declare rooms of their own: an extension lives
         # inside the castle of what it extends and cannot have one.
         "buildable": [{"id": d["id"], "name": d.get("name") or d["id"],
                        "description": d.get("description", ""),
                        "built": len(state.castles_of(d["id"]))}
                       for d in env.describe() if d.get("rooms")],
-        "span": geom.PLOT,
     }
 
 
