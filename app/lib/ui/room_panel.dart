@@ -58,7 +58,20 @@ class _RoomPanelState extends State<RoomPanel> {
   Future<void> _load() async {
     try {
       final s = await widget.api.get('/rooms/${widget.room.id}/state');
-      if (mounted) setState(() => _state = s as Map<String, dynamic>);
+      if (mounted) {
+        setState(() {
+          _state = s as Map<String, dynamic>;
+          // A run that was REFUSED after starting reports itself here, not in
+          // `last_error` — the task did not throw, it declined. Half the
+          // refusals in this system are deliberate (a wrong stage, a busy
+          // room, a business holding our email), and every one of them was
+          // invisible: the POST had already answered `ok: true`.
+          final last = _state?['last_result'];
+          if (last is Map && last['ok'] == false && last['error'] != null) {
+            _error = last['error'].toString();
+          }
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _error = e is ApiError ? e.message : '$e');
@@ -74,9 +87,14 @@ class _RoomPanelState extends State<RoomPanel> {
     try {
       final action = _state?['action_name'] as String?;
       if (action == null) return;
+      // `payload`, NESTED. The server reads the action's arguments from
+      // `body.payload`; sent flat they were dropped, the endpoint answered
+      // `ok: true, started: true` because starting the task DID succeed, and
+      // the task then refused itself with "lead_id required" where nothing
+      // was looking. Clicking Run did nothing, visibly or otherwise.
       final out = await widget.api.post(
         '/rooms/${widget.room.id}/action',
-        {'name': action, 'lead_id': recordId},
+        {'name': action, 'payload': {'lead_id': recordId}},
       );
       // A room answers a refusal with `ok: false` and a sentence. Showing it
       // matters more than it sounds: half the refusals in this system are

@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from . import config
 from . import agent_helpers
@@ -330,6 +330,15 @@ async def get_room_state(room_id: str) -> dict[str, Any]:
 
 
 class ActionBody(BaseModel):
+    # Extra fields are REFUSED rather than ignored.
+    #
+    # The app sent `{"name": ..., "lead_id": ...}` for weeks. Pydantic dropped
+    # the stray field, `payload` defaulted to empty, the endpoint answered
+    # `ok: true, started: true` because starting the task did succeed, and the
+    # task refused itself somewhere nothing was looking. A 422 naming the
+    # field would have said so the first time.
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     payload: dict[str, Any] = {}
 

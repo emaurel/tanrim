@@ -572,3 +572,35 @@ def test_every_endpoint_the_frontend_gets_still_answers(real_env):
         if not any(r.matches(scope)[0] != Match.NONE for r in app.routes):
             unmatched.append(shape)
     assert not unmatched, f"no route matches: {unmatched}"
+
+
+def test_a_room_action_refuses_a_body_it_does_not_understand(real_env):
+    """The app sent `{"name": ..., "lead_id": ...}` for weeks.
+
+    Pydantic dropped the stray field, `payload` defaulted to empty, the
+    endpoint answered `ok: true, started: true` — because starting the task
+    genuinely did succeed — and the task refused itself with "lead_id
+    required" somewhere nothing was looking. Clicking Run did nothing, and
+    said nothing either.
+    """
+    from fastapi.testclient import TestClient
+
+    from tanrim.server import app
+
+    with TestClient(app) as c:
+        room = next(r["id"] for r in c.get("/rooms").json()
+                    if (r.get("base_id") or r["id"]) == "factory")
+
+        flat = c.post(f"/rooms/{room}/action",
+                      json={"name": "run_build", "lead_id": "x"})
+        assert flat.status_code == 422, \
+            "a body the server does not understand must be refused, not ignored"
+        assert "lead_id" in flat.text
+
+        # The right shape still reaches the handler, which refuses it on its
+        # own terms rather than on the body's.
+        nested = c.post(f"/rooms/{room}/action",
+                        json={"name": "nope", "payload": {"lead_id": "x"}})
+        assert nested.status_code == 200
+        assert nested.json()["ok"] is False
+        assert "unknown action" in nested.json()["error"]
