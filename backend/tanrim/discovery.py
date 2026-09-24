@@ -78,6 +78,26 @@ def find(directory: Path | None = None) -> list[Plugin]:
     return found
 
 
+def load(directory: Path | str) -> Plugin:
+    """One plugin directory, imported exactly as `find` would import it.
+
+    Public because testing a plugin ALONE is a first-class need — a test that
+    boots everything installed asserts against whatever else happens to be in
+    `plugins/`, and then fails for a good reason the day a second one arrives.
+    Without this the only way in was `_load`, and a plugin template reaching
+    into the core's privates teaches the wrong thing on line one.
+
+    It registers the parent as the package root first, so the plugin's own
+    `from .agents import x` resolves the same way it does at boot.
+    """
+    entry = Path(directory).resolve()
+    _register_package(entry.parent)
+    plugin = _load(entry, entry / "plugin.py")
+    if plugin is None:                      # pragma: no cover - _load raises
+        raise DiscoveryError(f"{entry} is not a plugin")
+    return plugin
+
+
 def _candidates(directory: Path | None = None) -> list[Path]:
     """Every directory that looks like a plugin, enabled or not."""
     directory = Path(directory or PLUGINS_DIR)

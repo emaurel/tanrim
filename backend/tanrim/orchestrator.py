@@ -83,7 +83,7 @@ class Orchestrator:
         # Last stage we saw each record at. Seeded from the board on boot so
         # nothing fires retroactively for work that is already settled; after
         # that, a CHANGE is what triggers the next room.
-        self._lead_stages: dict[str, str] = {
+        self._record_stages: dict[str, str] = {
             record["id"]: record.get("stage", "") for record in state.list_records(limit=10_000)
         }
         # (record_id, stage) pairs already dispatched, so recovery of a stalled
@@ -165,7 +165,7 @@ class Orchestrator:
             )
         return len(orphans)
 
-    async def _advance_leads(self) -> None:
+    async def _advance_records(self) -> None:
         """Move a record to the next room the moment its stage changes.
 
         This is the pipeline's transport, and it is deliberately deterministic.
@@ -188,9 +188,9 @@ class Orchestrator:
         for record in state.list_records(limit=500):
             record_id = record["id"]
             stage = record.get("stage") or ""
-            was = self._lead_stages.get(record_id)
+            was = self._record_stages.get(record_id)
             changed = was != stage
-            self._lead_stages[record_id] = stage
+            self._record_stages[record_id] = stage
             if changed and was is not None:
                 # `stage_changed` is declared and was never fired. The write
                 # itself is synchronous so it cannot await a hook; this is the
@@ -401,7 +401,7 @@ class Orchestrator:
                 # agent, a room, a panel and an approval kind for a capability
                 # nobody reached for is cost without return, so it is gone.
                 # Leads that changed stage → dispatch the room that works it.
-                await _timed("advance_leads", self._advance_leads())
+                await _timed("advance_records", self._advance_records())
                 await _timed("plugin_sweeps", self._plugin_sweeps())
 
                 # Retire ephemeral workers whose record has finished its run

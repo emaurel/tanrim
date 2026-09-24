@@ -420,6 +420,16 @@ TRANSFORM_HOOKS = {
 
 HOOKS = {**BROADCAST_HOOKS, **VETO_HOOKS, **SUPPLIER_HOOKS, **TRANSFORM_HOOKS}
 
+#: Declared here, but fired by a PLUGIN rather than by the core.
+#:
+#: Mail is the example: the core has no mailbox and never will, but two
+#: plugins that both deal with mail need to agree on one name for "something
+#: arrived" — so the vocabulary is shared even though the core never speaks
+#: it. Named explicitly because the alternative is a test asserting every
+#: declared hook is fired somewhere, which passes only while the plugin that
+#: fires it happens to be installed in the same checkout.
+PLUGIN_FIRED = {"inbound_message", "inbound_bounce"}
+
 
 class Plugin(ABC):
     """What the environment asks a plugin.

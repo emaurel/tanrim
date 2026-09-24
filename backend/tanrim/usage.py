@@ -243,7 +243,7 @@ def record_api(sku: str, *, record_id: str | None = None, calls: int = 1,
     return rec
 
 
-def for_lead(record_id: str) -> dict[str, Any]:
+def for_record(record_id: str) -> dict[str, Any]:
     """Everything spent on one record, split by where it went."""
     rows = [r for r in list_records() if r.get("lead_id") == record_id]
     models: dict[str, dict[str, Any]] = {}
@@ -293,10 +293,10 @@ def for_lead(record_id: str) -> dict[str, Any]:
     }
 
 
-def totals_by_lead() -> dict[str, float]:
+def totals_by_record() -> dict[str, float]:
     """Total spent per record, in ONE pass over the ledger.
 
-    `for_lead` filters the whole ledger per call, so a list view asking for 23
+    `for_record` filters the whole ledger per call, so a list view asking for 23
     records scanned 764 records 23 times — which was the slowest part of `/records`
     once everything else was fixed. This is for rows that need only a number.
     """
@@ -309,10 +309,10 @@ def totals_by_lead() -> dict[str, float]:
     return out
 
 
-def by_lead() -> list[dict[str, Any]]:
+def by_record() -> list[dict[str, Any]]:
     """Per-record totals, dearest first. Rows with no record are left out."""
     seen = {r.get("lead_id") for r in list_records() if r.get("lead_id")}
-    return sorted((for_lead(lid) for lid in seen),
+    return sorted((for_record(lid) for lid in seen),
                   key=lambda b: -b["total"])
 
 

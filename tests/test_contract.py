@@ -665,13 +665,19 @@ def test_every_declared_hook_has_somewhere_that_fires_it():
     Five were declared and never called from anywhere: a plugin could
     register `stage_changed` or `inbound_message` and simply never hear
     anything, with no error and nothing to debug.
+
+    `PLUGIN_FIRED` is the exception, and it is named in the contract rather
+    than inferred here: the core has no mailbox, so `inbound_message` is a
+    shared vocabulary that only a plugin ever speaks. Scanning `plugins/` for
+    it made this test pass or fail on which repositories happen to be cloned
+    into this checkout, which is not a property of the contract.
     """
     import re
     from pathlib import Path
 
-    from tanrim.contract import HOOKS
+    from tanrim.contract import HOOKS, PLUGIN_FIRED
 
-    fired = set()
+    fired = set(PLUGIN_FIRED)
     for root in (Path("backend/tanrim"), Path("plugins")):
         for path in root.rglob("*.py"):
             body = path.read_text()

@@ -19,6 +19,21 @@ import pytest
 
 LEADS = Path("state/leads.json")
 
+
+def needs(env, *ids: str) -> None:
+    """Skip unless those plugins are installed.
+
+    Six of the tests below are about `web_agency` and `website_recreation`
+    specifically, and they are here only because those plugins had no suites
+    of their own when the core was pulled away from them. They belong in those
+    repositories; until they move, a checkout without them skips rather than
+    fails, because a public core legitimately has no plugins at all.
+    """
+    have = {p.id for p in env.plugins}
+    missing = [i for i in ids if i not in have]
+    if missing:
+        pytest.skip(f"not installed: {', '.join(missing)}")
+
 #: Kinds that are definitely approval gates rather than some other `kind=`.
 _APPROVAL_LIKE = {
     "publish_site", "send_outreach", "send_followup", "handover",
@@ -29,10 +44,18 @@ _APPROVAL_LIKE = {
 }
 
 
-def test_both_plugins_load_in_dependency_order(real_env):
+def test_a_plugin_that_requires_another_loads_after_it(real_env):
+    """Ordering, asserted from what is installed rather than from two names.
+
+    Naming `web_agency` and `website_recreation` made this test fail on a
+    checkout that has neither — which is every public one, since the plugins
+    are their own private repositories now.
+    """
     ids = [p.id for p in real_env.plugins]
-    assert "web_agency" in ids
-    assert ids.index("web_agency") < ids.index("website_recreation")
+    for plugin in real_env.plugins:
+        for needed in getattr(plugin, "requires", ()):
+            assert needed in ids, f"{plugin.id} requires {needed}, not installed"
+            assert ids.index(needed) < ids.index(plugin.id)
 
 
 def test_every_stage_with_an_edge_is_worked_by_someone(real_env):
@@ -72,6 +95,7 @@ def test_every_gate_the_code_raises_is_declared(real_env):
 
 
 def test_the_port_pipeline_walks_end_to_end(real_env):
+    needs(real_env, "website_recreation")
     path = [("intake", "surveyed"), ("surveyed", "visualised"),
             ("visualised", "built"), ("built", "qa_passed"),
             ("qa_passed", "published"), ("published", "won")]
@@ -81,6 +105,7 @@ def test_the_port_pipeline_walks_end_to_end(real_env):
 
 
 def test_the_prospect_pipeline_walks_end_to_end(real_env):
+    needs(real_env, "web_agency")
     path = [("sourced", "qualified"), ("qualified", "enriched"),
             ("enriched", "appraised"), ("appraised", "visualised"),
             ("visualised", "built"), ("built", "qa_passed"),
@@ -93,6 +118,7 @@ def test_the_prospect_pipeline_walks_end_to_end(real_env):
 
 
 def test_the_two_pipelines_do_not_bleed_into_each_other(real_env):
+    needs(real_env, "web_agency", "website_recreation")
     assert not real_env.can_advance("sourced", "qualified", "port")
     assert not real_env.can_advance("intake", "surveyed", "prospect")
     assert not real_env.can_advance("published", "won", "prospect")
@@ -105,6 +131,7 @@ def test_the_web_agency_plugin_knows_nothing_about_ports(real_env):
     `website_recreation` used to add its bench by editing `web_agency`'s own
     manifests. If that comes back, this fails.
     """
+    needs(real_env, "web_agency", "website_recreation")
     base = next(p for p in real_env.plugins if p.id == "web_agency")
     text = (base.root / "plugin.py").read_text().lower()
     for word in ("port", "intake", "surveyed", "recreation"):
@@ -124,6 +151,7 @@ def test_the_extension_adds_its_jobs_without_replacing_probes(real_env):
     A full `AgentSpec(role="probe", ...)` would have booted just as cleanly
     and silently dropped the three jobs Probe already had.
     """
+    needs(real_env, "web_agency", "website_recreation")
     probe = real_env.agent("probe")
     assert set(probe.jobs) >= {"sourced", "qualified", "enriched", "intake"}
     assert real_env.job_for("probe", "intake") is not None
@@ -323,11 +351,12 @@ def test_the_orchestrator_sweeps_run_without_unresolved_names(real_env, monkeypa
 
     Every lead-reading call is stubbed to return nothing. The earlier version
     ran the real sweeps over `state/leads.json`: `_expire_silence` calls
-    `advance_record(lead, "lost")` on live businesses and `_advance_leads`
+    `advance_record(record, "lost")` on live records and `_advance_records`
     creates tasks that are real, paid agent runs. It was saved only by
     `asyncio.run` closing the loop before those tasks were scheduled. Running
     the suite must not be able to mark a real lead lost.
     """
+    needs(real_env, "web_agency")
     from tanrim import state as state_mod
     from tanrim.orchestrator import Orchestrator
     from tanrim.world import World
@@ -362,7 +391,7 @@ def test_the_orchestrator_sweeps_run_without_unresolved_names(real_env, monkeypa
 
     async def run_them():
         await orch._plugin_sweeps()
-        await orch._advance_leads()
+        await orch._advance_records()
 
     asyncio.run(run_them())
 
@@ -421,7 +450,10 @@ def test_the_core_speaks_of_records_not_leads(real_env):
         body = path.read_text()
         body = body.replace('"lead_id"', "").replace("'lead_id'", "")
         body = body.replace('STATE_DIR / "leads.json"', "")
-        for m in re.finditer(r"\blead(s|_id)?\b", body):
+        # `(?<![A-Za-z])` rather than `\b`: an underscore IS a word
+        # character, so `\blead` never matched `_advance_leads` — which sat in
+        # the orchestrator for months with this test green.
+        for m in re.finditer(r"(?<![A-Za-z])lead(s|_id)?(?![A-Za-z])", body):
             line = body[:m.start()].count("\n") + 1
             offenders.append(f"{path.name}:{line} {m.group(0)}")
     assert not offenders, offenders

@@ -57,7 +57,7 @@ def _somewhere(room_id: str | None = None) -> str:
     return ""
 
 
-def _needs_lead(name: str) -> dict[str, Any]:
+def _needs_record(name: str) -> dict[str, Any]:
     return {"ok": False, "error": f"{name} needs a record_id"}
 
 
@@ -126,7 +126,7 @@ async def _run(env, agent, role: str, world: World, task: dict[str, Any],
 
     record_id = task.get("record_id") or task.get("lead_id")
     if not record_id:
-        return _needs_lead(role)
+        return _needs_record(role)
     record = state.get_record(record_id)
     if record is None:
         return {"ok": False, "error": f"no such record: {record_id}"}

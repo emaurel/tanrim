@@ -175,7 +175,7 @@ def cancel_worker(worker_id: str, reason: str = "") -> bool:
     return True
 
 
-def cancel_lead(record_id: str, reason: str = "") -> list[str]:
+def cancel_record(record_id: str, reason: str = "") -> list[str]:
     """Stop every run currently working this record. Returns the workers stopped.
 
     Called when the operator moves a record by hand. A run takes minutes, and

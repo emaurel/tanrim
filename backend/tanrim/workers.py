@@ -112,7 +112,7 @@ async def acquire(
     return worker.id
 
 
-async def release_lead(world: "World", record_id: str) -> list[str]:
+async def release_record(world: "World", record_id: str) -> list[str]:
     """Retire the ephemeral workers hired for a finished record. Returns the ids
     actually removed. Busy workers are left alone and picked up on a later pass."""
     removed: list[str] = []

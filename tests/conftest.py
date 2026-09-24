@@ -138,6 +138,12 @@ def real_env():
     _drop_caches()
     _forget_modules(Path("plugins"))
     env = environment.boot(discovery.find())
+    if not env.plugins:
+        # A public checkout of the core has none: the plugins are their own,
+        # private repositories. Skipping is the honest answer — an empty
+        # environment is a legitimate state, and asserting against it would
+        # only prove the fixture ran.
+        pytest.skip("no plugins installed; clone one into plugins/ to run these")
     try:
         yield env
     finally:

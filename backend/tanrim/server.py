@@ -363,7 +363,7 @@ async def get_plugins() -> dict[str, Any]:
         "plugins": environment.current().describe(),
         "stages": list(state.STAGES),
         "dead_stages": list(state.DEAD_STAGES),
-        "lead_kinds": list(state.KINDS),
+        "kinds": list(state.KINDS),
         "edges": len(state.PIPELINE),
     }
 
@@ -764,7 +764,7 @@ async def get_pipeline() -> dict[str, Any]:
     return {
         "steps": steps,
         "stages": list(state.STAGES),
-        "lead_kinds": list(state.KINDS),
+        "kinds": list(state.KINDS),
         "dead_stages": sorted(state.DEAD_STAGES),
         "gates": gates,
     }

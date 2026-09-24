@@ -13,10 +13,16 @@ state/secrets.json
 # All regenerable; nothing here is code worth tracking.
 state/
 
-# Agent prompts. These are the part of this project worth keeping private, so
-# the working copies stay local. Each plugin DECLARES the prompts it needs in
-# its `plugin.py`, and the server reports the missing ones at boot — that
-# declaration is committed, the text is not.
+# Installed plugins. Each one is its own repository now, cloned in here — so
+# this checkout can be public while the plugins stay private. Removing them
+# from here does NOT remove them from this repository's history; making it
+# public would still expose everything they once held.
+plugins/
+
+# Agent prompts, wherever they are not inside a plugin. A plugin's own
+# repository tracks its prompts — keeping them out of version control as well
+# as out of a public core meant they lived on one laptop, and a fresh clone
+# booted with 42 missing files.
 prompts/
 
 # Vendored third-party skill data (3.6 MB of CSVs). Re-fetch with:

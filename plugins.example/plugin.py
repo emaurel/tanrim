@@ -2,8 +2,8 @@
 
 It does something trivial — takes a name, has an agent write a greeting, and
 asks you before it counts as done — but it exercises every part of the
-contract: a pipeline, a room with a bench, an agent with a job, a gate, a tool,
-a hook, a record schema, prompts and a self-check.
+contract: a pipeline, a room with a bench, an agent with a job, a gate, a
+hook, a record schema, prompts and a self-check.
 
 Copy this directory, rename it, and replace the contents. Nothing else in the
 environment needs to change: installing a plugin is putting it in `plugins/`.

@@ -341,7 +341,7 @@ class _WorldPageState extends State<WorldPage> {
       if (!mounted) return;
       setState(() {
         _plugins = list;
-        _kinds = ((d['lead_kinds'] ?? []) as List).cast<String>();
+        _kinds = ((d['kinds'] ?? []) as List).cast<String>();
       });
     } catch (_) {
       // The map still works without them; it just cannot group.
