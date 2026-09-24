@@ -494,6 +494,37 @@ async def _world_changed() -> dict[str, Any]:
     return moved
 
 
+@app.get("/records/{record_id}/view")
+async def get_record_view(record_id: str) -> dict[str, Any]:
+    """One record, as blocks the app knows how to draw.
+
+    The environment does not know what a record IS — a dossier with cited
+    prices, a job posting, a port survey — so it asks the plugin that owns the
+    record's kind and falls back to inferring a view from the JSON. Either way
+    the app never learns what any of it means.
+    """
+    from . import view as view_mod
+
+    record = state.get_record(record_id)
+    if record is None:
+        raise HTTPException(404, "no such record")
+
+    kind = state.record_kind(record)
+    blocks = environment.current().record_view(record, kind)
+    return {
+        "id": record_id,
+        "name": record.get("name", ""),
+        "kind": kind,
+        "stage": record.get("stage", ""),
+        "castle_id": state.home_castle_for(record),
+        "updated_ts": record.get("updated_ts"),
+        # The history is the machine's own record and is built here for every
+        # kind, so a plugin cannot forget the one part of a record that is
+        # always answerable.
+        "blocks": [*blocks, view_mod.timeline(record)],
+    }
+
+
 @app.get("/castles")
 async def get_castles() -> dict[str, Any]:
     """Every castle, the plots around them, and what can be built.

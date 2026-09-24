@@ -482,6 +482,35 @@ class Plugin(ABC):
         """
         return ()
 
+    def record_view(self, record: "dict[str, Any]", kind: str
+                    ) -> "list[dict[str, Any]] | None":
+        """How ONE record should be shown, as a list of `view` blocks.
+
+        The app is a compiled binary, so a plugin cannot ship rendering code —
+        whatever it sends has to be data. `tanrim.view` is the vocabulary: a
+        small fixed set of blocks the app knows how to draw, with variety in a
+        per-value `format` rather than in more block types.
+
+        Returning None — the default — means the environment INFERS a view
+        from the record's own shape. That is deliberately the floor rather
+        than an error: an early plugin gets a usable record window before
+        anyone has written a line of presentation, and `view.infer` is
+        importable, so a plugin can lay out the parts it cares about and hand
+        the rest back to inference.
+
+        `kind` is the pipeline the record is on, so two plugins answer the same
+        question differently — a port renders against the plugin that invented
+        porting, a prospect against the one that invented prospecting, and
+        neither knows the other exists.
+
+        The HISTORY is not yours to render. It is the state machine's own
+        record, appended by the same write that moved the record, and the
+        environment builds a timeline from it for every kind. A plugin cannot
+        know it better and a plugin that forgot it would leave the one part of
+        a record that is always answerable unanswered.
+        """
+        return None
+
     def overseer(self) -> str:
         """The role an agent escalates to, and reports to. Empty for none.
 

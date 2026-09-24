@@ -12,6 +12,7 @@ import 'ui/approvals.dart';
 import 'ui/castle_dialogs.dart';
 import 'ui/castle_panel.dart';
 import 'ui/kingdom.dart';
+import 'ui/record_window.dart';
 import 'ui/windows.dart';
 import 'ui/map_view.dart';
 import 'ui/room_panel.dart';
@@ -714,6 +715,7 @@ class _WorldPageState extends State<WorldPage> {
           },
           onOpenRecord: (recordId) {
             setState(() => _selectedRecord = recordId);
+            _open('record:$recordId');
           },
         ),
       );
@@ -737,11 +739,33 @@ class _WorldPageState extends State<WorldPage> {
           stages: _stages,
           deadStages: _deadStages,
           selectedRecord: _selectedRecord,
-          onTapRecord: (r) => setState(() => _selectedRecord = r.id),
+          onTapRecord: (r) {
+            setState(() => _selectedRecord = r.id);
+            _open('record:${r.id}');
+          },
           onRaze: () => _askRaze(castle),
           onOpenRoom: (r) {
             setState(() => _selected = r.id);
             _open('room:${r.id}');
+          },
+        ),
+      );
+    }
+    if (id.startsWith('record:')) {
+      final recordId = id.substring(7);
+      final row = _records.where((r) => r.id == recordId).firstOrNull;
+      return AppWindow(
+        id: id,
+        title: row?.name ?? 'Record',
+        icon: Icons.description_outlined,
+        subtitle: row?.kind ?? '',
+        initialSize: const Size(520, 700),
+        child: RecordWindow(
+          api: _api!,
+          recordId: recordId,
+          onOpenRoom: (roomId) {
+            setState(() => _selected = roomId);
+            _open('room:$roomId');
           },
         ),
       );
@@ -760,6 +784,10 @@ class _WorldPageState extends State<WorldPage> {
           api: _api!,
           room: room,
           here: agents.where((a) => a.roomId == room.id).toList(),
+          onOpenRecord: (recordId) {
+            setState(() => _selectedRecord = recordId);
+            _open('record:$recordId');
+          },
           onChanged: () async {
             await _loadBoard();
             await _loadApprovals();

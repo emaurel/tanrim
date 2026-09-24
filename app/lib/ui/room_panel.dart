@@ -17,6 +17,7 @@ class RoomPanel extends StatefulWidget {
     required this.room,
     required this.here,
     required this.onChanged,
+    this.onOpenRecord,
   });
 
   final Api api;
@@ -27,6 +28,10 @@ class RoomPanel extends StatefulWidget {
 
   /// Something happened that the rest of the app should reload.
   final VoidCallback onChanged;
+
+  /// Open the record itself. A queue row names a piece of work and was the
+  /// one place you could see it without being able to look at it.
+  final void Function(String recordId)? onOpenRecord;
 
   @override
   State<RoomPanel> createState() => _RoomPanelState();
@@ -264,6 +269,16 @@ class _RoomPanelState extends State<RoomPanel> {
   }
 
   Widget _queueRow(WorkRecord r, bool blocked, [Map<String, dynamic>? run]) {
+    return InkWell(
+      onTap: widget.onOpenRecord == null
+          ? null
+          : () => widget.onOpenRecord!(r.id),
+      borderRadius: BorderRadius.circular(6),
+      child: _queueBody(r, blocked, run),
+    );
+  }
+
+  Widget _queueBody(WorkRecord r, bool blocked, Map<String, dynamic>? run) {
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),

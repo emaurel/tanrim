@@ -830,6 +830,16 @@ def advance_record(
         items: list[dict[str, Any]] = _read(RECORDS_FILE)
         for r in items:
             if r["id"] == record_id:
+                # Which fields this step actually PRODUCED. Names only: the
+                # values are on the record already, and a second copy per
+                # transition would double a ledger that is 2.6 MB.
+                #
+                # Compared rather than listed, because a step that rewrites a
+                # field identically has produced nothing — "Probe wrote six
+                # fields" is noise where "Probe produced the dossier" is the
+                # answer. Entries written before this exist simply have no
+                # `wrote`, and the timeline leaves that line out.
+                wrote = sorted(k for k, v in fields.items() if r.get(k) != v)
                 r.update(fields)
                 r["history"] = list(r.get("history") or [])
                 r["history"].append({
@@ -838,6 +848,7 @@ def advance_record(
                     "stage": stage,
                     "agent": agent,
                     "note": note[:400],
+                    **({"wrote": wrote} if wrote else {}),
                     **({"off_table": True} if _off_table else {}),
                 })
                 r["stage"] = stage

@@ -174,6 +174,7 @@ class Environment:
             self._answers[p.id] = {
                 "pipelines": list(p.pipelines()),
                 "record_model": p.record_model(),
+                "record_view": p.record_view,
                 "rooms": list(p.rooms()),
                 "agents": list(p.agents()),
                 "gates": list(p.gates()),
@@ -469,6 +470,27 @@ class Environment:
     def entry(self, kind: str) -> str:
         pipe = self._pipelines.get(kind)
         return pipe.entry if pipe else ""
+
+    def record_view(self, record: "dict[str, Any]", kind: str
+                    ) -> "list[dict[str, Any]]":
+        """One record as blocks: the owning plugin's answer, or an inferred one.
+
+        Asked of the plugins that own the KIND first, in the same order and
+        for the same reason as `prompt` — an extension overrides what it
+        extends without either knowing about the other. The first plugin to
+        answer wins; nobody answering falls through to inference, which is why
+        a plugin with no view still opens.
+        """
+        from . import view as view_mod
+
+        for plugin in self._owns_kind.get(kind, []) + list(self.plugins):
+            answer = self._answers.get(plugin.id, {}).get("record_view")
+            if answer is None:
+                continue
+            blocks = answer(record, kind)
+            if blocks:
+                return list(blocks)
+        return view_mod.infer(record)
 
     def record_model(self, kind: str) -> Any | None:
         return self._models.get(kind)
