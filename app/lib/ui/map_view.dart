@@ -49,10 +49,10 @@ class MapView extends StatefulWidget {
   final void Function(Castle)? onCastleTapped;
 
   @override
-  State<MapView> createState() => _MapViewState();
+  State<MapView> createState() => MapViewState();
 }
 
-class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
+class MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
   final _iso = const Iso();
 
   /// Far enough out to see an estate of castles, close enough to read a
@@ -126,6 +126,17 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
   static const _maxZoom = 3.0;
 
   bool get _far => _zoom < WorldPainter.farZoom;
+
+  /// Travel to a castle from outside the map.
+  ///
+  /// The Kingdom window lists castles, and clicking one should take you
+  /// there — a panel about somewhere you cannot see is half an answer.
+  void flyToCastle(Castle castle) {
+    final size = context.size;
+    if (size == null) return;
+    final (x, y, w, h) = castle.bounds;
+    setState(() => _flyTo(x, y, w, h, size));
+  }
 
   /// For tests: the camera's current zoom.
   @visibleForTesting

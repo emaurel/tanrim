@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:tanrim/model/castle.dart';
+import 'package:tanrim/model/record.dart';
 import 'package:tanrim/model/world.dart';
 import 'package:tanrim/ui/castle_dialogs.dart';
 import 'package:tanrim/ui/castle_panel.dart';
@@ -37,6 +38,7 @@ Future<void> _panel(
   Future<String> Function(String)? onRename,
   Future<void> Function()? onRaze,
   void Function(Room)? onOpenRoom,
+  List<WorkRecord> records = const [],
 }) async {
   t.view
     ..physicalSize = const Size(520, 900)
@@ -53,6 +55,10 @@ Future<void> _panel(
         onRename: onRename ?? (_) async => '',
         onRaze: onRaze ?? () async {},
         onOpenRoom: onOpenRoom ?? (_) {},
+        records: records,
+        stages: const ['sourced', 'qualified'],
+        deadStages: const ['lost'],
+        onTapRecord: (_) {},
       ),
     ),
   ));

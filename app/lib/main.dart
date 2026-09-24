@@ -9,9 +9,10 @@ import 'model/castle.dart';
 import 'model/record.dart';
 import 'model/world.dart';
 import 'ui/approvals.dart';
-import 'ui/board.dart';
 import 'ui/castle_dialogs.dart';
 import 'ui/castle_panel.dart';
+import 'ui/kingdom.dart';
+import 'ui/windows.dart';
 import 'ui/map_view.dart';
 import 'ui/room_panel.dart';
 import 'ui/settings.dart';
@@ -77,18 +78,35 @@ class _WorldPageState extends State<WorldPage> {
   List<WorkRecord> _records = const [];
   List<String> _stages = const [];
   List<String> _deadStages = const [];
-  Map<String, int> _counts = const {};
   String? _selectedRecord;
   String? _selectedCastle;
 
   List<Approval> _approvals = const [];
 
-  /// Which pane the right-hand column is showing.
-  _Pane _pane = _Pane.board;
+  /// Which windows are open, back to front by the order they were opened.
+  ///
+  /// Ids rather than widgets: what a window SHOWS is rebuilt from live state
+  /// on every frame, and holding the widget would freeze it at the moment it
+  /// was opened.
+  final List<String> _windows = ['kingdom'];
 
-  /// The right column folds away. The map is the thing worth looking at when
-  /// nothing needs deciding, and on a narrow window the panel takes most of it.
-  bool _panelOpen = true;
+  /// So the Kingdom window can move the camera: clicking a castle there should
+  /// take you to it, not just open a panel about somewhere you cannot see.
+  final GlobalKey<MapViewState> _mapKey = GlobalKey<MapViewState>();
+
+  void _open(String id) {
+    if (_windows.contains(id)) {
+      // Already open: bring it to the front rather than opening a second.
+      setState(() {
+        _windows.remove(id);
+        _windows.add(id);
+      });
+      return;
+    }
+    setState(() => _windows.add(id));
+  }
+
+  void _close(String id) => setState(() => _windows.remove(id));
 
   List<Castle> _castles = const [];
   Web _web = const Web();
@@ -214,8 +232,6 @@ class _WorldPageState extends State<WorldPage> {
             .toList();
         _stages = ((b['stages'] ?? []) as List).cast<String>();
         _deadStages = ((b['dead_stages'] ?? []) as List).cast<String>();
-        _counts = ((b['counts'] ?? {}) as Map)
-            .map((k, v) => MapEntry(k as String, (v as num).toInt()));
       });
     } catch (_) {
       // A board that will not load is not worth killing the map for.
@@ -397,23 +413,18 @@ class _WorldPageState extends State<WorldPage> {
   /// records, what it is an instance of — and a modal that asks for a name and
   /// goes away can hold none of that.
   void _onCastleTapped(Castle castle) {
-    setState(() {
-      _selectedCastle = castle.id;
-      _pane = _Pane.castle;
-      _panelOpen = true;
-    });
+    setState(() => _selectedCastle = castle.id);
+    _open('castle:${castle.id}');
   }
 
   Future<void> _askRaze(Castle castle) async {
     if (!await confirmRaze(context, castle)) return;
     final said = await _razeCastle(castle.id);
     if (!mounted) return;
-    setState(() {
-      if (_selectedCastle == castle.id) {
-        _selectedCastle = null;
-        _pane = _Pane.board;
-      }
-    });
+    _close('castle:${castle.id}');
+    if (_selectedCastle == castle.id) {
+      setState(() => _selectedCastle = null);
+    }
     _say(said);
   }
 
@@ -484,8 +495,6 @@ class _WorldPageState extends State<WorldPage> {
   @override
   Widget build(BuildContext context) {
     final agents = _live?.agents.values.toList() ?? const <AgentState>[];
-    final selected =
-        _rooms.where((r) => r.id == _selected).cast<Room?>().firstOrNull;
 
     return Scaffold(
       body: !_connected
@@ -496,6 +505,7 @@ class _WorldPageState extends State<WorldPage> {
           : Stack(children: [
               Positioned.fill(
                 child: MapView(
+                  key: _mapKey,
                   rooms: _rooms,
                   agents: agents,
                   badges: _badges,
@@ -506,74 +516,18 @@ class _WorldPageState extends State<WorldPage> {
                   onPlotTapped: _onPlotTapped,
                   onCastleTapped: _onCastleTapped,
                   selectedRoom: _selected,
-                  onRoomTapped: (r) => setState(() {
-                    _selected = r.id;
-                    _pane = _Pane.room;
-                    _panelOpen = true;
-                  }),
+                  onRoomTapped: (r) {
+                    setState(() => _selected = r.id);
+                    _open('room:${r.id}');
+                  },
                 ),
               ),
-              if (_panelOpen)
-                Positioned(
-                  top: 0,
-                  right: 0,
-                  bottom: 0,
-                  width: 400,
-                  child: Material(
-                    color: const Color(0xFF161922),
-                    elevation: 8,
-                    child: Column(children: [
-                      _tabs(),
-                      Expanded(
-                        child: switch (_pane) {
-                          _Pane.approvals => Approvals(
-                              api: _api!,
-                              approvals: _approvals,
-                              onResolved: () async {
-                                await _loadApprovals();
-                                await _loadBoard();
-                              },
-                              onOpenRecord: (id) => setState(() {
-                                _selectedRecord = id;
-                                _pane = _Pane.board;
-                              }),
-                            ),
-                          _Pane.room when selected != null => RoomPanel(
-                              api: _api!,
-                              room: selected,
-                              here: agents
-                                  .where((a) => a.roomId == selected.id)
-                                  .toList(),
-                              onClose: () =>
-                                  setState(() => _pane = _Pane.board),
-                              onChanged: () async {
-                                await _loadBoard();
-                                await _loadApprovals();
-                              },
-                            ),
-                          _Pane.castle when _castleById(_selectedCastle) !=
-                                  null =>
-                            CastlePanel(
-                              castle: _castleById(_selectedCastle)!,
-                              rooms: _rooms,
-                              badges: _badges,
-                              onClose: () =>
-                                  setState(() => _pane = _Pane.board),
-                              onRename: (name) =>
-                                  _renameCastle(_selectedCastle!, name),
-                              onRaze: () =>
-                                  _askRaze(_castleById(_selectedCastle)!),
-                              onOpenRoom: (r) => setState(() {
-                                _selected = r.id;
-                                _pane = _Pane.room;
-                              }),
-                            ),
-                          _ => _boardPane(),
-                        },
-                      ),
-                    ]),
-                  ),
+              Positioned.fill(
+                child: WindowLayer(
+                  windows: _openWindows(agents),
+                  onClose: _close,
                 ),
+              ),
               _controls(),
             ]),
     );
@@ -670,22 +624,148 @@ class _WorldPageState extends State<WorldPage> {
   Widget _controls() {
     return Positioned(
       top: 10,
-      right: _panelOpen ? 412 : 12,
+      left: 12,
       child: Row(children: [
-        _round(
-          icon: _panelOpen ? Icons.chevron_right : Icons.chevron_left,
-          tip: _panelOpen ? 'hide the panel' : 'show the panel',
-          onTap: () => setState(() => _panelOpen = !_panelOpen),
-          badge: _panelOpen ? 0 : _approvals.length,
-        ),
-        const SizedBox(width: 8),
         _round(
           icon: Icons.menu,
           tip: 'settings',
           onTap: () => _settings().open(context),
         ),
+        const SizedBox(width: 8),
+        _round(
+          icon: Icons.castle_outlined,
+          tip: 'the kingdom',
+          onTap: () => _open('kingdom'),
+        ),
+        const SizedBox(width: 8),
+        _round(
+          icon: Icons.how_to_vote_outlined,
+          tip: 'approvals',
+          onTap: () => _open('approvals'),
+          badge: _approvals.length,
+        ),
       ]),
     );
+  }
+
+  /// The open windows, rebuilt from live state every frame.
+  List<AppWindow> _openWindows(List<AgentState> agents) {
+    final out = <AppWindow>[];
+    for (final id in _windows) {
+      final w = _window(id, agents);
+      if (w != null) out.add(w);
+    }
+    return out;
+  }
+
+  AppWindow? _window(String id, List<AgentState> agents) {
+    if (id == 'kingdom') {
+      return AppWindow(
+        id: id,
+        title: 'Kingdom',
+        icon: Icons.castle_outlined,
+        subtitle: '${_castles.length} castles',
+        initialSize: const Size(380, 480),
+        child: Kingdom(
+          castles: _castles,
+          badges: _castleBadges,
+          onOpen: _goToCastle,
+          onBuild: _buildAnywhere,
+        ),
+      );
+    }
+    if (id == 'approvals') {
+      return AppWindow(
+        id: id,
+        title: 'Approvals',
+        icon: Icons.how_to_vote_outlined,
+        subtitle: _approvals.isEmpty ? 'none' : '${_approvals.length} waiting',
+        initialSize: const Size(560, 640),
+        child: Approvals(
+          api: _api!,
+          approvals: _approvals,
+          onResolved: () async {
+            await _loadApprovals();
+            await _loadBoard();
+          },
+          onOpenRecord: (recordId) {
+            setState(() => _selectedRecord = recordId);
+          },
+        ),
+      );
+    }
+    if (id.startsWith('castle:')) {
+      final castle = _castleById(id.substring(7));
+      if (castle == null) return null;
+      return AppWindow(
+        id: id,
+        title: castle.name,
+        icon: Icons.castle_outlined,
+        subtitle: castle.pluginName,
+        initialSize: const Size(460, 620),
+        child: CastlePanel(
+          castle: castle,
+          rooms: _rooms,
+          badges: _badges,
+          records: _records,
+          stages: _stages,
+          deadStages: _deadStages,
+          selectedRecord: _selectedRecord,
+          onTapRecord: (r) => setState(() => _selectedRecord = r.id),
+          onClose: () => _close(id),
+          onRename: (name) => _renameCastle(castle.id, name),
+          onRaze: () => _askRaze(castle),
+          onOpenRoom: (r) {
+            setState(() => _selected = r.id);
+            _open('room:${r.id}');
+          },
+        ),
+      );
+    }
+    if (id.startsWith('room:')) {
+      final roomId = id.substring(5);
+      final room = _rooms.where((r) => r.id == roomId).cast<Room?>().firstOrNull;
+      if (room == null) return null;
+      return AppWindow(
+        id: id,
+        title: room.name,
+        icon: Icons.meeting_room_outlined,
+        subtitle: _castleById(room.castleId)?.name ?? '',
+        initialSize: const Size(460, 620),
+        child: RoomPanel(
+          api: _api!,
+          room: room,
+          here: agents.where((a) => a.roomId == room.id).toList(),
+          onClose: () => _close(id),
+          onChanged: () async {
+            await _loadBoard();
+            await _loadApprovals();
+          },
+        ),
+      );
+    }
+    return null;
+  }
+
+  /// Open a castle: travel to it on the map, and open its window.
+  void _goToCastle(Castle castle) {
+    _mapKey.currentState?.flyToCastle(castle);
+    setState(() => _selectedCastle = castle.id);
+    _open('castle:${castle.id}');
+  }
+
+  /// Build on the first free plot, chosen by the server.
+  Future<void> _buildAnywhere() async {
+    final chosen = await askWhatToBuild(context,
+        buildable: _buildable, ring: 0, slot: 0);
+    if (chosen == null || !mounted) return;
+    final api = _api;
+    if (api == null) return;
+    final out =
+        (await api.post('/castles', {'plugin': chosen})) as Map<String, dynamic>;
+    final said = await _afterPluginChange(
+        out, () => 'built ${(out['castle'] as Map)['name']}');
+    if (mounted) _say(said);
   }
 
   Widget _round({
@@ -732,99 +812,8 @@ class _WorldPageState extends State<WorldPage> {
   /// The right-hand column's tabs. Approvals carries a count, because a gate
   /// nobody notices is a gate that does not work — the whole design assumes
   /// the operator can walk away and be called back.
-  Widget _tabs() {
-    final pending = _approvals.length;
-    return Container(
-      color: const Color(0xFF191C24),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      child: Row(
-        children: [
-          _tab('Board', _Pane.board),
-          _tab('Approvals', _Pane.approvals, count: pending),
-          if (_selected != null) _tab('Room', _Pane.room),
-          if (_castleById(_selectedCastle) != null)
-            _tab('Castle', _Pane.castle),
-        ],
-      ),
-    );
-  }
-
-  Widget _tab(String label, _Pane pane, {int count = 0}) {
-    final on = _pane == pane;
-    return Padding(
-      padding: const EdgeInsets.only(right: 4),
-      child: TextButton(
-        onPressed: () => setState(() => _pane = pane),
-        style: TextButton.styleFrom(
-          backgroundColor: on ? Colors.white12 : Colors.transparent,
-          foregroundColor: on ? Colors.white : Colors.white54,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          minimumSize: const Size(0, 34),
-        ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Text(label, style: const TextStyle(fontSize: 13)),
-          if (count > 0) ...[
-            const SizedBox(width: 6),
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE23D3D),
-                borderRadius: BorderRadius.circular(9),
-              ),
-              child: Text('$count',
-                  style: const TextStyle(
-                      fontSize: 11,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700)),
-            ),
-          ],
-        ]),
-      ),
-    );
-  }
-
-  Widget _boardPane() {
-    return Container(
-      color: const Color(0xFF161922),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 8, 2),
-            child: Row(
-              children: [
-                Text('${_records.length} records',
-                    style: const TextStyle(color: Colors.white38)),
-                const Spacer(),
-                IconButton(
-                  tooltip: 'reload',
-                  onPressed: () async {
-                    await _loadBoard();
-                    await _loadApprovals();
-                  },
-                  icon: const Icon(Icons.refresh, size: 18),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: Board(
-              records: _records,
-              stages: _stages,
-              deadStages: _deadStages,
-              counts: _counts,
-              selectedId: _selectedRecord,
-              onTapRecord: (r) => setState(() => _selectedRecord = r.id),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 
 
 }
 
 /// Which pane the right-hand column shows.
-enum _Pane { board, approvals, room, castle }

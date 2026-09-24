@@ -232,10 +232,23 @@ def _home_castle() -> dict[str, str]:
 
     if not environment.booted():
         return {}
+    described = environment.current().describe()
     owner: dict[str, str] = {}
-    for described in environment.current().describe():
-        for kind in described.get("pipelines") or ():
-            owner.setdefault(kind, described["id"])
+    #: An extension has no castle of its own — it lives inside the castle of
+    #: what it extends — so its kinds resolve there. Without this, a record of
+    #: an extension's kind belonged to no castle at all and appeared on no
+    #: board.
+    extends: dict[str, list[str]] = {
+        d["id"]: list(d.get("requires") or ()) for d in described}
+    has_rooms = {d["id"] for d in described if d.get("rooms")}
+    for d in described:
+        home = d["id"]
+        if home not in has_rooms:
+            home = next((r for r in extends.get(d["id"], ())
+                         if r in has_rooms), home)
+        for kind in d.get("pipelines") or ():
+            owner.setdefault(kind, home)
+
     first: dict[str, str] = {}
     for castle in list_castles():
         first.setdefault(castle.get("plugin", ""), castle["id"])
@@ -958,6 +971,11 @@ def record_summary(record: dict[str, Any]) -> dict[str, Any]:
                 out[k] = v
         except (TypeError, orjson.JSONEncodeError):
             pass
+    # Which castle this belongs to, RESOLVED. A record written before castles
+    # existed carries none of its own and inherits one from its stage, so a
+    # board that split on the raw field would file most of the work under
+    # nothing.
+    out["castle_id"] = home_castle_for(record)
     hist = record.get("history") or []
     out["history_len"] = len(hist)
     last = hist[-1] if hist else None

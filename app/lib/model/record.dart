@@ -12,6 +12,11 @@ class WorkRecord {
   String get id => raw['id'] as String;
   String get stage => (raw['stage'] ?? '') as String;
   String get kind => (raw['kind'] ?? '') as String;
+
+  /// Which castle it belongs to. Resolved server-side, because a record
+  /// written before castles existed carries none of its own and inherits one
+  /// from its stage.
+  String get castleId => (raw['castle_id'] ?? '') as String;
   String get name => (raw['name'] ?? raw['id']) as String;
 
   double get updated => (raw['updated_ts'] ?? raw['ts'] ?? 0).toDouble();
@@ -21,7 +26,8 @@ class WorkRecord {
   /// keeps a new plugin's records readable with no app change.
   Map<String, String> get summary {
     const skip = {
-      'id', 'ts', 'updated_ts', 'stage', 'kind', 'name', 'history_len',
+      'id', 'ts', 'updated_ts', 'stage', 'kind', 'castle_id', 'name',
+      'history_len',
       'last', 'source',
     };
     final out = <String, String>{};
