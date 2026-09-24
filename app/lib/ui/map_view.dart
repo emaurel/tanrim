@@ -54,7 +54,64 @@ class _MapViewState extends State<MapView>
 
   /// Far enough out to see an estate of castles, close enough to read a
   /// bench. The old floor of 0.2 never reached the estate view.
-  static const _minZoom = 0.06;
+  /// The zoom floor for a small world.
+  ///
+  /// Not the floor full stop — see [_floor]. The web of plots is infinite by
+  /// construction, so a fixed floor is a promise that stops being true as soon
+  /// as somebody builds far enough out: past about ring 4 the whole estate no
+  /// longer fits on screen at 0.06 and there is no way to pull back further.
+  static const _baseMinZoom = 0.06;
+
+  /// The zoom at which everything that exists fits on screen, or
+  /// [_baseMinZoom] — whichever is further out.
+  ///
+  /// Recomputed from the world rather than held as a constant, so "zoom all
+  /// the way out" always means "show me everything" however far the map has
+  /// grown. It only ever LOWERS the floor: a two-castle world still stops at
+  /// 0.06 rather than letting you zoom into the middle distance and lose the
+  /// map entirely.
+  double _floor(Size size) {
+    final b = _worldBounds();
+    if (b == null) return _baseMinZoom;
+    final (minX, minY, maxX, maxY) = b;
+    final w = maxX - minX, h = maxY - minY;
+    if (w <= 0 || h <= 0) return _baseMinZoom;
+    final fit = math.min(size.width * 0.92 / w, size.height * 0.80 / h);
+    return math.min(_baseMinZoom, fit);
+  }
+
+  /// The screen-space box around everything on the map — rooms, castles and
+  /// the empty land being offered.
+  (double, double, double, double)? _worldBounds() {
+    var minX = double.infinity, maxX = -double.infinity;
+    var minY = double.infinity, maxY = -double.infinity;
+    var any = false;
+
+    void take(double x, double y, double w, double h) {
+      any = true;
+      for (final c in [
+        _iso.toScreen(x, y),
+        _iso.toScreen(x + w, y),
+        _iso.toScreen(x + w, y + h),
+        _iso.toScreen(x, y + h),
+      ]) {
+        minX = math.min(minX, c.dx);
+        maxX = math.max(maxX, c.dx);
+        minY = math.min(minY, c.dy);
+        maxY = math.max(maxY, c.dy);
+      }
+    }
+
+    for (final r in widget.rooms) {
+      take(r.position.x, r.position.y, r.size.x, r.size.y);
+    }
+    for (final p in widget.plots) {
+      final (x, y, w, h) = p.bounds;
+      take(x, y, w, h);
+    }
+    return any ? (minX, minY, maxX, maxY) : null;
+  }
+
   static const _maxZoom = 3.0;
 
   bool get _far => _zoom < WorldPainter.farZoom;
@@ -135,10 +192,11 @@ class _MapViewState extends State<MapView>
       minY = c.dy < minY ? c.dy : minY;
       maxY = c.dy > maxY ? c.dy : maxY;
     }
+    final floor = _floor(size);
     final fit = ((size.width * 0.86) / (maxX - minX))
-        .clamp(_minZoom, _maxZoom);
+        .clamp(floor, _maxZoom);
     final fitY = ((size.height * 0.72) / (maxY - minY))
-        .clamp(_minZoom, _maxZoom);
+        .clamp(floor, _maxZoom);
     final z = (fit < fitY ? fit : fitY).toDouble();
     final centre = Offset((minX + maxX) / 2, (minY + maxY) / 2);
     _flight = _Flight(
@@ -187,8 +245,9 @@ class _MapViewState extends State<MapView>
     }
     final w = maxX - minX, h = maxY - minY;
     if (w <= 0 || h <= 0) return;
-    final fit = (size.width * 0.92 / w).clamp(_minZoom, _maxZoom);
-    final fitY = (size.height * 0.80 / h).clamp(_minZoom, _maxZoom);
+    final floor = _floor(size);
+    final fit = (size.width * 0.92 / w).clamp(floor, _maxZoom);
+    final fitY = (size.height * 0.80 / h).clamp(floor, _maxZoom);
     _zoom = fit < fitY ? fit : fitY;
     final centre = Offset((minX + maxX) / 2, (minY + maxY) / 2);
     _camera = Offset(-centre.dx * _zoom, -centre.dy * _zoom);
@@ -255,7 +314,7 @@ class _MapViewState extends State<MapView>
             final before = _zoom;
             _flight = null;   // the operator took the wheel
             _zoom = (_zoom * (e.scrollDelta.dy > 0 ? 0.9 : 1.1))
-                .clamp(_minZoom, _maxZoom);
+                .clamp(_floor(size), _maxZoom);
             final k = _zoom / before;
             _camera = Offset(_camera.dx * k, _camera.dy * k);
           });
@@ -293,7 +352,7 @@ class _MapViewState extends State<MapView>
               setState(() {
                 if (d.scale != 1.0) {
                   _zoom =
-                      (_zoomAnchor * d.scale).clamp(_minZoom, _maxZoom);
+                      (_zoomAnchor * d.scale).clamp(_floor(size), _maxZoom);
                 }
                 _camera = d.localFocalPoint - _dragAnchor;
               });

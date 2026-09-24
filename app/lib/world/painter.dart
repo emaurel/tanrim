@@ -79,10 +79,55 @@ class WorldPainter extends CustomPainter {
   /// picture.
   bool get far => zoom < farZoom;
 
+  /// Close enough for a label to be worth reading.
+  ///
+  /// The middle step. Between this and [farZoom] the rooms are still drawn —
+  /// the LAYOUT is the useful thing at that distance, and it is what tells one
+  /// castle from another — but nothing is lettered, because 13px of text at
+  /// 0.45 zoom is six pixels of grey fuzz over the thing you are looking at.
+  static const labelZoom = 0.62;
+
+  bool get labelled => zoom >= labelZoom;
+
   static const _wallHeight = 1.4;
+
+  /// What is on screen, in world coordinates, with a margin.
+  ///
+  /// Everything is culled against this. The web of plots is infinite by
+  /// construction, and even the bounded slice the server offers is 120
+  /// diamonds most of which are nowhere near the camera — drawing them all is
+  /// work per frame that buys nothing, and it gets worse the further out you
+  /// build.
+  Rect _view = Rect.largest;
+
+  bool _onScreen(double x, double y, double w, double h) {
+    // Isometric: the four corners of a tile rect are not a screen rect, so
+    // take the extremes of all four rather than two.
+    final a = iso.toScreen(x, y);
+    final b = iso.toScreen(x + w, y);
+    final c = iso.toScreen(x + w, y + h);
+    final d = iso.toScreen(x, y + h);
+    final left = [a.dx, b.dx, c.dx, d.dx].reduce(math.min);
+    final right = [a.dx, b.dx, c.dx, d.dx].reduce(math.max);
+    final top = [a.dy, b.dy, c.dy, d.dy].reduce(math.min);
+    // Walls and labels hang above and below the diamond.
+    final bottom = [a.dy, b.dy, c.dy, d.dy].reduce(math.max);
+    return _view.overlaps(Rect.fromLTRB(
+        left, top - _wallHeight * iso.tileH - 40, right, bottom + 20));
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
+    // The visible world, before the canvas transform, plus a margin so
+    // something half off the edge is still drawn rather than popping in.
+    const margin = 120.0;
+    _view = Rect.fromLTRB(
+      (-size.width / 2 - camera.dx) / zoom - margin,
+      (-size.height / 3 - camera.dy) / zoom - margin,
+      (size.width / 2 - camera.dx) / zoom + margin,
+      (size.height * 2 / 3 - camera.dy) / zoom + margin,
+    );
+
     canvas.save();
     canvas.translate(size.width / 2 + camera.dx, size.height / 3 + camera.dy);
     canvas.scale(zoom);
@@ -101,12 +146,17 @@ class WorldPainter extends CustomPainter {
     // showing through walls.
     final items = <_Drawable>[];
     for (final room in rooms) {
+      if (!_onScreen(room.position.x, room.position.y,
+                     room.size.x, room.size.y)) {
+        continue;
+      }
       items.add(_Drawable(
         depth: isoDepth(room.position.x, room.position.y),
         paint: (c) => _room(c, room),
       ));
     }
     for (final a in agents) {
+      if (!_onScreen(a.x, a.y, 1, 1)) continue;
       items.add(_Drawable(
         // +0.5 so a sprite standing on a room's far edge draws after its wall.
         depth: isoDepth(a.x, a.y) + 0.5,
@@ -132,6 +182,7 @@ class WorldPainter extends CustomPainter {
   void _plots(Canvas canvas) {
     for (final p in plots) {
       final (x, y, w, h) = p.bounds;
+      if (!_onScreen(x, y, w, h)) continue;
       final hot = hoveredPlot == '${p.ring}:${p.slot}';
       final face = iso.rectDiamond(x, y, w, h);
 
@@ -179,6 +230,7 @@ class WorldPainter extends CustomPainter {
 
     for (final c in sorted) {
       final (x, y, w, h) = c.bounds;
+      if (!_onScreen(x, y, w, h)) continue;
       final hot = c.id == hoveredCastle;
       final face = iso.rectDiamond(x, y, w, h);
 
@@ -316,14 +368,19 @@ class WorldPainter extends CustomPainter {
   void _roomLabel(Canvas canvas, Room room) {
     final at = iso.toScreen(
         room.position.x + room.size.x / 2, room.position.y);
-    _text(
-      canvas,
-      room.name,
-      at + Offset(0, -_wallHeight * iso.tileH - 18 / zoom),
-      size: 13 / zoom,
-      weight: FontWeight.w600,
-      centre: true,
-    );
+    if (labelled) {
+      _text(
+        canvas,
+        room.name,
+        at + Offset(0, -_wallHeight * iso.tileH - 18 / zoom),
+        size: 13 / zoom,
+        weight: FontWeight.w600,
+        centre: true,
+      );
+    }
+    // The badge stays at every distance. It is the one thing on a room that
+    // means "come here", and losing it is how you stop noticing an approval
+    // simply by having zoomed out.
     final badge = badges[room.id] ?? 0;
     if (badge > 0) {
       final c = at + Offset(0, -_wallHeight * iso.tileH - 38 / zoom);
@@ -375,6 +432,7 @@ class WorldPainter extends CustomPainter {
       }
     }
 
+    if (!labelled) return;
     _text(canvas, a.name, Offset(at.dx, originY - 14 / zoom),
         size: 11 / zoom, centre: true);
     final line = a.say ?? (a.busy ? a.status : null);

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show PictureRecorder;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -269,6 +270,71 @@ void main() {
               .toSet();
       expect(buildable, {'job_hunt', 'web_agency'});
       expect(buildable.contains('website_recreation'), isFalse);
+    });
+  });
+
+  group('zoom steps', () {
+    WorldPainter at(double zoom) => WorldPainter(
+          rooms: const [],
+          agents: const [],
+          camera: Offset.zero,
+          zoom: zoom,
+          iso: const Iso(),
+          tick: 0,
+        );
+
+    test('three steps, not two', () {
+      // Close: rooms and their names. Middle: the layout alone, because at
+      // that distance 13px of text is six pixels of grey fuzz over the thing
+      // you are looking at. Far: one block per castle.
+      final close = at(1.0);
+      expect(close.far, isFalse);
+      expect(close.labelled, isTrue);
+
+      final middle = at((WorldPainter.farZoom + WorldPainter.labelZoom) / 2);
+      expect(middle.far, isFalse, reason: 'the layout is still drawn');
+      expect(middle.labelled, isFalse, reason: 'but nothing is lettered');
+
+      final away = at(WorldPainter.farZoom - 0.01);
+      expect(away.far, isTrue);
+    });
+
+    test('the steps are ordered', () {
+      expect(WorldPainter.farZoom, lessThan(WorldPainter.labelZoom));
+    });
+  });
+
+  group('render distance', () {
+    /// How many drawing operations a paint issues.
+    int opsFor({required Offset camera, required List<Plot> plots}) {
+      final recorder = PictureRecorder();
+      final canvas = Canvas(recorder);
+      WorldPainter(
+        rooms: const [],
+        agents: const [],
+        camera: camera,
+        zoom: 0.2,
+        iso: const Iso(),
+        tick: 0,
+        plots: plots,
+      ).paint(canvas, const Size(1200, 800));
+      return recorder.endRecording().approximateBytesUsed;
+    }
+
+    test('land that is off screen is not drawn', () {
+      // The web is infinite by construction, and even the bounded slice the
+      // server offers is 120 diamonds most of which are nowhere near the
+      // camera. Drawing them all is work per frame that buys nothing, and it
+      // gets worse the further out you build.
+      final plots = [
+        for (var i = 0; i < 120; i++)
+          Plot(ring: 1, slot: i, centre: (i * 400.0, i * 400.0), span: 64),
+      ];
+      final near = opsFor(camera: Offset.zero, plots: plots);
+      final away = opsFor(camera: const Offset(-900000, -900000), plots: plots);
+
+      expect(away, lessThan(near),
+          reason: 'a camera pointed at nothing should draw nearly nothing');
     });
   });
 }

@@ -501,12 +501,10 @@ async def get_castles() -> dict[str, Any]:
     env = environment.current()
     names = {d["id"]: d.get("name") or d["id"] for d in env.describe()}
 
-    rings = max([c.get("ring", 1) for c in built] or [1])
-    # One ring beyond the furthest castle, so there is always empty land to
-    # build on without the map having to ask for more.
-    empty = [p for p in geom.plots(sum(geom.slots_on(r)
-                                       for r in range(1, rings + 2)))
-             if (p["ring"], p["slot"]) not in taken]
+    # Bounded. The web itself is infinite — ring n always exists — but the
+    # land OFFERED is the land near what is already built, or one castle out
+    # on ring 50 would list nearly eight thousand empty plots.
+    empty = geom.plots(geom.OFFERED, skip=taken)
 
     return {
         "castles": [

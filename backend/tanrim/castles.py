@@ -123,16 +123,27 @@ def plot_centre(ring: int, slot: int) -> tuple[float, float]:
     return (radius * math.cos(angle), radius * math.sin(angle))
 
 
-def plots(count: int) -> list[dict[str, Any]]:
-    """The first `count` plots, in the order they should be filled.
+def plots(count: int, skip: "set[tuple[int, int]] | None" = None
+          ) -> list[dict[str, Any]]:
+    """The first `count` free plots, in the order they should be filled.
 
     Ring by ring from the hub outward, so a world with three castles is three
-    plots around one centre rather than three scattered points.
+    plots around one centre rather than three scattered points, and an inner
+    gap is offered before a new ring is opened.
+
+    Bounded on purpose. The web is infinite — ring `n` always exists and is
+    always computable — but the plots *offered* must not be, or the answer
+    grows quadratically with how far out the furthest castle sits. One castle
+    alone on ring 50 would otherwise have listed 7,956 pieces of empty land,
+    every one of them correct and none of them useful.
     """
+    skip = skip or set()
     out: list[dict[str, Any]] = []
     ring = 1
     while len(out) < count:
         for slot in range(slots_on(ring)):
+            if (ring, slot) in skip:
+                continue
             if len(out) >= count:
                 break
             x, y = plot_centre(ring, slot)
@@ -140,6 +151,16 @@ def plots(count: int) -> list[dict[str, Any]]:
                         "span": PLOT})
         ring += 1
     return out
+
+
+#: How much empty land to offer at once.
+#:
+#: Enough that there is always somewhere to build in every direction, and
+#: bounded so the answer does not grow with the size of the world. `plots`
+#: fills from the hub outward and skips what is built on, so this is always
+#: the nearest free land — including a gap left by a razed castle, which gets
+#: offered again before a new ring is opened.
+OFFERED = 120
 
 
 def plot_for(ring: int, slot: int) -> dict[str, Any]:

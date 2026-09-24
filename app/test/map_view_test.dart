@@ -235,4 +235,42 @@ void main() {
     // ignore: avoid_dynamic_calls
     expect(s.debugFlying, isTrue, reason: 'it travelled to the castle instead');
   });
+
+  testWidgets('you can always zoom out far enough to see everything',
+      (t) async {
+    // The web of plots is infinite by construction, so a FIXED zoom floor is
+    // a promise that stops being true as soon as somebody builds far enough
+    // out — past about ring 4 the estate no longer fits at 0.06 and there is
+    // no way to pull back further.
+    const distant = Plot(ring: 9, slot: 0, centre: (4000, 4000), span: 64);
+    final s = await _map(t, plots: const [distant]);
+
+    await _zoomOut(t, 90);
+    // ignore: avoid_dynamic_calls
+    final zoom = s.debugZoom as double;
+    expect(zoom, lessThan(0.06),
+        reason: 'the floor must drop for a world this big');
+
+    // And at that zoom the whole world FITS in the viewport — which is what
+    // the floor can promise. Whether you are looking at it is the camera's
+    // business: the wheel zooms about its anchor and does not re-centre, so
+    // asserting a particular point is on screen would be testing where the
+    // operator happened to leave the map.
+    final size = t.getSize(find.byType(MapView));
+    // ignore: avoid_dynamic_calls
+    final near = s.debugScreenOf(0.0, 0.0, size) as Offset;
+    // ignore: avoid_dynamic_calls
+    final far = s.debugScreenOf(4032.0, 4032.0, size) as Offset;
+    expect((far.dy - near.dy).abs(), lessThanOrEqualTo(size.height));
+    expect((far.dx - near.dx).abs(), lessThanOrEqualTo(size.width));
+  });
+
+  testWidgets('a small world still stops at the ordinary floor', (t) async {
+    // Lowering the floor for everyone would let you zoom into the middle
+    // distance and lose the map entirely.
+    final s = await _map(t);
+    await _zoomOut(t, 90);
+    // ignore: avoid_dynamic_calls
+    expect(s.debugZoom, closeTo(0.06, 0.0001));
+  });
 }
