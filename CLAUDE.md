@@ -83,7 +83,6 @@ recoverable.
 | Communications | Echo | Sends the outreach — **gate 2** |
 | Archives | Sage | Feedback ledger + activity log, fed back into agent context |
 | Treasury | Coin | Token spend per agent; cost per lead |
-| War Room | (gathers) | Retro |
 
 ## Rules the code enforces, not the prompts
 
