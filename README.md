@@ -127,8 +127,7 @@ functions that do not exist, booting perfectly and dying the first time
 anybody pressed Run.
 
 Or start from **[tanrim-plugin-template](https://github.com/emaurel/tanrim-plugin-template)**
-— the same example plus tests that run and a walkthrough. It is a **private**
-repository today, so the link 404s unless you have been given access:
+— the same example plus tests that run and a walkthrough :
 
 ```bash
 gh repo create my-plugin --private --clone \
