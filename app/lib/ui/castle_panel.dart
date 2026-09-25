@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api/client.dart';
@@ -80,6 +82,64 @@ class CastlePanel extends StatefulWidget {
 }
 
 class _CastlePanelState extends State<CastlePanel> {
+  /// Progress per stage for a whole stage being worked off, keyed by stage.
+  Map<String, Map<String, dynamic>> _drains = const {};
+  Timer? _poll;
+
+  @override
+  void initState() {
+    super.initState();
+    // Asked once on open, because a drain outlives the window that started
+    // it: closing the castle and reopening it must still show it running.
+    _loadDrains();
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  /// Poll only WHILE something is draining.
+  ///
+  /// The rest of this window is fed by the socket, and a drain could have been
+  /// too — but it is the one thing here that is a progress bar, and a timer
+  /// that stops on its own is less machinery than a frame type every client
+  /// has to learn. It cancels itself the moment nothing is running.
+  Future<void> _loadDrains() async {
+    final api = widget.api;
+    if (api == null) return;
+    try {
+      final d = await api.get('/work/run-all?castle_id=${widget.castle.id}')
+          as Map;
+      if (!mounted) return;
+      final live = <String, Map<String, dynamic>>{
+        for (final row in (d['drains'] as List? ?? const []))
+          '${(row as Map)['stage']}': row.cast<String, dynamic>(),
+      };
+      setState(() => _drains = live);
+      final anyRunning = live.values.any((r) => r['running'] == true);
+      if (anyRunning) {
+        _poll ??= Timer.periodic(
+            const Duration(seconds: 2), (_) => _loadDrains());
+      } else {
+        _poll?.cancel();
+        _poll = null;
+        widget.onChanged?.call();
+      }
+    } catch (_) {
+      // A failed poll is not worth a red panel: the next one either works or
+      // the drain has finished and there is nothing to show.
+    }
+  }
+
+  Future<void> _runAll(String stage, {bool stop = false}) async {
+    final api = widget.api;
+    if (api == null) return;
+    await api.post('/work/run-all${stop ? '/stop' : ''}',
+        {'castle_id': widget.castle.id, 'stage': stage});
+    await _loadDrains();
+  }
 
   List<Room> get _mine => widget.rooms
       .where((r) => r.castleId == widget.castle.id || r.castleId.isEmpty)
@@ -274,6 +334,10 @@ class _CastlePanelState extends State<CastlePanel> {
         working: widget.working,
         onRun: widget.onRunRecord,
         onStop: widget.onStopRecord,
+        drains: _drains,
+        onRunAll: widget.api == null ? null : (st) => _runAll(st),
+        onStopAll:
+            widget.api == null ? null : (st) => _runAll(st, stop: true),
       );
     }
     return ListView(

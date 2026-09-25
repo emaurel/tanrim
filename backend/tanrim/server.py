@@ -434,6 +434,47 @@ async def post_start(start_id: str, body: StartBody) -> dict[str, Any]:
         castles.CURRENT.reset(token)
 
 
+class DrainBody(BaseModel):
+    """Work a whole stage off, in one castle."""
+    model_config = ConfigDict(extra="forbid")
+
+    castle_id: str = ""
+    stage: str
+    kind: str = ""
+
+
+@app.post("/work/run-all")
+async def post_run_all(body: DrainBody) -> dict[str, Any]:
+    """Start as many as the room allows, refilling as each finishes.
+
+    Not all of them at once: a room declares `max_workers` because that is how
+    many of that agent may run concurrently, and firing seventy would either
+    hire seventy workers or be refused seventy times by the pool.
+    """
+    from . import drain
+
+    return await drain.start(world, body.castle_id, body.stage, body.kind)
+
+
+@app.post("/work/run-all/stop")
+async def post_run_all_stop(body: DrainBody) -> dict[str, Any]:
+    """Stop after the runs in flight finish.
+
+    Deliberately not a cancel: killing a run mid-write is how a record ends up
+    half-enriched, and with a worker limit only a few are ever in flight.
+    """
+    from . import drain
+
+    return {"ok": drain.stop(body.castle_id, body.stage)}
+
+
+@app.get("/work/run-all")
+async def get_run_all(castle_id: str = "") -> dict[str, Any]:
+    from . import drain
+
+    return {"drains": drain.all_for(castle_id)}
+
+
 @app.get("/plugins")
 async def get_plugins() -> dict[str, Any]:
     """What is installed, and what each one contributes.

@@ -20,6 +20,9 @@ class Board extends StatelessWidget {
     this.working = const {},
     this.onRun,
     this.onStop,
+    this.onRunAll,
+    this.onStopAll,
+    this.drains = const {},
   });
 
   final List<WorkRecord> records;
@@ -41,6 +44,15 @@ class Board extends StatelessWidget {
   /// board is also drawn in places with no server to ask.
   final void Function(WorkRecord)? onRun;
   final void Function(WorkRecord)? onStop;
+
+  /// Work a whole stage off, and ask it to stop. A stage with seventy records
+  /// at it is not seventy button presses.
+  final void Function(String stage)? onRunAll;
+  final void Function(String stage)? onStopAll;
+
+  /// Progress per stage, as the server reports it: `{done, refused, total,
+  /// running}`. Empty when nothing is being worked off.
+  final Map<String, Map<String, dynamic>> drains;
 
   @override
   Widget build(BuildContext context) {
@@ -77,6 +89,9 @@ class Board extends StatelessWidget {
         final dead = deadStages.contains(stage);
         return _StageGroup(
           stage: stage,
+          onRunAll: onRunAll,
+          onStopAll: onStopAll,
+          drain: drains[stage],
           rows: rows,
           dimmed: dead,
           onTapRecord: onTapRecord,
@@ -93,6 +108,9 @@ class Board extends StatelessWidget {
 class _StageGroup extends StatefulWidget {
   const _StageGroup({
     required this.stage,
+    this.onRunAll,
+    this.onStopAll,
+    this.drain,
     required this.rows,
     required this.dimmed,
     required this.onTapRecord,
@@ -103,6 +121,9 @@ class _StageGroup extends StatefulWidget {
   });
 
   final String stage;
+  final void Function(String stage)? onRunAll;
+  final void Function(String stage)? onStopAll;
+  final Map<String, dynamic>? drain;
   final List<WorkRecord> rows;
   final bool dimmed;
   final void Function(WorkRecord) onTapRecord;
@@ -126,6 +147,52 @@ class _StageGroupState extends State<_StageGroup> {
   /// How many of this stage's records have somebody on them.
   int get _busy =>
       widget.rows.where((r) => widget.working.contains(r.id)).length;
+
+  /// Work this whole stage off.
+  ///
+  /// As many at once as the room has workers, refilled as each finishes —
+  /// that is the server's business, not this button's. While it runs the
+  /// count of what is left is worth more than a spinner: a drain of seventy
+  /// is minutes long and the only question is whether it is moving.
+  List<Widget> _runAll() {
+    final d = widget.drain;
+    final live = d != null && d['running'] == true;
+    if (live) {
+      final done = ((d['done'] as num?) ?? 0) + ((d['refused'] as num?) ?? 0);
+      return [
+        Text('$done/${d['total']}',
+            style: const TextStyle(fontSize: 11, color: Color(0xFF6BD68A))),
+        const SizedBox(width: 2),
+        IconButton(
+          icon: const Icon(Icons.stop_rounded, size: 16),
+          tooltip: 'stop after the runs in flight finish',
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          padding: EdgeInsets.zero,
+          color: Colors.white54,
+          onPressed: d['stopping'] == true
+              ? null
+              : () => widget.onStopAll?.call(widget.stage),
+        ),
+      ];
+    }
+    // No button on a stage nobody works — a terminal stage has no next step,
+    // and offering to run one is offering something that cannot happen.
+    if (widget.onRunAll == null || widget.dimmed || widget.rows.isEmpty) {
+      return const [];
+    }
+    return [
+      IconButton(
+        icon: const Icon(Icons.playlist_play_rounded, size: 18),
+        tooltip: 'run all ${widget.rows.length} at ${widget.stage}',
+        visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        padding: EdgeInsets.zero,
+        color: Colors.white38,
+        onPressed: () => widget.onRunAll!(widget.stage),
+      ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -174,6 +241,8 @@ class _StageGroupState extends State<_StageGroup> {
                             fontSize: 11, color: Color(0xFF6BD68A))),
                   ],
                 ],
+                const Spacer(),
+                ..._runAll(),
               ],
             ),
           ),

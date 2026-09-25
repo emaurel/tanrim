@@ -421,6 +421,31 @@ stage with no worker and no pending approval is recovered once per
 **A pending approval suppresses dispatch entirely.** Gates belong to the
 operator, and a card already waiting needs nothing from an agent.
 
+## Working a whole stage off
+
+A stage with seventy records at it is not seventy button presses, and the
+transport will not clear it: it dispatches on a stage CHANGE and recovers a
+stalled record once per stage, so a board that has been through that once
+sits there with nothing wrong and nobody on it.
+
+`drain.py` works one off, per (castle, stage). The shape is **as many as the
+room has workers, refilled as each finishes** — not all at once, which would
+either hire seventy workers or be refused seventy times by the pool. Peak cost
+is the same for seventy as for three.
+
+- **A refusal is counted, never raised.** The commonest refusal is a
+  per-record judgement, and one of them ending the drain would make the
+  button unreliable in exactly the case it exists for.
+- **Stop is not cancel.** It stops dispatching and lets what is in flight
+  finish; killing a run mid-write is how a record ends up half-enriched.
+- **The queue is read in batches.** `_waiting` parses the whole ledger, and
+  calling it once per finished run spent seven seconds of CPU on the shared
+  event loop draining one stage — visible as `/health` taking a second. A
+  record that moved on in the meantime is refused downstream by
+  `runners._wrong_stage` anyway.
+- **The role is resolved per castle.** `rooms.role_for_stage` answers for the
+  whole map and returns whichever room sorted first.
+
 ## The rerun loop is braked twice
 
 When an agent escalates and the overseer answers, the agent is re-fired so the
@@ -601,3 +626,11 @@ so a plugin's handler does not have to change signature.
 **A refusal after a run starts lands in `last_result`, not `last_error`.** A
 task that declines does not throw. Half the refusals in this environment are
 deliberate, and every one of them was invisible until the panel read it.
+
+That is the panel's half. The dispatch paths with no panel — the stage sweep,
+`run-next`, the gates — discarded the answer entirely, because they all do
+`asyncio.create_task(runner(...))`. `runners._report_refusals` wraps every
+runner so a declined run is logged as `run_end` with `outcome="refused"`,
+distinct from `failed`: the work did not happen and nothing is broken. Without
+it, pressing Run on a record whose room refuses was indistinguishable from
+pressing a dead button — which is exactly how it was found.

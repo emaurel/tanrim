@@ -13,6 +13,7 @@ Future<void> _pump(WidgetTester t, Widget child) => t.pumpWidget(
     MaterialApp(home: Scaffold(body: SizedBox(width: 400, child: child))));
 
 void main() {
+  _runAllTests();
   testWidgets('stages come from the server, in its order', (t) async {
     // The environment is plugin-driven: a second plugin adds stages this build
     // has never heard of, so nothing in the app may name one.
@@ -144,5 +145,92 @@ void main() {
       'last': {'agent': 'probe', 'note': 'Google says CLOSED_PERMANENTLY'},
     });
     expect(r.lastNote, 'probe · Google says CLOSED_PERMANENTLY');
+  });
+}
+
+void _runAllTests() {
+  group('run all', () {
+    List<WorkRecord> rows(String stage, int n) => [
+          for (var i = 0; i < n; i++)
+            WorkRecord({'id': 'r$i', 'name': 'Rec $i', 'stage': stage,
+                        'kind': 'application'}),
+        ];
+
+    Widget board({
+      Map<String, Map<String, dynamic>> drains = const {},
+      void Function(String)? onRunAll,
+      void Function(String)? onStopAll,
+    }) =>
+        MaterialApp(
+          theme: ThemeData.dark(),
+          home: Scaffold(
+            body: Board(
+              records: rows('spotted', 4),
+              stages: const ['spotted'],
+              deadStages: const ['lost'],
+              counts: const {'spotted': 4},
+              onTapRecord: (_) {},
+              drains: drains,
+              onRunAll: onRunAll,
+              onStopAll: onStopAll,
+            ),
+          ),
+        );
+
+    testWidgets('a stage with work offers to run all of it', (t) async {
+      String? asked;
+      await t.pumpWidget(board(onRunAll: (s) => asked = s));
+      await t.pumpAndSettle();
+
+      await t.tap(find.byIcon(Icons.playlist_play_rounded));
+      await t.pumpAndSettle();
+      expect(asked, 'spotted');
+    });
+
+    testWidgets('no button without a server to ask', (t) async {
+      // The board is drawn in places with no api — offering a control that
+      // cannot be wired is offering something that does nothing.
+      await t.pumpWidget(board());
+      await t.pumpAndSettle();
+      expect(find.byIcon(Icons.playlist_play_rounded), findsNothing);
+    });
+
+    testWidgets('while it runs, the count left is shown and it can be stopped',
+        (t) async {
+      // A drain of seventy is minutes long and the only question worth
+      // answering on the header is whether it is still moving.
+      String? stopped;
+      await t.pumpWidget(board(
+        onRunAll: (_) {},
+        onStopAll: (s) => stopped = s,
+        drains: const {
+          'spotted': {'stage': 'spotted', 'total': 70, 'done': 9,
+                      'refused': 3, 'running': true, 'stopping': false},
+        },
+      ));
+      await t.pumpAndSettle();
+
+      expect(find.text('12/70'), findsOneWidget);
+      expect(find.byIcon(Icons.playlist_play_rounded), findsNothing);
+      await t.tap(find.byIcon(Icons.stop_rounded));
+      await t.pumpAndSettle();
+      expect(stopped, 'spotted');
+    });
+
+    testWidgets('a drain already stopping cannot be stopped twice', (t) async {
+      await t.pumpWidget(board(
+        onRunAll: (_) {},
+        onStopAll: (_) {},
+        drains: const {
+          'spotted': {'stage': 'spotted', 'total': 70, 'done': 60,
+                      'refused': 0, 'running': true, 'stopping': true},
+        },
+      ));
+      await t.pumpAndSettle();
+      final btn = t.widget<IconButton>(
+          find.ancestor(of: find.byIcon(Icons.stop_rounded),
+                        matching: find.byType(IconButton)));
+      expect(btn.onPressed, isNull);
+    });
   });
 }
