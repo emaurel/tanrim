@@ -153,6 +153,7 @@ class AgentState {
     this.workbench,
     this.say,
     this.recordId,
+    this.busySince,
   });
 
   final String id;
@@ -169,6 +170,10 @@ class AgentState {
   final String? say;
   final String? recordId;
 
+  /// Unix seconds when this worker became busy, so a watcher can say how
+  /// long. Null when it is idle.
+  final double? busySince;
+
   static AgentState fromJson(Map<String, dynamic> j) => AgentState(
         id: j['id'] as String,
         name: (j['name'] ?? j['id']) as String,
@@ -183,6 +188,7 @@ class AgentState {
         // `lead_id` is the wire format and deliberately unchanged; the app
         // calls it what the environment calls it internally.
         recordId: (j['record_id'] ?? j['lead_id']) as String?,
+        busySince: (j['busy_since'] as num?)?.toDouble(),
       );
 
   AgentState copyWith({double? x, double? y}) => AgentState(
@@ -197,6 +203,7 @@ class AgentState {
         workbench: workbench,
         say: say,
         recordId: recordId,
+        busySince: busySince,
       );
 }
 

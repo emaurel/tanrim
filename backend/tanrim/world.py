@@ -24,6 +24,10 @@ class AgentState:
     say: str = ""
     say_until: float = 0.0
     busy: bool = False  # True while a real agent task owns this sprite
+    #: When `busy` was last set, so a watcher can say how long this has been
+    #: running. A run takes minutes and the useful question while one is in
+    #: flight is "how long", which nothing on the wire could answer.
+    busy_since: float | None = None
     # A room's work is done by one or more interchangeable workers of the same
     # role. `role` is the manifest agent id ("forge"); `id` identifies the
     # individual ("forge", "forge-2"). Memory and context belong to the role;

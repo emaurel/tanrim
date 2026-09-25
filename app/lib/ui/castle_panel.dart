@@ -29,6 +29,7 @@ class CastlePanel extends StatefulWidget {
     this.working = const {},
     this.onRunRecord,
     this.onStopRecord,
+    this.agents = const [],
   });
 
   final Castle castle;
@@ -56,6 +57,12 @@ class CastlePanel extends StatefulWidget {
   final void Function(WorkRecord)? onRunRecord;
   final void Function(WorkRecord)? onStopRecord;
 
+  /// Every worker on the map. The Working tab is a join over these and the
+  /// records — nothing new is asked of the server, because an agent already
+  /// carries the record it was spawned for, the room it is in, the bench it
+  /// is standing at and when it started.
+  final List<AgentState> agents;
+
   @override
   State<CastlePanel> createState() => _CastlePanelState();
 }
@@ -82,6 +89,34 @@ class _CastlePanelState extends State<CastlePanel> {
     return out;
   }
 
+  /// What is being worked right now, in this castle.
+  ///
+  /// A join rather than a question: an agent carries the record it was
+  /// spawned for, the room, the bench and when it started; the record carries
+  /// its name, kind and stage. Asking the server for a list would be a third
+  /// copy of facts it is already streaming.
+  List<({AgentState agent, WorkRecord? record, Room? room})> get _inFlight {
+    final byId = {for (final r in widget.records) r.id: r};
+    // Matched against THIS castle's rooms rather than by parsing the id.
+    // `castles.base` is the server's job; the client already knows which
+    // rooms are its own.
+    final rooms = {for (final r in _mine) r.id: r};
+    final out = <({AgentState agent, WorkRecord? record, Room? room})>[];
+    for (final a in widget.agents) {
+      if (!a.busy || !rooms.containsKey(a.roomId)) continue;
+      out.add((
+        agent: a,
+        record: (a.recordId == null) ? null : byId[a.recordId!],
+        room: rooms[a.roomId],
+      ));
+    }
+    // Longest-running first: the one you want to know about is the one that
+    // has been going the longest.
+    out.sort((x, y) =>
+        (x.agent.busySince ?? 0).compareTo(y.agent.busySince ?? 0));
+    return out;
+  }
+
   /// Which section is showing: a kind of work, or 'rooms'.
   ///
   /// Resolved on first build rather than fixed, because which kinds a castle
@@ -90,7 +125,11 @@ class _CastlePanelState extends State<CastlePanel> {
   String? _tab;
 
   String get _showing {
-    final tabs = [..._work.keys, 'rooms'];
+    final tabs = [
+      if (_inFlight.isNotEmpty) 'working',
+      ..._work.keys,
+      'rooms',
+    ];
     final wanted = _tab;
     if (wanted != null && tabs.contains(wanted)) return wanted;
     return tabs.first;
@@ -117,7 +156,16 @@ class _CastlePanelState extends State<CastlePanel> {
     // The WORK first and the rooms last. A castle is a place that does
     // something; its rooms are how, and you open one to look at what is in it
     // rather than at the building.
-    final tabs = [...work.keys, 'rooms'];
+    //
+    // `working` comes before all of it, and only when there IS something: a
+    // tab that is empty most of the time trains you to skip it, and the whole
+    // value of this one is that its presence means something is happening.
+    final flight = _inFlight;
+    final tabs = [
+      if (flight.isNotEmpty) 'working',
+      ...work.keys,
+      'rooms',
+    ];
     return SizedBox(
       height: 34,
       child: ListView(
@@ -131,7 +179,9 @@ class _CastlePanelState extends State<CastlePanel> {
                   id,
                   id == 'rooms'
                       ? 'Rooms (${_mine.length})'
-                      : '$id (${work[id]!.length})'),
+                      : id == 'working'
+                          ? 'Working (${flight.length})'
+                          : '$id (${work[id]!.length})'),
             ),
         ],
       ),
@@ -153,6 +203,7 @@ class _CastlePanelState extends State<CastlePanel> {
   }
 
   Widget _body(Castle c) {
+    if (_showing == 'working') return _working();
     if (_showing != 'rooms') {
       final mine = _work[_showing] ?? const <WorkRecord>[];
       final counts = <String, int>{};
@@ -207,6 +258,96 @@ class _CastlePanelState extends State<CastlePanel> {
 
 
 
+  Widget _working() {
+    final flight = _inFlight;
+    if (flight.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Text('nothing is running',
+            style: TextStyle(fontSize: 12, color: Colors.white38)),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+      itemCount: flight.length,
+      itemBuilder: (_, i) {
+        final it = flight[i];
+        final record = it.record;
+        final bench = it.room?.workbenches
+            .where((b) => b.id == it.agent.workbench)
+            .firstOrNull;
+        return InkWell(
+          onTap: record == null ? null : () => widget.onTapRecord(record),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: const BoxDecoration(
+                        color: Color(0xFF6BD68A), shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      // A worker with no record is doing work that is not
+                      // ABOUT one — sourcing, a sweep — and saying so is
+                      // better than an empty line.
+                      record?.name ?? 'no record — ${it.agent.name}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  if (it.agent.busySince != null)
+                    Text(_elapsed(it.agent.busySince!),
+                        style: const TextStyle(
+                            fontSize: 11, color: Colors.white38)),
+                ]),
+                const SizedBox(height: 3),
+                Padding(
+                  padding: const EdgeInsets.only(left: 16),
+                  child: Wrap(spacing: 6, runSpacing: 4, children: [
+                    if (record != null) _chip(record.kind),
+                    if (record != null) _chip(record.stage, accent: true),
+                    _chip(it.agent.name),
+                    if (it.room != null) _chip(it.room!.name),
+                    if (bench != null) _chip(bench.name),
+                  ]),
+                ),
+                if ((it.agent.say ?? '').isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16, top: 4),
+                    child: Text(it.agent.say!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 11.5,
+                            color: Colors.white54,
+                            fontStyle: FontStyle.italic)),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// `4m`, `1h 12m`. Rounded down, because a run is minutes and a precise
+  /// second on something that takes ten of them is noise.
+  static String _elapsed(double since) {
+    final secs =
+        DateTime.now().millisecondsSinceEpoch / 1000 - since;
+    if (secs < 60) return '${secs.clamp(0, 59).toInt()}s';
+    final mins = secs ~/ 60;
+    if (mins < 60) return '${mins}m';
+    return '${mins ~/ 60}h ${mins % 60}m';
+  }
+
   Widget _facts(Castle c) => Wrap(
         spacing: 6,
         runSpacing: 6,
@@ -258,15 +399,22 @@ class _CastlePanelState extends State<CastlePanel> {
     );
   }
 
-  Widget _chip(String s, {bool warn = false}) => Container(
+  Widget _chip(String s, {bool warn = false, bool accent = false}) =>
+      Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: .06),
+          color: accent
+              ? const Color(0xFF8ECAE6).withValues(alpha: .18)
+              : Colors.white.withValues(alpha: .06),
           borderRadius: BorderRadius.circular(5),
         ),
         child: Text(s,
             style: TextStyle(
                 fontSize: 11.5,
-                color: warn ? const Color(0xFFE0A458) : null)),
+                color: warn
+                    ? const Color(0xFFE0A458)
+                    : accent
+                        ? const Color(0xFF8ECAE6)
+                        : null)),
       );
 }

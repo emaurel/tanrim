@@ -788,6 +788,7 @@ class _WorldPageState extends State<WorldPage> {
           working: _workingRecords(agents),
           onRunRecord: _runRecord,
           onStopRecord: _stopRecord,
+          agents: agents,
           onTapRecord: (r) {
             setState(() => _selectedRecord = r.id);
             _open('record:${r.id}');

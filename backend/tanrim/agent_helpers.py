@@ -609,6 +609,7 @@ async def run_agent(
     agent = world.agents.get(agent_id)
     if agent is not None:
         agent.busy = True
+        agent.busy_since = time.time()
         agent.record_id = record_id
     deleg_ctx: dict[str, Any] = {
         **(delegation_context or {}),
@@ -1074,6 +1075,7 @@ async def run_agent(
         lock.release()
         if agent is not None:
             agent.busy = False
+            agent.busy_since = None
         if workbench:
             await world.leave_workbench(agent_id)
         await world.set_status(agent_id, "idle")
