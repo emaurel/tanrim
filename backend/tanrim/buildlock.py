@@ -1,11 +1,11 @@
-"""A claim on a lead's build directory that survives a restart.
+"""A claim on a record's build directory that survives a restart.
 
 `agent_helpers._LEAD_CLAIMS` stops two dispatches in one process from both
 running. It cannot stop the case that actually cost money: a hard-killed
 server leaves its `claude` subprocesses **orphaned but running** — still
-writing to `state/sites/<lead>/` and still billing — while the replacement
+writing to `state/sites/<record>/` and still billing — while the replacement
 process boots with an empty claim set and its recovery sweep re-dispatches the
-same lead seconds later. Two writers, one directory.
+same record seconds later. Two writers, one directory.
 
 That is exactly what happened on 2026-09-03: the server was killed at 16:22:16,
 three agent processes were orphaned, and the new server's sweep started three
@@ -60,7 +60,7 @@ def holder(cwd: Any) -> dict[str, Any] | None:
     """Whoever currently holds this directory, or None if nobody does.
 
     A lock left by a dead process is reported as stale rather than as a
-    holder — otherwise a crash would wedge a lead permanently.
+    holder — otherwise a crash would wedge a record permanently.
     """
     p = _path(cwd)
     try:
@@ -73,7 +73,7 @@ def holder(cwd: Any) -> dict[str, Any] | None:
     return rec
 
 
-def acquire(cwd: Any, *, agent_id: str, lead_id: str | None) -> dict[str, Any] | None:
+def acquire(cwd: Any, *, agent_id: str, record_id: str | None) -> dict[str, Any] | None:
     """Take the directory, or return the record of whoever already has it.
 
     Returns None on success. The caller treats a non-None return as busy —
@@ -91,7 +91,7 @@ def acquire(cwd: Any, *, agent_id: str, lead_id: str | None) -> dict[str, Any] |
     rec = {
         "pid": os.getpid(),
         "agent_id": agent_id,
-        "lead_id": lead_id,
+        "lead_id": record_id,
         "started": time.time(),
     }
     try:
@@ -119,7 +119,7 @@ def sweep(root: Any) -> list[dict[str, Any]]:
     """Clear every lock whose holder is gone. Returns what was cleared.
 
     Called at boot: the previous process's locks are, by definition, held by
-    pids that no longer exist, and leaving them would block the leads they
+    pids that no longer exist, and leaving them would block the records they
     protect. A lock held by a still-running orphan is deliberately LEFT — that
     is the whole point, and the orphan is reported so the operator can see it.
     """

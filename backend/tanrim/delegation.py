@@ -1,6 +1,6 @@
 """Agent-initiated delegation.
 
-Until now a second worker only ever appeared because two leads needed the same
+Until now a second worker only ever appeared because two records needed the same
 room at once. This lets an agent hire a helper for a *subtask* — Forge, part-way
 through a build, deciding the site needs a logo and handing that off rather than
 losing its thread over it.
@@ -30,12 +30,32 @@ The shape, deliberately:
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from . import prompts as _prompts
-from . import state
+from . import environment, state
+
+
+#: When no plugin supplies a reviewer. A specialist can still be reviewed;
+#: it just runs on the default rather than on whatever the domain prefers.
+DEFAULT_REVIEW_MODEL = "claude-sonnet-4-6"
+
+
+def reviewer_model() -> str:
+    """The model a review runs on, asked of the plugin that supplies reviews.
+
+    It used to be read off `subtask_review.__module__`, which worked only
+    while a plugin named its agent functions directly. A plugin that resolves
+    its agents lazily registers a wrapper belonging to its manifest module, so
+    that lookup silently returned the default for ever.
+    """
+    if not environment.booted():
+        return DEFAULT_REVIEW_MODEL
+    supplier = environment.current().hook("subtask_review_model")
+    if supplier is None:
+        return DEFAULT_REVIEW_MODEL
+    return supplier() or DEFAULT_REVIEW_MODEL
 from .agent_helpers import RunResult, run_agent
 
 _P = _prompts.loader("delegation")
@@ -76,7 +96,7 @@ async def run_specialist(
     instruction: str,
     deliverable: str,
     cwd: Path,
-    lead_id: str | None,
+    record_id: str | None,
     depth: int = 1,
 ) -> dict[str, Any]:
     """Hire a helper for one subtask and return what it produced."""
@@ -98,7 +118,7 @@ async def run_specialist(
         summary=f"subtask for {parent_role}: {name}",
         say=f"{name[:26]}…",
         workbench="craft",
-        original_task={"lead_id": lead_id, "subtask": name},
+        original_task={"lead_id": record_id, "subtask": name},
         builtin_tools=["Write", "Read", "Edit", "Glob", "Bash"],
         cwd=cwd,
         permission_mode="acceptEdits",
@@ -115,7 +135,7 @@ async def run_specialist(
                '"review_verdict":null,"notes":[]}',
         delegation_depth=depth,    # blocks this worker from delegating again
         delegation_context={
-            "lead_id": lead_id, "cwd": str(cwd), "parent_role": parent_role,
+            "lead_id": record_id, "cwd": str(cwd), "parent_role": parent_role,
         },
     )
 
@@ -138,7 +158,7 @@ async def run_specialist(
         "subtask", from_=result.worker_id or parent_role, to=parent_role,
         summary=f"{name}: {out['summary'][:160]}",
         outcome="completed" if out["ok"] else "failed",
-        details={"lead_id": lead_id, "files": written, "cost_usd": result.cost_usd},
+        details={"lead_id": record_id, "files": written, "cost_usd": result.cost_usd},
     )
     return out
 
@@ -230,19 +250,20 @@ async def run_review(
     question: str,
     cwd: Path,
     files: list[str],
-    lead_id: str | None,
+    record_id: str | None,
     requested_by: str,
 ) -> dict[str, Any]:
     """Have another room's agent judge an artifact, and return their verdict."""
-    from .agents import lens as lens_mod
 
-    room_by_role = {
-        "lens": "gallery", "forge": "factory", "probe": "assay",
-        "scribe": "listing", "nova": "research",
-    }
-    room_id = room_by_role.get(reviewer_role)
+    # Derived, not listed. This was a literal map of five of one plugin's
+    # roles to its rooms, in the core — so a plugin's own agent could not be
+    # asked for a review, and adding a room meant editing this file.
+    from . import rooms as rooms_mod
+
+    room_id = rooms_mod.room_for_role(reviewer_role)
     if room_id is None:
-        return {"verdict": "unavailable", "reasoning": f"no such reviewer: {reviewer_role}"}
+        return {"verdict": "unavailable",
+                "reasoning": f"no such reviewer: {reviewer_role}"}
 
     rendered = await _rasterise_svgs(cwd, files)
     listed = "\n".join(f"- {f}" for f in files) or "(everything in this directory)"
@@ -263,12 +284,12 @@ async def run_review(
         world,
         role=reviewer_role,
         room_id=room_id,
-        model=lens_mod.MODEL,
+        model=reviewer_model(),
         prompt=prompt,
         summary=f"review for {requested_by}: {question[:80]}",
         say=f"reviewing for {requested_by[:14]}…",
         workbench="review",
-        original_task={"lead_id": lead_id},
+        original_task={"lead_id": record_id},
         builtin_tools=tools,
         cwd=cwd,
         max_turns=16,
@@ -283,7 +304,7 @@ async def run_review(
         "subtask_review", from_=result.worker_id or reviewer_role, to=requested_by,
         summary=f"{verdict}: {(data.get('reasoning') or '')[:160]}",
         outcome=verdict,
-        details={"lead_id": lead_id, "cost_usd": result.cost_usd},
+        details={"lead_id": record_id, "cost_usd": result.cost_usd},
     )
     return {
         "verdict": verdict,

@@ -1,7 +1,7 @@
 [project]
 name = "tanrim"
 version = "0.0.1"
-description = "Pixel-art agent world running an agent-operated web agency, built on the Claude Agent SDK."
+description = "An environment for agent-operated work, drawn as a place. Built on the Claude Agent SDK."
 requires-python = ">=3.11"
 dependencies = [
     "orjson>=3.10",
@@ -12,15 +12,21 @@ dependencies = [
     "pydantic>=2.7",
     "python-dotenv>=1.0",
     "httpx>=0.27",
-    # Lens renders each built site in a real browser to verify the UI.
+    # `delegation.run_review` opens a page so a reviewing agent can LOOK at
+    # what a specialist made. Plugins that render pages need it too, and say
+    # so in their own requirements.
     "playwright>=1.40",
-    # Owner-supplied photos arrive straight off a phone: 4 MB, wrong-way-up,
-    # and carrying GPS in the EXIF. Pillow downscales and strips them.
+    # Not used by the core. Kept here because every plugin written so far
+    # handles images somewhere, and dropping it would break three installs to
+    # make one line more correct.
     "Pillow>=10.0",
 ]
 
-[project.scripts]
-tanrim = "tanrim.cli:main"
+[project.optional-dependencies]
+# `pip install -e ".[dev]"`. Not a plain dependency: a deployment does not run
+# the suite, and the documented install used to leave pytest out entirely
+# while the README told you to run it.
+dev = ["pytest>=8.0"]
 
 [build-system]
 requires = ["hatchling"]

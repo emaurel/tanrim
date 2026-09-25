@@ -3,56 +3,67 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pathlib import Path
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from . import agent_helpers
-from . import buildlock
-from . import invoices as invoices_mod
-from . import secrets as secrets_store
-from . import assets as assets_mod
 from . import config
-from . import prompts as prompts_mod
+from . import agent_helpers
+from . import discovery
+from . import environment
+from . import plugin_admin
+from . import secrets as secrets_store
 from . import skills as skills_mod
 from . import rooms as rooms_mod
-from . import runners
 from . import state
-from . import usage as usage_mod
-from .agents import courier as courier_mod
-from .agents import echo as echo_mod
-from .agents import porter as porter_mod
-from .agents import forge as forge_mod
-from .agents import probe as probe_mod
-from .config import SITES_DIR
 from .handlers import build_handlers
 from .orchestrator import Orchestrator
-from .runners import AGENT_RUNNERS
 from .tools import registry as tool_registry
 from .world import World
 
 # Push stored secrets into os.environ before any tool tries to read them.
 secrets_store.load_into_environ()
 
-# Prompts live outside the source tree (see tanrim/prompts.py). Say so at
-# boot rather than letting the first agent run fail — or worse, letting an
-# agent run with no instructions, which doesn't fail, it improvises.
-_missing_prompts = prompts_mod.check_all()
-if _missing_prompts:
-    print(
-        "\n[prompts] missing "
-        f"{len(_missing_prompts)} prompt file(s) under prompts/:\n  "
-        + "\n  ".join(_missing_prompts)
-        + "\n\n  Copy prompts.example/ to prompts/ and write the real text.\n"
-    )
+# Find the installed plugins and merge them into one environment, ONCE, before
+# anything asks it a question. The environment is empty until this runs: every
+# stage, room, agent, gate and tool arrives from a plugin, and an install with
+# none of them is a legitimate — if idle — environment rather than an error.
+_env = environment.boot(discovery.find())
+print(f"[boot] {len(_env.plugins)} plugin(s): "
+      + ", ".join(p.id for p in _env.plugins))
+
+# Every plugin that declares rooms gets a castle if it has none, so an install
+# that predates castles comes up looking exactly as it did. Here rather than in
+# `environment.boot`, which also runs in tests against synthetic plugins in a
+# temporary directory — seeding there would write castles for `alpha` and
+# `beta` into the real ledger.
+for _made in state.ensure_castles(_env):
+    print(f"[boot] built {_made['name']} ({_made['plugin']}) "
+          f"at ring {_made['ring']} slot {_made['slot']}")
+
+# What the plugins say is wrong with their own installation. Reported at boot
+# rather than discovered: a missing prompt does not fail an agent run, it lets
+# the agent improvise, and a missing key fails it much later than it should.
+#
+# Printed ONCE. There were two blocks here, and the second called
+# `prompts.check_all()` — which is `environment.check()`, the same list — under
+# a heading that said "missing prompt file(s)". That was true only because the
+# one installed plugin reported nothing else; the contract has always said
+# `check()` covers unset variables and broken tools too, so the second plugin
+# to arrive had its configuration warnings printed as missing prompts.
+_problems = _env.check()
+if _problems:
+    print(f"\n[boot] {len(_problems)} problem(s) reported by plugins:")
+    for _problem in _problems:
+        print(f"  {_problem}")
+    if any("prompt" in _problem for _problem in _problems):
+        print("\n  Prompts live outside the source tree — see tanrim/prompts.py.\n"
+              "  Each plugin keeps its own under plugins/<id>/prompts/.")
+    print()
 
 world = World.boot()
 orchestrator = Orchestrator(world)
@@ -67,25 +78,14 @@ async def lifespan(_: FastAPI):
     if interrupted:
         print(f"[boot] {interrupted} run(s) were interrupted by the last restart")
 
-    # Build-directory claims left by the process that just died are held by
-    # pids that no longer exist; clearing them is what stops a crash from
-    # wedging a lead. A claim still held by a LIVE process is deliberately
-    # left alone and reported instead: that is an orphaned writer from a hard
-    # kill, it is still spending money, and the operator needs to know rather
-    # than have a second worker join it in the same directory.
-    stale = buildlock.sweep(config.SITES_DIR)
-    if stale:
-        print(f"[boot] cleared {len(stale)} stale build lock(s): "
-              + ", ".join(str(r.get("dir"))[:8] for r in stale))
-    orphans = buildlock.live_orphans(config.SITES_DIR)
-    for o in orphans:
-        msg = (f"pid {o.get('pid')} ({o.get('agent_id')}) is STILL writing "
-               f"{str(o.get('dir'))[:8]} — orphaned by a hard restart. It is "
-               f"billing and nothing here can stop it; kill it by hand.")
-        print(f"[boot] WARNING: {msg}")
-        state.log_event("run_end", from_="system", summary=msg[:240],
-                        outcome="failed", details=o)
-    orchestrator.start()
+    # Whatever the plugins want done once, at startup. The build-lock sweep
+    # used to run here against a directory the core named, which meant the
+    # environment knew where one plugin keeps its build output.
+    await environment.current().broadcast("startup", world)
+    if config.RUN_ORCHESTRATOR:
+        orchestrator.start()
+    else:
+        print("[boot] orchestrator OFF (TANRIM_ORCHESTRATOR=0) — serving only")
     try:
         yield
     finally:
@@ -96,7 +96,8 @@ async def lifespan(_: FastAPI):
             await agent_helpers.cancel_all()
         except Exception as e:  # noqa: BLE001
             print(f"[shutdown] could not cancel runs: {e}")
-        await orchestrator.stop()
+        if config.RUN_ORCHESTRATOR:
+            await orchestrator.stop()
 
 
 # FastAPI's default response class runs `jsonable_encoder` over the whole
@@ -112,297 +113,45 @@ app.add_middleware(
 )
 
 
-# Published previews are served straight off disk. Local hosting by default —
-# swap PREVIEW_BASE and this mount for a real host when the sites are good
-# enough to put in front of people.
-PUBLIC_DIR = SITES_DIR / "_published"
-PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/preview", StaticFiles(directory=str(PUBLIC_DIR), html=True), name="preview")
-
-# Staging: every build, viewable before it is published. The publish gate asks
-# you to approve a site — you have to be able to look at it first, and until now
-# the only URL appeared *after* approving. Local-only, so nothing here is
-# reachable from outside this machine.
-SITES_DIR.mkdir(parents=True, exist_ok=True)
-class _NoStore(StaticFiles):
-    """Staging, with caching turned off.
-
-    StaticFiles sends `etag` and `last-modified` and no `cache-control` at
-    all, which leaves the browser free to apply heuristic freshness — and for
-    an <iframe> whose `src` has not changed, Chrome will happily reuse the
-    whole document and its stylesheet out of the memory cache without
-    revalidating. The operator then approves or rejects the build they saw
-    last time. That is not a theoretical risk: a rebuild that demonstrably
-    changed `styles.css` on disk was reported twice as "literally nothing
-    changed".
-
-    Published previews under /preview are a different case and keep their
-    caching; those files are immutable once deployed.
-    """
-
-    def file_response(self, *args, **kwargs):  # type: ignore[override]
-        resp = super().file_response(*args, **kwargs)
-        resp.headers["cache-control"] = "no-store, must-revalidate"
-        return resp
+#: Which routes each plugin put on the app, so that removing a plugin can take
+#: them back off. `include_router` only appends, and without a record of what
+#: it appended an uninstalled plugin keeps serving its endpoints until the
+#: process restarts — which is precisely the restart this is here to avoid.
+_plugin_routes: dict[str, list[Any]] = {}
 
 
-app.mount("/staging", _NoStore(directory=str(SITES_DIR), html=True), name="staging")
+def _install_routers(env: Any, announce: bool = True) -> list[str]:
+    """Mount the routers of any plugin that is not already mounted."""
+    added: list[str] = []
+    for plugin_id, router in env.routers():
+        if plugin_id in _plugin_routes:
+            continue
+        mark = len(app.router.routes)
+        app.include_router(router)
+        _plugin_routes[plugin_id] = app.router.routes[mark:]
+        added.append(plugin_id)
+        if announce:
+            print(f"[boot] {plugin_id}: "
+                  + ", ".join(sorted({r.path for r in router.routes})))
+    return added
 
 
-def staging_url(lead_id: str) -> str:
-    base = config.PREVIEW_BASE.rstrip("/").rsplit("/preview", 1)[0]
-    return f"{base}/staging/{lead_id}/"
+def _uninstall_routers(keep: set[str]) -> list[str]:
+    """Take down the routes of every plugin no longer installed."""
+    removed: list[str] = []
+    for plugin_id in list(_plugin_routes):
+        if plugin_id in keep:
+            continue
+        for route in _plugin_routes.pop(plugin_id):
+            try:
+                app.router.routes.remove(route)
+            except ValueError:          # already gone; nothing to undo
+                pass
+        removed.append(plugin_id)
+    return removed
 
 
-@app.get("/leads")
-async def get_leads(stage: str | None = None, slim: int = 1, full: int = 0):
-    """The lead list. Rows by default; `?full=1` for whole records.
-
-    The default used to be whole records, so any caller that forgot `slim=1`
-    pulled 473 KB of dossiers to render a list of names.
-    """
-    leads = state.list_leads(stage=stage, limit=500)
-    if slim and not full:
-        # The board needs a row per lead, not each lead's whole dossier.
-        # `last` is the tail of the history so a row can say what happened
-        # most recently without a second request per lead.
-        busy = agent_helpers.all_in_flight()
-        # One pass over the ledger rather than one per lead.
-        spend = usage_mod.totals_by_lead()
-        slimmed = []
-        for l in leads:
-            slimmed.append({
-                **state.lead_summary(l),
-                # So a row can show a lead is being worked without the board
-                # asking per lead.
-                "working": [i.get("role") for i in busy.values()
-                            if i.get("lead_id") == l["id"]],
-                "spent": spend.get(l["id"], 0.0),
-            })
-        leads = slimmed
-    return {
-        "leads": leads,
-        "counts": state.lead_counts_by_stage(),
-        "stages": state.STAGES,
-        "dead_stages": state.DEAD_STAGES,
-    }
-
-
-@app.get("/leads/{lead_id}")
-async def get_lead(lead_id: str):
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        raise HTTPException(404, "no such lead")
-    return lead
-
-
-# Heavy fields. A lead carries its whole dossier, photo report and QA verdict;
-# a list of fifty of them is megabytes of JSON to render one row each.
-def _next_step(lead: dict[str, Any]) -> dict[str, Any]:
-    """Who would work this lead next, and whether anything is in the way.
-
-    Derived from the workbench declarations, like every other routing decision,
-    so it says the same thing the stage sweep would do.
-    """
-    from . import rooms as rooms_mod
-    stage = lead.get("stage") or ""
-    lead_id = lead.get("id") or ""
-    role = rooms_mod.role_for_stage(stage)
-    room_id = rooms_mod.room_for_role(role) if role else None
-    room = next((r for r in rooms_mod.load_rooms() if r.id == room_id), None)
-
-    out: dict[str, Any] = {
-        "stage": stage, "role": role, "room_id": room_id,
-        "room": room.name if room else None,
-        "label": None, "blocked_by": None, "runnable": False,
-    }
-    if role is None:
-        out["blocked_by"] = (
-            f"'{stage}' is a stage nobody works — the lead is finished or "
-            "parked here deliberately.")
-        return out
-
-    bench = next((b for b in (room.workbenches if room else [])
-                  if stage in (b.stages or [])), None)
-    out["label"] = (f"{role} · {bench.name}" if bench else str(role))
-    out["job"] = bench.job if bench else None
-
-    # A lead we have emailed is waiting on THEM, not on an agent. Dispatching
-    # Echo here only re-runs the send preflight, which correctly refuses — so
-    # offering a button for it would be offering a no-op.
-    if lead.get("sent_log") and stage in ("contacted", "replied"):
-        from . import config as config_mod
-        out["blocked_by"] = (
-            "waiting on their reply — the mailbox is read every "
-            f"{config_mod.MAIL_POLL_MINUTES} minutes and a reply files itself. "
-            "Use 'check the mail now' in Communications to look immediately.")
-        return out
-
-    working = [i for i in agent_helpers.all_in_flight().values()
-               if i.get("lead_id") == lead_id]
-    if working:
-        out["blocked_by"] = f"{working[0].get('role')} is already on this lead"
-        return out
-
-    pending = [a for a in state.list_user_approvals(status="pending", limit=200)
-               if (a.get("payload") or {}).get("lead_id") == lead_id]
-    if pending:
-        out["blocked_by"] = (
-            f"a {pending[0]['kind']} card is waiting on you — decide that first")
-        return out
-
-    out["runnable"] = True
-    return out
-
-
-@app.post("/leads/{lead_id}/run-next")
-async def run_next_step(lead_id: str):
-    """Start the next step by hand.
-
-    The pipeline dispatches on stage CHANGES and recovers a stalled lead once
-    per stage, so a lead that has been through that once will sit there
-    indefinitely with nothing wrong and nobody on it. This is the button for
-    that, and it goes through the same runner the sweep uses rather than a
-    second path that could behave differently.
-    """
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        raise HTTPException(404, "no such lead")
-    step = _next_step(lead)
-    if not step["runnable"]:
-        raise HTTPException(409, step["blocked_by"] or "nothing to run")
-    runner = AGENT_RUNNERS.get(step["role"])
-    if runner is None:
-        raise HTTPException(409, f"no runner for {step['role']}")
-
-    state.log_event(
-        "dispatch_end", from_="operator", to=step["role"],
-        summary=f"{lead.get('name')} started by hand at '{step['stage']}' "
-                f"→ {step['role']}",
-        outcome="dispatched", details={"lead_id": lead_id, "stage": step["stage"]})
-    asyncio.create_task(runner(world, {"lead_id": lead_id, "prompt": ""}))
-    await world.publish({"type": "approvals_updated"})
-    return {"ok": True, "started": step["role"], "room": step["room"],
-            "label": step["label"]}
-
-
-@app.get("/leads/{lead_id}/dossier")
-async def lead_dossier(lead_id: str):
-    """Everything we know about a business, in one place.
-
-    The timeline answers "what happened"; this answers "what do we have". They
-    are different questions, and mixing them put a photo grid inside a stage
-    change, where it had nothing to do with the event it hung off.
-    """
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        raise HTTPException(404, "no such lead")
-    files = await lead_files(lead_id)
-    dom = lead.get("domains") or {}
-    return {
-        "lead_id": lead_id,
-        "identity": {
-            "name": lead.get("name"), "address": lead.get("address"),
-            "phone": lead.get("phone"), "email": lead.get("email"),
-            "email_bounced": lead.get("email_bounced"),
-            "website": lead.get("website"), "category": lead.get("category"),
-            "source": lead.get("source"), "stage": lead.get("stage"),
-            "preview_url": lead.get("preview_url"),
-        },
-        "profile": lead.get("profile"),
-        "visual": lead.get("visual"),
-        "qa": lead.get("qa"),
-        "site": lead.get("site"),
-        "audit": lead.get("audit"),
-        "existing_site": lead.get("existing_site"),
-        "domains": {
-            "suggested": dom.get("suggested"),
-            "results": dom.get("results"),
-            "priced": dom.get("priced"),
-            "parking_evidence": dom.get("parking_evidence"),
-        },
-        "quote": (lead.get("outreach") or {}).get("quote"),
-        "outreach": {k: v for k, v in ((lead.get("outreach") or {}).items())
-                     if k in ("subject", "language", "sent", "sent_ts")},
-        "sent_log": lead.get("sent_log"),
-        "replies": lead.get("replies"),
-        "bounces": lead.get("bounces"),
-        "contact_hunt": lead.get("contact_hunt"),
-        "invoice": invoices_mod.for_lead(lead_id),
-        "spend": usage_mod.for_lead(lead_id),
-        "files": files.get("groups") or [],
-        "staging_url": files.get("staging_url"),
-    }
-
-
-@app.get("/leads/{lead_id}/files")
-async def lead_files(lead_id: str):
-    """Everything on disk for a lead, grouped by what it IS.
-
-    The grouping is the point: `assets/` are files the owner sent us and may
-    appear on the page, `photos/` were harvested for information and may never
-    be republished, and the screenshots are what Lens actually judged. A flat
-    file list loses exactly the distinction the whole pipeline turns on.
-    """
-    if state.get_lead(lead_id) is None:
-        raise HTTPException(404, "no such lead")
-    base = SITES_DIR / lead_id
-    if not base.is_dir():
-        return {"groups": [], "note": "nothing has been built for this lead yet"}
-
-    def entry(path: Path) -> dict[str, Any]:
-        rel = path.relative_to(base).as_posix()
-        return {
-            "name": path.name,
-            "path": rel,
-            "url": f"/staging/{lead_id}/{rel}",
-            "bytes": path.stat().st_size,
-            "modified": path.stat().st_mtime,
-            "kind": ("image" if path.suffix.lower() in
-                     (".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif")
-                     else "svg" if path.suffix.lower() == ".svg"
-                     else "text" if path.suffix.lower() in
-                     (".html", ".css", ".js", ".json", ".md", ".txt", ".csv")
-                     else "file"),
-        }
-
-    def listing(d: Path) -> list[dict[str, Any]]:
-        if not d.is_dir():
-            return []
-        # The manifest is provenance, not a picture — it belongs to the group's
-        # note, not in the grid as a file called "JSON".
-        return sorted((entry(p) for p in d.iterdir()
-                       if p.is_file() and not p.name.startswith(".")
-                       and p.name != "manifest.json"),
-                      key=lambda e: e["name"])
-
-    top = [p for p in base.iterdir()
-           if p.is_file() and not p.name.startswith(".")]
-    build = sorted((entry(p) for p in top if not p.name.startswith("shot-")),
-                   key=lambda e: e["name"])
-    shots = sorted((entry(p) for p in top if p.name.startswith("shot-")),
-                   key=lambda e: e["name"])
-
-    groups = [
-        {"id": "build", "name": "The site",
-         "note": "what Forge wrote — this is what gets deployed",
-         "files": build},
-        {"id": "shots", "name": "Renders",
-         "note": "what Lens actually looked at when it judged the page",
-         "files": shots},
-        {"id": "assets", "name": "Files the owner sent",
-         "note": "theirs, given for this purpose — the only images allowed on the page",
-         "files": listing(base / "assets")},
-        {"id": "photos", "name": "Harvested photographs",
-         "note": "READ for information, never republished — not ours",
-         "files": listing(base / "photos")},
-        {"id": "incumbent", "name": "Their existing site",
-         "note": "renders of the site they already had, if any",
-         "files": listing(base / "incumbent")},
-    ]
-    return {"lead_id": lead_id, "staging_url": f"/staging/{lead_id}/",
-            "groups": [g for g in groups if g["files"]]}
-
+_install_routers(_env)
 
 @app.post("/agents/{worker_id}/stop")
 async def stop_agent(worker_id: str, body: dict[str, Any] | None = None):
@@ -415,373 +164,14 @@ async def stop_agent(worker_id: str, body: dict[str, Any] | None = None):
     info = agent_helpers.all_in_flight().get(worker_id)
     if not info:
         raise HTTPException(404, f"{worker_id} is not running anything")
-    lead_id = info.get("lead_id")
-    if lead_id:
+    record_id = info.get("lead_id")
+    if record_id:
         # So a run that finishes in the same instant cannot write its result.
-        state.mark_operator_move(lead_id)
+        state.mark_operator_move(record_id)
     agent_helpers.cancel_worker(worker_id, str((body or {}).get("reason") or ""))
     await world.publish({"type": "approvals_updated"})
-    return {"ok": True, "stopped": worker_id, "lead_id": lead_id,
+    return {"ok": True, "stopped": worker_id, "lead_id": record_id,
             "was_doing": info.get("summary")}
-
-
-@app.post("/leads/{lead_id}/bounce")
-async def report_bounce(lead_id: str, body: dict[str, Any] | None = None):
-    """Report a delivery failure by hand.
-
-    The poller only sees UNREAD mail, and the operator reads this mailbox too —
-    a bounce they have already opened is invisible to it. Rather than leave the
-    lead looking contacted, this files it the same way the automatic path does.
-    """
-    body = body or {}
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        raise HTTPException(404, "no such lead")
-    address = str(body.get("address") or lead.get("email") or "").strip()
-    if not address:
-        raise HTTPException(400, "no address to record as bounced")
-    return await echo_mod.record_bounce(
-        world, lead_id, address,
-        permanent=bool(body.get("permanent", True)),
-        detail=str(body.get("detail") or "reported by the operator"))
-
-
-@app.post("/leads/{lead_id}/stage")
-async def set_lead_stage(lead_id: str, body: dict[str, Any]):
-    """Move a lead by hand.
-
-    The escape hatch for when the pipeline is wrong about a lead and no card
-    exists to say so — a lead researched four times because the stage it parked
-    at was the stage that dispatches research. Every one of those bugs is worth
-    fixing at the source, but the operator should never have to wait for a
-    deploy to stop one.
-
-    It goes through `advance_lead` like everything else, so the change is in
-    the lead's history with the reason attached and shows up on the board.
-    """
-    stage = str(body.get("stage") or "").strip()
-    if stage not in state.ALL_STAGES:
-        raise HTTPException(400, f"unknown stage: {stage!r}")
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        raise HTTPException(404, "no such lead")
-    reason = str(body.get("reason") or "").strip()
-    if lead.get("stage") == stage:
-        return {"ok": True, "unchanged": True, "stage": stage}
-
-    # A business that is holding our email, and has not replied, should not be
-    # quietly rebuilt underneath. Still possible — but deliberately, not by a
-    # stray click, and the answer says exactly what it would mean.
-    if stage in state.REWORK_STAGES and state.awaiting_their_answer(lead):
-        if not body.get("force"):
-            sent = (lead.get("sent_log") or [{}])[-1]
-            when = time.strftime("%d/%m %H:%M", time.localtime(sent.get("ts", 0)))
-            raise HTTPException(409, (
-                f"{lead.get('name')} was emailed on {when} at {sent.get('to')} "
-                "and has not replied. Moving it back to "
-                f"'{stage}' would redo the work behind a page they are looking "
-                "at right now, and the price and link in their inbox would stop "
-                "matching. If they have answered, record the reply instead — "
-                "that reopens everything properly. To do it anyway, resend with "
-                "force: true."))
-
-    # Record the decision BEFORE stopping anything, so a run that finishes in
-    # the same instant is still recognised as overtaken and its write refused.
-    state.mark_operator_move(lead_id)
-
-    # Then actually stop the work. An operator decision beats a run in flight:
-    # letting it finish means paying minutes of output about a state that no
-    # longer holds.
-    stopped = agent_helpers.cancel_lead(
-        lead_id, reason or f"moved to '{stage}'")
-
-    # A pending card on this lead is about the state it is leaving. Resolve
-    # them, or they suppress dispatch at the new stage for no reason.
-    dropped = []
-    for a in state.list_user_approvals(status="pending"):
-        if (a.get("payload") or {}).get("lead_id") == lead_id:
-            state.resolve_user_approval(
-                a["id"], "ignored",
-                f"superseded: operator moved the lead to '{stage}'")
-            dropped.append(a["kind"])
-
-    # The deliberate human override. `by_hand` is the ONLY way past the
-    # transition table, and a move that is off it is marked as such in the
-    # history rather than silently looking like a normal step.
-    state.advance_lead(
-        lead_id, stage, agent="operator", by_hand=True,
-        note=(f"moved by hand: {reason}" if reason else "moved by hand")[:300],
-        force_rework=bool(body.get("force")))
-    state.log_event(
-        "run_end", from_="operator", to="operator",
-        summary=f"{lead.get('name')} moved by hand: "
-                f"{lead.get('stage')} → {stage}"
-                + (f" ({reason[:100]})" if reason else ""),
-        outcome="completed",
-        details={"lead_id": lead_id, "from": lead.get("stage"), "to": stage})
-    await world.publish({"type": "approvals_updated"})
-    return {"ok": True, "stage": stage, "from": lead.get("stage"),
-            "approvals_dismissed": dropped, "agents_stopped": stopped}
-
-
-@app.get("/leads/{lead_id}/timeline")
-async def lead_timeline(lead_id: str):
-    """Everything that ever happened to one lead, in order.
-
-    Five separate ledgers know part of the story and none knows all of it, so
-    they are merged here rather than in the browser:
-
-    - the lead's own `history` — every stage change, who moved it and why. This
-      is the permanent record; it is written in the same transaction as the
-      stage itself, so it cannot drift.
-    - the activity log — what agents actually did. Capped at 1000 entries
-      globally, so an old lead's runs roll off while its history survives.
-      `events_complete` says whether that has happened.
-    - escalations — where an agent got stuck and what Ultron told it.
-    - user approvals — the gates, and how the operator decided them.
-    - `replies` — what the business said back.
-    """
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        raise HTTPException(404, "no such lead")
-
-    entries: list[dict[str, Any]] = []
-
-    for h in lead.get("history") or []:
-        entries.append({
-            "ts": h.get("ts"), "kind": "stage",
-            "agent": h.get("agent"),
-            "title": f"{h.get('from_stage') or '—'} → {h.get('stage')}",
-            "detail": h.get("note") or "",
-            "from_stage": h.get("from_stage"), "to_stage": h.get("stage"),
-        })
-
-    events = state.list_events(limit=1000)
-    for e in events:
-        if (e.get("details") or {}).get("lead_id") != lead_id:
-            continue
-        outcome = e.get("outcome")
-        agent = e.get("from") or e.get("to")
-        title = e.get("summary") or e.get("kind")
-        detail = ""
-        kind = "run"
-
-        # `X reached 'enriched' → lens` is the transport routing work, logged
-        # with no author, so it rendered as "system" saying something opaque.
-        # It is its own kind of event and deserves its own words.
-        if outcome == "dispatched":
-            kind = "dispatch"
-            to = e.get("to") or "?"
-            stage = (e.get("details") or {}).get("stage")
-            agent = None
-            title = f"handed to {to}"
-            detail = (f"the lead reached '{stage}', and that is {to}'s work"
-                      if stage else f"routed to {to}")
-
-        entries.append({
-            "ts": e.get("ts"), "kind": kind, "subkind": e.get("kind"),
-            "agent": agent, "title": title, "detail": detail,
-            "outcome": None if kind == "dispatch" else outcome,
-            "to": e.get("to"),
-        })
-
-    for esc in state.list_escalations(status=None, limit=500):
-        if ((esc.get("original_task") or {}).get("lead_id")) != lead_id:
-            continue
-        entries.append({
-            "ts": esc.get("ts"), "kind": "escalation",
-            "agent": esc.get("agent"),
-            "title": f"{esc.get('agent')} got stuck and asked for guidance",
-            "detail": (esc.get("message") or "")[:1200],
-            "outcome": esc.get("status"),
-            "answer": (esc.get("ultron_response") or {}).get("guidance")
-                      if isinstance(esc.get("ultron_response"), dict)
-                      else esc.get("ultron_response"),
-        })
-
-    for a in state.list_user_approvals(status=None, limit=500):
-        if (a.get("payload") or {}).get("lead_id") != lead_id:
-            continue
-        entries.append({
-            "ts": a.get("ts"), "kind": "gate",
-            "agent": a.get("requesting_agent"),
-            "title": a.get("summary") or a.get("kind"),
-            "detail": a.get("reason") or "",
-            "outcome": a.get("status"),
-            "gate_kind": a.get("kind"),
-            "decided_ts": a.get("resolved_ts") or a.get("decided_ts"),
-        })
-
-    for r in lead.get("replies") or []:
-        entries.append({
-            "ts": r.get("ts"), "kind": "reply",
-            "agent": r.get("recorded_by") or "operator",
-            "title": f"the business replied — {r.get('outcome')}",
-            "detail": r.get("note") or "",
-            "outcome": r.get("outcome"),
-        })
-
-    entries.sort(key=lambda x: x.get("ts") or 0)
-
-    # What is happening to this lead at this second. The ledgers above are all
-    # past tense; without this the page cannot distinguish "nothing is
-    # happening" from "an agent has been building for four minutes".
-    active = [
-        {"worker_id": wid, "role": info.get("role"),
-         "summary": info.get("summary"), "workbench": info.get("workbench"),
-         "started_ts": info.get("started_ts")}
-        for wid, info in agent_helpers.all_in_flight().items()
-        if info.get("lead_id") == lead_id
-    ]
-
-    return {
-        "lead": state.lead_summary(lead),
-        # What this lead has cost, on the card rather than only inside the
-        # dossier: it is the figure that decides whether the price is right,
-        # and it belongs next to the business it is about.
-        "spend": usage_mod.for_lead(lead_id),
-        "entries": entries,
-        "active": active,
-        "invoice": invoices_mod.for_lead(lead_id),
-        "invoice_blocked_by": config.invoice_config_problems(),
-        "next_step": _next_step(lead),
-        # The activity log is a ring buffer. Say so, rather than letting a page
-        # imply nothing happened during a window that simply rolled off.
-        "events_complete": len(events) < 1000,
-        "counts": {
-            "stage_changes": sum(1 for e in entries if e["kind"] == "stage"),
-            "runs": sum(1 for e in entries if e["kind"] == "run"),
-            "handoffs": sum(1 for e in entries if e["kind"] == "dispatch"),
-            "escalations": sum(1 for e in entries if e["kind"] == "escalation"),
-            "gates": sum(1 for e in entries if e["kind"] == "gate"),
-        },
-    }
-
-
-@app.post("/leads/{lead_id}/assets")
-async def upload_assets(
-    lead_id: str,
-    files: list[UploadFile] = File(...),
-    caption: str = Form(""),
-    source: str = Form("owner email"),
-):
-    """Take files the business sent us into the lead's asset store.
-
-    Separate from the harvested photographs on purpose: these are theirs, given
-    for this purpose, and they are the only images allowed on a built page.
-    """
-    if state.get_lead(lead_id) is None:
-        raise HTTPException(404, "no such lead")
-    accepted, rejected = [], []
-    for upload in files:
-        try:
-            data = await upload.read()
-            accepted.append(assets_mod.ingest(
-                lead_id, upload.filename or "file", data,
-                source=source, caption=caption,
-            ))
-        except assets_mod.AssetRejected as e:
-            rejected.append({"file": upload.filename, "why": str(e)})
-        except Exception as e:  # noqa: BLE001
-            rejected.append({"file": upload.filename, "why": f"{type(e).__name__}: {e}"})
-    if accepted:
-        state.update_lead(lead_id, owner_assets=assets_mod.read_manifest(lead_id))
-        state.log_event(
-            "run_end", from_="operator",
-            summary=f"{len(accepted)} file(s) from the business stored for "
-                    f"{state.get_lead(lead_id).get('name')}",
-            outcome="completed", details={"lead_id": lead_id},
-        )
-        await world.publish({"type": "approvals_updated"})
-    return {"ok": bool(accepted), "accepted": accepted, "rejected": rejected}
-
-
-@app.delete("/leads/{lead_id}/assets/{file}")
-async def delete_asset(lead_id: str, file: str):
-    removed = assets_mod.delete(lead_id, file)
-    state.update_lead(lead_id, owner_assets=assets_mod.read_manifest(lead_id))
-    return {"ok": removed}
-
-
-@app.get("/invoices")
-async def list_invoices():
-    """The invoice ledger. Carries the internal margin/domain split, which is
-    for the operator's books and never appears on the document itself."""
-    return {"invoices": invoices_mod.list_invoices(),
-            "config_problems": config.invoice_config_problems(),
-            "next_number": invoices_mod.next_number()}
-
-
-@app.get("/invoices/{number}.pdf")
-async def get_invoice(number: str):
-    row = next((r for r in invoices_mod.list_invoices()
-                if r.get("number") == number), None)
-    if row is None or not row.get("pdf"):
-        raise HTTPException(404, "no such invoice")
-    path = Path(row["pdf"])
-    if not path.is_file():
-        raise HTTPException(404, f"the file is gone: {path}")
-    return FileResponse(path, media_type="application/pdf",
-                        filename=f"{number}.pdf")
-
-
-@app.post("/invoices/{number}/paid")
-async def mark_invoice_paid(number: str, body: dict[str, Any] | None = None):
-    """Record that the transfer arrived. The handover checklist is gated on it,
-    because the work was done on spec and the domain and files are the only
-    leverage there is."""
-    ok = invoices_mod.mark_paid(number, (body or {}).get("note", ""))
-    if not ok:
-        raise HTTPException(404, "no such invoice")
-    state.log_event("run_end", from_="operator", to="operator",
-                    summary=f"invoice {number} marked paid", outcome="completed")
-    await world.publish({"type": "approvals_updated"})
-    return {"ok": True, "number": number}
-
-
-@app.post("/leads/{lead_id}/invoice")
-async def make_invoice(lead_id: str, force: int = 0):
-    """Generate the facture for a lead, or redo it.
-
-    `force=1` regenerates in place, keeping the same number: an invoice redone
-    after a layout fix must not consume a second one and orphan the first.
-    """
-    return await invoices_mod.create_for_lead(lead_id, force=bool(force))
-
-
-@app.delete("/invoices/{number}")
-async def delete_invoice(number: str):
-    """Take back an invoice that was never sent.
-
-    Refuses unless it is the highest number in its series, because removing one
-    from the middle leaves the hole in the sequence the numbering rules exist
-    to prevent. Delete the later ones first, or keep it.
-    """
-    row = next((r for r in invoices_mod.list_invoices()
-                if r.get("number") == number), None)
-    if row is None:
-        raise HTTPException(404, "no such invoice")
-    if row.get("sent"):
-        raise HTTPException(
-            409, "that invoice has been sent — the client holds it, so it "
-                 "cannot be taken back")
-    if not invoices_mod.discard(number):
-        raise HTTPException(
-            409, "refusing: it is not the last number in its series, and "
-                 "removing it would leave a gap")
-    state.log_event("run_end", from_="operator", to="operator",
-                    summary=f"invoice {number} discarded (never sent)",
-                    outcome="completed")
-    await world.publish({"type": "approvals_updated"})
-    return {"ok": True, "discarded": number}
-
-
-@app.post("/invoices/{number}/sent")
-async def mark_invoice_sent(number: str, body: dict[str, Any] | None = None):
-    if not invoices_mod.mark_sent(number, (body or {}).get("note", "")):
-        raise HTTPException(404, "no such invoice")
-    await world.publish({"type": "approvals_updated"})
-    return {"ok": True, "number": number}
 
 
 @app.get("/rooms")
@@ -802,7 +192,7 @@ class WorkerCaps(BaseModel):
 @app.get("/rooms/workers")
 async def get_worker_caps() -> dict[str, Any]:
     """Per-room worker caps, with the ceiling and which rooms cannot change."""
-    from .workers import SINGLETON_ROLES
+    from .workers import is_singleton
 
     return {
         "cap": rooms_mod.MAX_WORKERS_CAP,
@@ -814,7 +204,7 @@ async def get_worker_caps() -> dict[str, Any]:
                 # Ultron dispatches against himself if there are two of him, so
                 # the Throne is shown but not editable rather than silently
                 # ignoring whatever is set.
-                "singleton": any(a.id in SINGLETON_ROLES for a in r.agents),
+                "singleton": any(is_singleton(a.id) for a in r.agents),
                 "busy": len([w for w in world.workers(r.agents[0].id)
                              if w.busy]) if r.agents else 0,
             }
@@ -825,12 +215,12 @@ async def get_worker_caps() -> dict[str, Any]:
 
 @app.put("/rooms/workers")
 async def put_worker_caps(caps: WorkerCaps) -> dict[str, Any]:
-    from .workers import SINGLETON_ROLES
+    from .workers import is_singleton
 
     wanted: dict[str, int] = {}
     if caps.default is not None:
         for r in rooms_mod.load_rooms():
-            if any(a.id in SINGLETON_ROLES for a in r.agents):
+            if any(is_singleton(a.id) for a in r.agents):
                 continue
             wanted[r.id] = caps.default
     wanted.update(caps.rooms or {})
@@ -850,9 +240,9 @@ async def put_worker_caps(caps: WorkerCaps) -> dict[str, Any]:
     # `max_workers` in the `/rooms` payload — nothing reads it for capacity,
     # and the settings pane reads `/rooms/workers` instead.)
     #
-    # Raising a cap hires nobody by itself: a worker appears when a lead needs
+    # Raising a cap hires nobody by itself: a worker appears when a record needs
     # a room whose workers are all busy. Lowering it fires nobody either; the
-    # sweep retires them as their leads finish.
+    # sweep retires them as their records finish.
     return {"ok": True, "changed": sorted(changed), "problems": problems}
 
 
@@ -890,7 +280,7 @@ async def get_room_state(room_id: str) -> dict[str, Any]:
             "status": a.status,
             "busy": a.busy,
             "ephemeral": a.ephemeral,
-            "lead_id": a.lead_id,
+            "lead_id": a.record_id,
         }
         for a in world.agents.values()
         if a.home_room == room_id
@@ -910,7 +300,7 @@ async def get_room_state(room_id: str) -> dict[str, Any]:
         ]
         benches.append({
             **bench.model_dump(),
-            "queue": state.list_leads(stages=list(bench.stages), limit=40)
+            "queue": state.list_records(stages=list(bench.stages), limit=40)
                      if bench.stages else [],
             "working": at_bench,
             "occupants": [
@@ -940,6 +330,15 @@ async def get_room_state(room_id: str) -> dict[str, Any]:
 
 
 class ActionBody(BaseModel):
+    # Extra fields are REFUSED rather than ignored.
+    #
+    # The app sent `{"name": ..., "lead_id": ...}` for weeks. Pydantic dropped
+    # the stray field, `payload` defaulted to empty, the endpoint answered
+    # `ok: true, started: true` because starting the task did succeed, and the
+    # task refused itself somewhere nothing was looking. A 422 naming the
+    # field would have said so the first time.
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     payload: dict[str, Any] = {}
 
@@ -952,64 +351,385 @@ async def post_room_action(room_id: str, body: ActionBody) -> dict[str, Any]:
     return await handler.action(body.name, body.payload)
 
 
-class PortLead(BaseModel):
-    """A client who already has a site and wants it rebuilt on the editor."""
-    url: str
-    name: str
-    email: str
-    phone: str | None = None
-    address: str | None = None
-    notes: str | None = None
+@app.get("/plugins")
+async def get_plugins() -> dict[str, Any]:
+    """What is installed, and what each one contributes.
 
-
-@app.post("/leads/port")
-async def create_port_lead(body: PortLead) -> dict[str, Any]:
-    """Open a port lead. It starts at `intake`, where Probe reads their site.
-
-    Deliberately an operator action rather than anything an agent can do: a
-    port lead means somebody has agreed to pay us, and that conversation
-    happens outside this system.
+    The environment itself has no rooms, stages or prompts — they all arrive
+    from here, so this is the honest answer to "why does the map look like
+    that".
     """
-    url = body.url.strip()
-    if not url:
-        raise HTTPException(400, "their site URL is required — it is the brief")
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    email = state.clean_email(body.email)
-    if not email:
-        raise HTTPException(
-            400, f"{body.email!r} is not a usable email address, and the "
-                 "editor keys a client account to one")
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(400, "the business name is required")
+    return {
+        "plugins": environment.current().describe(),
+        "stages": list(state.STAGES),
+        "dead_stages": list(state.DEAD_STAGES),
+        "kinds": list(state.KINDS),
+        "edges": len(state.PIPELINE),
+    }
 
-    existing = [l for l in state.list_leads(limit=1000)
-                if (l.get("email") or "").lower() == email]
-    if existing:
-        raise HTTPException(
-            409, f"{email} is already on lead {existing[0]['id']} "
-                 f"({existing[0].get('name')}, at '{existing[0].get('stage')}')")
 
-    lead = state.add_lead(
-        name, kind=state.PORT,
-        source={"kind": "port", "ref": "opened by the operator"},
-        email=email, phone=body.phone, address=body.address, website=url,
-        port={"url": url, "notes": (body.notes or "").strip(),
-              "opened_ts": time.time()},
-    )
+async def _reload_now() -> dict[str, Any]:
+    """Re-read `plugins/` and rebuild everything derived from it.
+
+    Shared by the reload endpoint and by every operation that CHANGES what is
+    installed, so enabling a plugin takes effect without a second call the
+    caller has to remember to make.
+
+    Installing a plugin is putting a directory in `plugins/`, and until now the
+    only way to make the environment notice was a restart — which drops every
+    sprite's position, every open client, and anything mid-flight.
+
+    What this DOES cover is a plugin appearing or disappearing. What it does
+    NOT cover is a plugin whose code CHANGED: Python caches modules, so the
+    already-imported one is what gets used again, and reloading a package
+    properly means chasing every stale reference held in a closure, a
+    dataclass default or another plugin's table. That is the case where you are
+    editing anyway, so restart — `uvicorn --reload` does it for you.
+
+    Three things make this safe enough to expose:
+
+    - **A broken plugin cannot take the server down.** `environment.boot`
+      only replaces the live environment once the new one has validated, so a
+      plugin that fails to import, or declares a job at a stage no bench works,
+      leaves the running environment exactly as it was and reports why.
+    - **It refuses while an agent is running.** A run holds a role, a worker
+      and a lock that the reload is about to rebuild underneath it.
+    - **The world is mutated, not rebuilt.** Rooms that survive keep their
+      sprites where they were standing.
+    """
+    global HANDLERS
+
+    busy = agent_helpers.every_in_flight()
+    if busy:
+        return {
+            "ok": False,
+            "error": f"{len(busy)} agent run(s) in flight",
+            "detail": "reloading would rebuild the rooms and the dispatch "
+                      "table underneath a run that is holding them. Wait for "
+                      "them to finish, or stop them first.",
+            "in_flight": [{"worker_id": b.get("worker_id"),
+                           "role": b.get("role")} for b in busy],
+        }
+
+    was = {p.id for p in environment.current().plugins}
+    try:
+        found = discovery.find()
+        env = environment.boot(found)
+    except Exception as exc:                          # noqa: BLE001
+        # `environment.boot` assigns the module global only on success, so the
+        # environment being served is still the one that worked.
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+            "detail": "nothing changed — the environment that was already "
+                      "running is still the one being served.",
+            "plugins": sorted(was),
+        }
+
+    now = {p.id for p in env.plugins}
+    _uninstall_routers(now)
+    _install_routers(env, announce=False)
+    app.openapi_schema = None          # or /docs keeps describing the old set
+
+    tool_registry.reload()
+    state.ensure_castles(env)
+    rooms_mod.invalidate()
+    HANDLERS = build_handlers(world)
+    moved = await world.resync()
+
+    await world.publish({"type": "plugins_changed"})
     state.log_event(
-        "run_end", from_="operator", to="probe",
-        summary=f"port lead opened: {name} — rebuilding {url}",
-        outcome="completed", details={"lead_id": lead["id"], "lead_kind": "port"})
-    await world.publish({"type": "approvals_updated"})
-    return {"ok": True, "lead_id": lead["id"], "stage": lead["stage"],
-            "kind": lead["kind"]}
+        "run_end", from_="operator",
+        summary=(f"plugins reloaded: {len(now)} installed"
+                 + (f", added {', '.join(sorted(now - was))}" if now - was else "")
+                 + (f", removed {', '.join(sorted(was - now))}" if was - now else "")),
+        outcome="completed",
+        details={"added": sorted(now - was), "removed": sorted(was - now)})
+
+    return {
+        "ok": True,
+        "plugins": sorted(now),
+        "added": sorted(now - was),
+        "removed": sorted(was - now),
+        "rooms": len(world.rooms),
+        "agents_added": moved["added"],
+        "agents_removed": moved["removed"],
+        "problems": env.check(),
+    }
 
 
-class GateToggle(BaseModel):
-    stage: str
-    on: bool
+@app.post("/plugins/reload")
+async def reload_plugins() -> dict[str, Any]:
+    """Re-read `plugins/` without restarting the process.
+
+    Installing a plugin is putting a directory in `plugins/`, and until this
+    existed the only way to make the environment notice was a restart — which
+    drops every sprite's position, every open client, and anything mid-flight.
+
+    What this covers is a plugin appearing or disappearing. What it does NOT
+    cover is a plugin whose code CHANGED: Python caches modules, so the
+    already-imported one is what gets used again, and reloading a package
+    properly means chasing every stale reference held in a closure, a
+    dataclass default or another plugin's table. That is the case where you
+    are editing anyway, so restart — `uvicorn --reload` does it for you.
+    """
+    return await _reload_now()
+
+
+class CastleBody(BaseModel):
+    plugin: str = ""
+    name: str = ""
+    ring: int | None = None
+    slot: int | None = None
+
+
+async def _world_changed() -> dict[str, Any]:
+    """After anything that changes which castles exist or where they sit."""
+    global HANDLERS
+
+    rooms_mod.invalidate()
+    HANDLERS = build_handlers(world)
+    moved = await world.resync()
+    await world.publish({"type": "castles_changed"})
+    return moved
+
+
+@app.get("/records/{record_id}/view")
+async def get_record_view(record_id: str) -> dict[str, Any]:
+    """One record, as blocks the app knows how to draw.
+
+    The environment does not know what a record IS — a dossier with cited
+    prices, a job posting, a port survey — so it asks the plugin that owns the
+    record's kind and falls back to inferring a view from the JSON. Either way
+    the app never learns what any of it means.
+    """
+    from . import view as view_mod
+
+    record = state.get_record(record_id)
+    if record is None:
+        raise HTTPException(404, "no such record")
+
+    kind = state.record_kind(record)
+    blocks = environment.current().record_view(record, kind)
+    return {
+        "id": record_id,
+        "name": record.get("name", ""),
+        "kind": kind,
+        "stage": record.get("stage", ""),
+        "castle_id": state.home_castle_for(record),
+        "updated_ts": record.get("updated_ts"),
+        # The history is the machine's own record and is built here for every
+        # kind, so a plugin cannot forget the one part of a record that is
+        # always answerable.
+        "blocks": [*blocks, view_mod.timeline(record)],
+    }
+
+
+@app.get("/castles")
+async def get_castles() -> dict[str, Any]:
+    """Every castle, the plots around them, and what can be built.
+
+    The plots come from here rather than being computed in the app, because
+    the ROOMS are positioned from the same geometry — an app that worked out
+    its own plot centres would disagree with the coordinates it was given and
+    draw each castle beside its own rooms.
+    """
+    from . import castles as geom
+
+    built = state.list_castles()
+    taken = {(c.get("ring", 0), c.get("slot", 0)) for c in built}
+    env = environment.current()
+    names = {d["id"]: d.get("name") or d["id"] for d in env.describe()}
+
+    # Which castles have something running in them. Taken from the runs in
+    # flight rather than from a sprite's status: a sprite is "busy" for the
+    # length of an animation, and the question here is whether the castle is
+    # doing work.
+    busy: dict[str, int] = {}
+    for run in agent_helpers.every_in_flight():
+        castle = geom.castle_of(str(run.get("role") or ""))
+        busy[castle] = busy.get(castle, 0) + 1
+    waiting = state.approval_counts_by_castle()
+
+    # The EQUATION, not a list of plots.
+    #
+    # Sending plots meant choosing how many, and any number is wrong: too few
+    # and zooming out reveals nothing new, so the web plainly stops; enough to
+    # fill a zoomed-out view and one castle on ring 50 lists eight thousand
+    # pieces of empty land. The app generates the plots its viewport actually
+    # covers, from these two constants and the list of what is built on, and
+    # gets more of them the further out it zooms — which is the whole point of
+    # an infinite web.
+    web = {"span": geom.PLOT, "ring_spacing": geom.RING_SPACING}
+
+    return {
+        "castles": [
+            {**c,
+             "plugin_name": names.get(c.get("plugin", ""), c.get("plugin", "")),
+             "installed": c.get("plugin") in names,
+             "records": len(state.records_in(c["id"])),
+             # `working` when a run is in flight here, `idle` otherwise. There
+             # is no third state: a castle is either doing something or it is
+             # not, and "has work waiting" is the badge, not the status.
+             "status": "working" if busy.get(c["id"]) else "idle",
+             "running": busy.get(c["id"], 0),
+             "waiting": waiting.get(c["id"], 0),
+             **geom.plot_for(c.get("ring", 1), c.get("slot", 0))}
+            for c in built
+        ],
+        "web": web,
+        "taken": sorted(taken),
+        # Only plugins that declare rooms of their own: an extension lives
+        # inside the castle of what it extends and cannot have one.
+        "buildable": [{"id": d["id"], "name": d.get("name") or d["id"],
+                       "description": d.get("description", ""),
+                       "built": len(state.castles_of(d["id"]))}
+                      for d in env.describe() if d.get("rooms")],
+    }
+
+
+@app.post("/castles")
+async def post_castle(body: CastleBody) -> dict[str, Any]:
+    env = environment.current()
+    names = {d["id"]: d.get("name") or d["id"]
+             for d in env.describe() if d.get("rooms")}
+    if body.plugin not in names:
+        return {"ok": False,
+                "error": f"{body.plugin!r} is not an installed plugin with "
+                         f"rooms of its own"}
+    try:
+        made = state.add_castle(body.plugin, body.name,
+                                plugin_name=names[body.plugin],
+                                ring=body.ring, slot=body.slot)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    await _world_changed()
+    state.log_event("run_end", from_="operator", outcome="completed",
+                    summary=f"built {made['name']}",
+                    details={"castle": made})
+    return {"ok": True, "castle": made}
+
+
+@app.patch("/castles/{castle_id}")
+async def patch_castle(castle_id: str, body: CastleBody) -> dict[str, Any]:
+    """Rename a castle, or move it to another plot."""
+    try:
+        if body.name:
+            got = state.rename_castle(castle_id, body.name)
+            if got is None:
+                return {"ok": False, "error": "no such castle"}
+        if body.ring is not None and body.slot is not None:
+            got = state.move_castle(castle_id, body.ring, body.slot)
+            if got is None:
+                return {"ok": False, "error": "no such castle"}
+            await _world_changed()
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "castle": state.get_castle(castle_id)}
+
+
+@app.delete("/castles/{castle_id}")
+async def delete_castle(castle_id: str) -> dict[str, Any]:
+    """Raze a castle.
+
+    Its RECORDS are left alone. They are the work itself, and whatever was
+    made for them, so deleting a PLACE must not delete what was done there.
+    They stop appearing in any queue, because every queue is scoped to a
+    castle, and they come back if one is rebuilt on the same plot for the same
+    plugin.
+    """
+    castle = state.get_castle(castle_id)
+    if castle is None:
+        return {"ok": False, "error": "no such castle"}
+    held = len(state.records_in(castle_id))
+    state.delete_castle(castle_id)
+    await _world_changed()
+    state.log_event("run_end", from_="operator", outcome="completed",
+                    summary=f"razed {castle['name']}"
+                            + (f", leaving {held} record(s)" if held else ""))
+    return {"ok": True, "razed": castle, "records_left": held}
+
+
+@app.get("/plugins/catalog")
+async def plugins_catalog() -> dict[str, Any]:
+    """Everything on disk, installed or not.
+
+    `/plugins` answers "what is running", which cannot describe a plugin that
+    is present and switched off — and something you cannot see is something
+    you cannot switch back on.
+    """
+    running = {p.id for p in environment.current().plugins}
+    out = []
+    for entry in discovery.catalog():
+        out.append({
+            **entry,
+            "running": entry["id"] in running,
+            # What deleting it would destroy. Shown BEFORE anyone asks to
+            # delete, because the answer is almost always "this plugin's only
+            # copy of its prompts" and that is worth knowing unprompted.
+            "unrecoverable": plugin_admin.unrecoverable(entry["id"]),
+        })
+    return {"plugins": out, "dir": str(discovery.PLUGINS_DIR)}
+
+
+class InstallBody(BaseModel):
+    source: str = ""
+    id: str = ""
+
+
+@app.post("/plugins/install")
+async def plugins_install(body: InstallBody) -> dict[str, Any]:
+    """Clone a plugin repository into `plugins/`, then reload."""
+    try:
+        got = plugin_admin.install(body.source, body.id)
+    except plugin_admin.PluginAdminError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "installed": got, "reload": await _reload_now()}
+
+
+class DisableBody(BaseModel):
+    reason: str = ""
+
+
+@app.post("/plugins/{plugin_id}/disable")
+async def plugins_disable(plugin_id: str, body: DisableBody | None = None
+                          ) -> dict[str, Any]:
+    """Switch a plugin off, leaving it on disk.
+
+    The answer to almost every reason someone reaches for delete: one file, it
+    survives a restart, it is visible in the directory, and it destroys
+    nothing.
+    """
+    try:
+        got = plugin_admin.disable(plugin_id, (body.reason if body else ""))
+    except plugin_admin.PluginAdminError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "plugin": got, "reload": await _reload_now()}
+
+
+@app.post("/plugins/{plugin_id}/enable")
+async def plugins_enable(plugin_id: str) -> dict[str, Any]:
+    try:
+        got = plugin_admin.enable(plugin_id)
+    except plugin_admin.PluginAdminError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "plugin": got, "reload": await _reload_now()}
+
+
+@app.delete("/plugins/{plugin_id}")
+async def plugins_remove(plugin_id: str, force: bool = False) -> dict[str, Any]:
+    """Delete a plugin's directory.
+
+    Refuses whenever the directory holds anything git would not bring back —
+    which for every plugin here means its prompts, kept out of version control
+    on purpose and therefore existing on exactly one machine.
+    """
+    try:
+        got = plugin_admin.remove(plugin_id, force=force)
+    except plugin_admin.PluginAdminError as e:
+        return {"ok": False, "error": str(e),
+                "unrecoverable": plugin_admin.unrecoverable(plugin_id)}
+    return {"ok": True, "plugin": got, "reload": await _reload_now()}
 
 
 @app.get("/pipeline")
@@ -1021,7 +741,8 @@ async def get_pipeline() -> dict[str, Any]:
     uses is what names the room here.
     """
     gates = state.stage_gates()
-    counts = state.lead_counts_by_stage()
+    _permanent = state.permanent_gates()
+    counts = state.counts_by_stage()
     steps = []
     for step in state.pipeline_steps():
         stage, role = step["from"], step["role"]
@@ -1031,30 +752,35 @@ async def get_pipeline() -> dict[str, Any]:
         steps.append({
             "stage": stage,
             "role": role,
-            "lead_kind": step["lead_kind"],
+            "record_kind": step["record_kind"],
             "room_id": room_id,
             "room_name": getattr(room, "name", room_id),
             "outcomes": step["outcomes"],
             "gated": stage in gates,
-            "permanent": stage in state.PERMANENT_GATES,
-            "permanent_reason": state.PERMANENT_GATES.get(stage),
+            "permanent": stage in _permanent,
+            "permanent_reason": _permanent.get(stage),
             "waiting": counts.get(stage, 0),
         })
     return {
         "steps": steps,
         "stages": list(state.STAGES),
-        "lead_kinds": list(state.LEAD_KINDS),
+        "kinds": list(state.KINDS),
         "dead_stages": sorted(state.DEAD_STAGES),
         "gates": gates,
     }
 
 
+class GateToggle(BaseModel):
+    stage: str
+    on: bool
+
+
 @app.post("/pipeline/gate")
 async def set_pipeline_gate(body: GateToggle) -> dict[str, Any]:
-    if body.stage in state.PERMANENT_GATES:
+    if body.stage in state.permanent_gates():
         raise HTTPException(
             400, f"'{body.stage}' is always gated: "
-                 f"{state.PERMANENT_GATES[body.stage]}")
+                 f"{state.permanent_gates()[body.stage]}")
     try:
         gates = state.set_stage_gate(body.stage, body.on)
     except ValueError as e:
@@ -1069,141 +795,31 @@ async def set_pipeline_gate(body: GateToggle) -> dict[str, Any]:
     return {"ok": True, "gates": gates}
 
 
-@app.get("/health/mail")
-async def health_mail():
-    """Whether outreach can actually happen, and what to change if not."""
-    from . import mailbox
-    report = mailbox.check()
-    # "No replies yet" and "the poller never ran" look identical without this.
-    report["last_poll"] = state.get_meta("last_mail_poll")
-    return report
-
-
-@app.get("/health/google")
-async def health_google(name: str = "Garage Il Primo",
-                        address: str = "161 Boulevard Stalingrad, 69006 Lyon"):
-    """Is the Google key working, and are BOTH APIs enabled?
-
-    They are separate SKUs on the same key, and enabling one is the common way
-    to end up with half of this working — so each is called for real and
-    reported on its own.
-    """
-    from . import harvest, places
-    out: dict[str, Any] = {"key_present": places.configured()}
-    if not places.configured():
-        out["advice"] = (
-            "Set GOOGLE_MAPS_API_KEY in .env and restart. See /health/google "
-            "again afterwards.")
-        return out
-
-    profile = await places.lookup(name, address)
-    out["places"] = {
-        "ok": profile.get("ok"),
-        "found": profile.get("name"),
-        "website": profile.get("website"),
-        "status": profile.get("business_status"),
-        "reason": profile.get("reason"),
-    }
-
-    import tempfile
-    with tempfile.TemporaryDirectory() as tmp:
-        sv = await harvest.street_view(45.7666721, 4.8788234, Path(tmp),
-                                       headings=(0,))
-        out["street_view"] = {
-            "ok": bool(sv.get("files")),
-            "coverage": sv.get("coverage"),
-            "captured": sv.get("captured"),
-            "problems": sv.get("problems"),
-        }
-
-    good = out["places"]["ok"] and out["street_view"]["ok"]
-    out["advice"] = (
-        "Both APIs are answering." if good else
-        "Enable whichever failed on the Cloud project: 'Places API (New)' and "
-        "'Street View Static API'. A key with only one enabled returns "
-        "REQUEST_DENIED on the other. Billing must be on the project even "
-        "inside the free allowance.")
-    return out
-
-
-@app.get("/health/domain-pricing")
-async def health_domain_pricing(domain: str = "example-test-name.fr"):
-    """Is the registrar actually answering, for a real name?
-
-    Without credentials the quote falls back to a per-TLD table — a number that
-    can be badly wrong for a premium name — so this says plainly which one you
-    are on.
-    """
-    from . import domains as domains_mod
-    result = await domains_mod.price(domain, config.DOMAIN_YEARS)
-    return {
-        "configured": domains_mod.ovh_configured(),
-        "checked": domain,
-        "result": result,
-        "advice": (
-            "Live pricing is on." if result.get("verified") else
-            "Quotes are using the per-TLD estimate. Create a token at "
-            "https://api.ovh.com/createToken/ granting POST /order/cart, "
-            "GET /order/cart/* and POST /order/cart/*, then set "
-            "OVH_APPLICATION_KEY, OVH_APPLICATION_SECRET and OVH_CONSUMER_KEY."),
-    }
-
-
 @app.get("/health")
 async def health():
     return {
         "ok": True,
         "rooms": len(world.rooms),
         "agents": len(world.agents),
-        "leads": state.lead_counts_by_stage(),
+        "records": state.counts_by_stage(),
     }
 
 
 @app.get("/approvals")
 async def list_approvals(status: str = "pending"):
+    # `castle_id` is RESOLVED on the way out, not just read off the card. A
+    # card raised before castles existed stored none, and would otherwise
+    # arrive filed under nothing — a pending approval nobody can see is the
+    # one kind of state this environment must not have.
+    cards = [
+        {**card, "castle_id": state.approval_castle(card)}
+        for card in state.list_user_approvals(status=status, limit=200)
+    ]
     return {
-        "approvals": state.list_user_approvals(status=status, limit=200),
+        "approvals": cards,
         "counts_by_room": state.approval_counts_by_room(),
+        "counts_by_castle": state.approval_counts_by_castle(),
     }
-
-
-async def continue_pipeline(
-    lead_id: str, why: str, prefer_role: str | None = None
-) -> str | None:
-    """Dispatch whichever room works this lead's current stage.
-
-    An operator decision can move a lead — rejecting a publish sends it back to
-    the Factory — but nothing was picking it up afterwards. Ultron only reacts
-    to agents reporting in, so a rejection with detailed feedback sat at
-    `qa_failed` forever and the feedback was never acted on.
-
-    Deterministic rather than a dispatch call: the stage → room mapping is
-    already declared by the workbenches, and asking a model to re-derive it
-    would be slower, dearer and less reliable.
-    """
-    from .rooms import role_for_stage
-
-    lead = state.get_lead(lead_id)
-    if lead is None:
-        return None
-    stage = lead.get("stage")
-    # Some stages are worked by two rooms — `published` belongs to both the Copy
-    # Desk (write the pitch) and Communications (send it). The caller knows
-    # which it means; the stage alone does not.
-    role = prefer_role or role_for_stage(stage or "")
-    if role is None:
-        return None
-    runner = AGENT_RUNNERS.get(role)
-    if runner is None:
-        return None
-    state.log_event(
-        "dispatch_end", from_="operator", to=role,
-        summary=f"{why} → {role} picks it up at '{stage}'",
-        outcome="dispatched",
-        details={"lead_id": lead_id, "stage": stage},
-    )
-    asyncio.create_task(runner(world, {"lead_id": lead_id, "prompt": why}))
-    return role
 
 
 class ApprovalDecision(BaseModel):
@@ -1214,25 +830,16 @@ class ApprovalDecision(BaseModel):
 def _decision_problem(approval: dict[str, Any], body: "ApprovalDecision") -> str | None:
     """Why this decision cannot be carried out, or None.
 
-    Checked while the card is still pending, so refusing costs the operator
-    nothing but a message.
+    Checked while the card is still PENDING, so refusing costs the operator
+    nothing but a message. The rule itself belongs to whichever plugin raised
+    the gate — the core has no opinion about what makes a decision valid.
     """
     if body.decision != "approved":
         return None
-    if approval["kind"] == "bad_address":
-        lead = state.get_lead((approval.get("payload") or {}).get("lead_id")) or {}
-        reason = (body.reason or "")
-        # An address in the reply is the address to use. No address is not an
-        # error — it is a request to go and find one — so only refuse when the
-        # operator asked for neither.
-        if state.EMAIL_RE.search(reason) or lead.get("email"):
-            return None
-        if reason.strip():
-            return None
-        return ("Put a working address in the reply box, or say what to do "
-                "(for example \"find another address\") — approving with an "
-                "empty reply leaves the email nowhere to go.")
-    return None
+    gate = environment.current().gate(approval["kind"])
+    if gate is None or not gate.validate:
+        return None
+    return gate.validate(approval, body.decision, body.reason)
 
 
 @app.post("/approvals/{approval_id}")
@@ -1240,11 +847,11 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
     if body.decision not in {"approved", "rejected", "ignored"}:
         raise HTTPException(400, "decision must be approved, rejected, or ignored")
 
-    # Validate BEFORE resolving. The resolve used to come first, so a branch
-    # that then refused left the card consumed and the work undone: a
-    # `bad_address` card was approved with "probe should go fishing for another
-    # mail address", the handler found no email in that text, raised a 400, and
-    # the card was gone with nothing changed.
+    # Validate BEFORE resolving. The resolve used to come first, so a handler
+    # that then refused left the card consumed and the work undone. What counts
+    # as a valid decision is the plugin's rule, not the core's — see
+    # `Approval.validate`, and the incident that produced it, in the plugin
+    # that owns the gate.
     pending = next((a for a in state.list_user_approvals(status="pending", limit=500)
                     if a["id"] == approval_id), None)
     if pending is not None:
@@ -1269,455 +876,23 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
         await world.publish({"type": "approvals_updated"})
         return {"ok": True, "approval": rec}
 
-    # Propagate based on what the approval was about.
-    if rec["kind"] == "tool_review":
-        request_id = rec["payload"].get("request_id")
-        if request_id:
-            new_status = "approved" if body.decision == "approved" else "denied"
-            state.update_tool_request(request_id, status=new_status)
-
-    elif rec["kind"] == "manual_outreach":
-        # The operator messaged them on Instagram or Facebook themselves.
-        # Approving records that contact, which is what stops the lead being
-        # pitched again and starts the silence timer; rejecting leaves it be.
-        lead_id = rec["payload"].get("lead_id")
-        routes = rec["payload"].get("routes") or {}
-        if lead_id and body.decision == "approved":
-            route = next(iter(routes), "social")
-            handle = routes.get(route, route)
-            asyncio.create_task(echo_mod.mark_contacted(
-                world, lead_id,
-                note=f"messaged by hand on {route} ({handle})", via=route))
-        elif lead_id:
-            state.log_event(
-                "user_approval", from_="operator", to="echo",
-                summary=f"declined to message "
-                        f"{(state.get_lead(lead_id) or {}).get('name')} by hand",
-                outcome="rejected", details={"lead_id": lead_id},
-            )
-
-    elif rec["kind"] == "stage_gate":
-        # A step the operator asked to be consulted about. Approving runs it;
-        # rejecting leaves the lead parked where it is, which is a real choice
-        # and not a failure — the gate exists to let a lead wait.
-        lead_id = rec["payload"].get("lead_id")
-        role = rec["payload"].get("role")
-        stage = rec["payload"].get("stage")
-        runner = runners.AGENT_RUNNERS.get(role) if role else None
-        if lead_id and role and body.decision == "approved" and runner is not None:
-            lead = state.get_lead(lead_id)
-            if lead is None:
-                raise HTTPException(404, "no such lead")
-            if lead.get("stage") != stage:
-                # It moved while the card was open — running the step now would
-                # be work about a state that no longer holds.
-                state.log_event(
-                    "user_approval", from_="operator", to=role,
-                    summary=f"{lead.get('name')} left '{stage}' while the gate "
-                            f"was open (now '{lead.get('stage')}') — not run",
-                    outcome="skipped", details={"lead_id": lead_id},
-                )
-            else:
-                state.log_event(
-                    "dispatch_end", from_="operator", to=role,
-                    summary=f"{lead.get('name')} at '{stage}' → {role}: "
-                            "approved at the gate",
-                    outcome="dispatched",
-                    details={"lead_id": lead_id, "stage": stage},
-                )
-                asyncio.create_task(runner(world, {
-                    "lead_id": lead_id,
-                    "prompt": f"This lead just reached '{stage}'.",
-                }))
-        elif lead_id:
-            state.log_event(
-                "user_approval", from_="operator", to=role or "?",
-                summary=f"declined to run {role} on "
-                        f"{(state.get_lead(lead_id) or {}).get('name')} — "
-                        f"the lead stays at '{stage}'",
-                outcome="rejected", details={"lead_id": lead_id},
-            )
-
-    elif rec["kind"] == "publish_site":
-        # Gate 1. Approving here is what actually puts the site on a URL.
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            # Approving is what ends a rejection. Clear the operator's note
-            # here, or it follows the lead forever and every later rebuild is
-            # still being told to fix something that was signed off.
-            lead = state.get_lead(lead_id) or {}
-            qa = dict(lead.get("qa") or {})
-            if qa.get("problems"):
-                qa["problems"] = [q for q in qa["problems"]
-                                  if q.get("where") != "operator"]
-            state.update_lead(lead_id, sent_back=None, operator_revision=None,
-                              qa=qa)
-            asyncio.create_task(courier_mod.do_publish(world, lead_id))
-        elif lead_id:
-            # Send it back to Forge WITH the reason. Forge reads
-            # `qa.problems`, so the operator's note has to land there or the
-            # rebuild repeats whatever you rejected it for.
-            reason = (body.reason or "").strip()
-            lead = state.get_lead(lead_id) or {}
-            qa = dict(lead.get("qa") or {})
-            problems = list(qa.get("problems") or [])
-            if reason:
-                problems.insert(0, {
-                    "severity": "critical",
-                    "where": "operator",
-                    "problem": f"The operator rejected this build: {reason}",
-                    "fix": reason,
-                })
-            qa["problems"] = problems
-            qa["verdict"] = "fail"
-            # `qa` alone is not enough, and that cost two leads an evening.
-            # Lens replaces the whole dict on its next pass, so a reason that
-            # lives only there survives exactly ONE rebuild: Forge fixes it,
-            # Lens re-QAs and fails the build for something unrelated, the
-            # operator's words are overwritten, and the second rebuild is
-            # working from a list that no longer mentions them.
-            #
-            # So it also goes into two fields that persist until the operator
-            # approves: `sent_back`, which Forge now reads, and
-            # `operator_revision`, which is what makes Forge treat this as a
-            # change to a page that already exists rather than a fresh build.
-            #
-            # NOT `revision` — that one means "the business asked for a
-            # change", and its `ts` is what `scribe.run_outreach` and
-            # `state.awaiting_their_answer` read to decide whether a contacted
-            # business has come back to us. An operator's rejection written
-            # there would quietly re-arm the send gate on a pitch someone is
-            # still holding.
-            extra: dict[str, Any] = {}
-            if reason:
-                prev = dict(lead.get("operator_revision") or {})
-                asked = list(prev.get("history") or [])
-                asked.append({"ts": time.time(), "request": reason[:2000]})
-                extra = {
-                    "operator_revision": {
-                        "requested_by": "operator",
-                        "request": reason[:2000],
-                        "round": int(prev.get("round") or 0) + 1,
-                        "ts": time.time(),
-                        "history": asked[-5:],
-                    },
-                    "sent_back": {
-                        "reason": reason[:600],
-                        "from_stage": "qa_passed",
-                        "at": time.time(),
-                    },
-                }
-            state.advance_lead(
-                lead_id, "qa_failed", agent="operator",
-                note=f"publish rejected: {reason[:200]}" if reason
-                     else "publish rejected",
-                qa=qa,
-                **extra,
-            )
-            # No dispatch here. Moving the lead to `qa_failed` is enough —
-            # the orchestrator's stage sweep picks it up and sends it to the
-            # Factory. Dispatching here as well put two Forge workers on the
-            # same lead, two seconds apart, writing the same directory.
-
-    elif rec["kind"] == "bad_address":
-        # The address was wrong, so nothing was delivered. Approving means the
-        # operator has put a working one on the lead; rejecting means giving up
-        # on a business we cannot reach.
-        lead_id = rec["payload"].get("lead_id")
-        lead = state.get_lead(lead_id) or {} if lead_id else {}
-        reason = (body.reason or "").strip()
-        if lead_id and body.decision == "approved":
-            # A reason that contains an address IS the address. A reason with no
-            # address is an instruction — usually "go and find one" — and that
-            # is a job for Probe, which has the web tools and whose whole
-            # purpose is finding a contact route. It used to be an error.
-            found = state.EMAIL_RE.search(reason or "")
-            if found:
-                state.update_lead(lead_id, email=found.group(0))
-                state.advance_lead(
-                    lead_id, "drafted", agent="operator",
-                    note=f"new address supplied by hand: {found.group(0)}")
-            else:
-                state.log_event(
-                    "dispatch_start", from_="operator", to="probe",
-                    summary=f"hunting a contact route for {lead.get('name')}"
-                            f" — {reason[:120]}",
-                    details={"lead_id": lead_id})
-                asyncio.create_task(
-                    probe_mod.find_contact(world, lead_id, reason))
-        elif lead_id:
-            state.advance_lead(
-                lead_id, "lost", agent="operator",
-                note=f"no reachable address. {reason}"[:300] if reason
-                     else "no reachable address")
-
-    elif rec["kind"] == "ready_to_build":
-        # The gate before the most expensive run in the pipeline.
-        lead_id = rec["payload"].get("lead_id")
-        reason = (body.reason or "").strip()
-        if lead_id and body.decision == "approved":
-            # Resolved, so the send-back note stops being shown. Left in place
-            # it would keep telling every later run to go and look at their
-            # Instagram again, long after somebody did.
-            state.update_lead(lead_id, sent_back=None)
-            # Explicit, because the lead does not change stage here and the
-            # sweep fires on stage changes.
-            asyncio.create_task(forge_mod.run_build(
-                world, lead_id,
-                f"The operator approved the research and added: {reason}"
-                if reason else ""))
-        elif lead_id:
-            # ONE STEP BACK, to the photo pass — not all the way to
-            # `qualified`, which is where this used to send it. From
-            # `qualified` the lead redid the research, the appraisal and the
-            # photographs in turn, so a note saying "look at their Instagram
-            # again" re-ran Probe's whole dossier and re-priced the job to get
-            # at the last of those three. `appraised` dispatches the Gallery's
-            # visual pass and nothing else.
-            #
-            # If it really is the DOSSIER that is wrong, move the lead to
-            # `qualified` by hand on the lead board; that is the rarer case and
-            # it should be the one that costs a deliberate action.
-            state.advance_lead(
-                lead_id, "appraised", agent="operator",
-                note=(f"sent back before building: {reason[:200]}" if reason
-                      else "sent back before building — look again"),
-                # The reason has to travel in a FIELD, not just in the history.
-                # History is not in any agent's prompt, so the note went
-                # nowhere: one lead was sent back twice with "find photos from
-                # their instagram" and the photo pass redid exactly what it
-                # had done before, because it was never told.
-                sent_back={
-                    "reason": reason[:600],
-                    "from_stage": "visualised",
-                    "at": time.time(),
-                } if reason else None)
-
-    elif rec["kind"] == "thin_content":
-        # The lead is parked at `qualified`, which is also the stage that
-        # dispatches research — so a card that resolves without moving it just
-        # hands the lead back to the loop it came from. Four of these were
-        # resolved on one lead and the pipeline re-researched a restaurant that
-        # had closed in December, every time.
-        lead_id = rec["payload"].get("lead_id")
-        reason = (body.reason or "").strip()
-        if lead_id and body.decision == "approved":
-            # "Build it anyway" — we have what we have.
-            lead = state.get_lead(lead_id) or {}
-            state.advance_lead(
-                lead_id, "enriched", agent="operator",
-                note=f"operator: build it with what we have. {reason}"[:300]
-                     if reason else "operator: build it with what we have")
-        elif lead_id:
-            state.advance_lead(
-                lead_id, "disqualified", agent="operator",
-                note=f"operator: not worth building. {reason}"[:300]
-                     if reason else "operator: not worth building")
-
-    elif rec["kind"] == "qa_loop":
-        # Forge and Lens have failed to agree on the same page three times.
-        # Approving means "Lens is wrong, ship it" — the commonest cause is a
-        # false fabrication flag, and the operator has the evidence to say so.
-        # Rejecting means "Lens is right", and the reason is what Forge lacked.
-        lead_id = rec["payload"].get("lead_id")
-        lead = state.get_lead(lead_id) or {} if lead_id else {}
-        qa = dict(lead.get("qa") or {})
-        reason = (body.reason or "").strip()
-        if lead_id and body.decision == "approved":
-            qa["verdict"] = "pass"
-            qa["rounds"] = 0
-            qa["operator_override"] = (
-                reason or "operator passed QA over Lens's objection")
-            state.advance_lead(
-                lead_id, "qa_passed", agent="operator",
-                note=f"QA overridden by operator: {reason[:200]}" if reason
-                     else "QA overridden by operator after repeated failures",
-                qa=qa,
-            )
-        elif lead_id:
-            # Back to Forge with the operator's note, and the counter cleared
-            # so the guidance gets a fair run rather than tripping the ceiling
-            # again on its first attempt.
-            problems = list(qa.get("problems") or [])
-            if reason:
-                problems.insert(0, {
-                    "severity": "critical",
-                    "where": "operator",
-                    "problem": f"Repeated QA failures, operator guidance: {reason}",
-                    "fix": reason,
-                })
-            qa["problems"] = problems
-            qa["verdict"] = "fail"
-            qa["rounds"] = 0
-            state.advance_lead(
-                lead_id, "qa_failed", agent="operator",
-                note=f"QA loop: operator guidance: {reason[:200]}" if reason
-                     else "QA loop: operator sent it back",
-                qa=qa,
-            )
-
-    elif rec["kind"] == "send_outreach":
-        # Gate 2. The only place in the pipeline that reaches a real person.
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            asyncio.create_task(echo_mod.do_send(world, lead_id))
-        elif lead_id:
-            # Rejecting a send means rewrite it. It used to mean that only when
-            # a reason was typed, and an empty box marked the lead `lost` — a
-            # destructive default hiding behind a blank field, where the
-            # obvious reading of "reject" is "not this version". Dropping a
-            # lead is now something you do deliberately: move it to `lost` with
-            # the stage control, or dismiss the card with `ignore`.
-            reason = (body.reason or "").strip()
-            lead = state.get_lead(lead_id) or {}
-            outreach = dict(lead.get("outreach") or {})
-            outreach["operator_feedback"] = reason
-            outreach["sent"] = False
-            # Back to `published`, which is the Copy Desk's stage — the stage
-            # sweep dispatches Scribe from there. No explicit dispatch: doing
-            # both put two workers on one lead two seconds apart.
-            state.advance_lead(
-                lead_id, "published", agent="operator",
-                note=(f"send rejected, rewriting: {reason[:200]}" if reason
-                      else "send rejected — rewriting the pitch"),
-                outreach=outreach,
-            )
-
-    elif rec["kind"] == "send_followup":
-        # Gate 2, second touch. Same shape as `send_outreach`: approving is the
-        # only thing that puts a message in front of a stranger.
-        lead_id = rec["payload"].get("lead_id")
-        touch = rec["payload"].get("touch")
-        if lead_id and touch and body.decision == "approved":
-            asyncio.create_task(echo_mod.do_send_followup(world, lead_id, touch))
-        elif lead_id:
-            # Rejecting means rewrite it, and unlike the pitch there is no
-            # stage to send the lead back to — it stays `contacted`, which is
-            # what it is. The draft is dropped so the sweep writes a fresh one
-            # with the operator's note as the brief.
-            reason = (body.reason or "").strip()
-            lead = state.get_lead(lead_id) or {}
-            # The draft is KEPT and flagged, not deleted. The rewrite needs to
-            # see what was refused and why — deleting it hands the redraft a
-            # blank page and the same note comes back — and `attempts` lives on
-            # this record, so dropping it also drops the ceiling that stops the
-            # pair of them looping.
-            followups = [dict(f) for f in (lead.get("followups") or [])]
-            for f in followups:
-                if f.get("touch") == touch:
-                    f["rejected"] = True
-                    f["operator_feedback"] = reason
-                    f["sent"] = False
-            state.update_lead(lead_id, followups=followups)
-            state.log_event(
-                "user_approval", from_="operator", to="echo",
-                summary=(f"follow-up {touch} rejected for {lead.get('name')}"
-                         + (f": {reason[:160]}" if reason else
-                            " — it will be redrafted")),
-                outcome="rejected",
-                details={"lead_id": lead_id, "touch": touch,
-                         "operator_feedback": reason},
-            )
-
-    elif rec["kind"] == "client_approved":
-        # A port client looked at their rebuilt site. Approving is what makes
-        # the sale; the Launch Pad picks it up from `won`.
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            state.advance_lead(
-                lead_id, "won", agent="operator",
-                note=(f"client approved the rebuild: {(body.reason or '').strip()[:200]}"
-                      if (body.reason or "").strip()
-                      else "client approved the rebuild"))
-        elif lead_id:
-            # Back to be changed, with their words as the brief — the same road
-            # a rejected publish takes, because it is the same job.
-            reason = (body.reason or "").strip()
-            lead = state.get_lead(lead_id) or {}
-            qa = dict(lead.get("qa") or {})
-            problems = list(qa.get("problems") or [])
-            if reason:
-                problems.append({"severity": "critical", "where": "operator",
-                                 "problem": reason, "fix": reason})
-            qa["problems"] = problems
-            state.advance_lead(
-                lead_id, "qa_failed", agent="operator", qa=qa,
-                note=(f"client asked for changes: {reason[:200]}" if reason
-                      else "sent back for changes"))
-
-    elif rec["kind"] == "client_account":
-        # The Launch Pad gate. Approving creates the client's account on the
-        # editor and imports the site they bought; the call itself is plain
-        # HTTP in `siteeditor.py`, never a model.
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            asyncio.create_task(porter_mod.do_create_account(world, lead_id))
-        elif lead_id:
-            state.log_event(
-                "user_approval", from_="operator", to="porter",
-                summary=f"declined to create an editor account for "
-                        f"{(state.get_lead(lead_id) or {}).get('name')}",
-                outcome="rejected", details={"lead_id": lead_id},
-            )
-
-    elif rec["kind"] == "handover_failed":
-        # Approving means "try again", and that is only offered for the one
-        # failure where another attempt can differ — a timeout against an
-        # idempotent call. Everything else on that card says so and is a
-        # dismissal.
-        lead_id = rec["payload"].get("lead_id")
-        if (lead_id and body.decision == "approved"
-                and rec["payload"].get("retryable")):
-            asyncio.create_task(porter_mod.do_create_account(world, lead_id))
-
-    elif rec["kind"] == "send_login_link":
-        # The operator sent the link by hand. Approving records that; it makes
-        # no call of its own, because the sending happened in their mail client.
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            lead = state.get_lead(lead_id) or {}
-            acct = dict(lead.get("client_account") or {})
-            acct["link_sent_by_operator_ts"] = time.time()
-            state.update_lead(lead_id, client_account=acct)
-            state.log_event(
-                "run_end", from_="operator", to="porter",
-                summary=f"{lead.get('name')}: login link sent by hand",
-                outcome="completed", details={"lead_id": lead_id},
-            )
-
-    elif rec["kind"] == "handover":
-        # The handover itself is manual — buying a domain is irreversible and
-        # spends real money. Approving this card means "I delivered it".
-        lead_id = rec["payload"].get("lead_id")
-        if lead_id and body.decision == "approved":
-            state.advance_lead(
-                lead_id, "won", agent="operator",
-                note=f"delivered: {(body.reason or '').strip()[:200]}"
-                     if body.reason else "delivered",
-            )
-
-    elif rec["kind"] == "escalation_alert":
-        # Re-fire Ultron with the operator's reply so he can update guidance
-        # and (if Edgar asked a question) respond to Edgar via a new card.
-        # The agent is auto-rerun afterwards via the gatekeeper loop.
-        esc_id = rec["payload"].get("escalation_id")
-        if esc_id and state.get_escalation(esc_id) is not None:
-            from .agents import ultron as ultron_mod
-            asyncio.create_task(ultron_mod.followup_on_escalation(
-                world, esc_id, body.decision, (body.reason or "").strip(),
-            ))
-
-    elif rec["kind"] == "ultron_message":
-        # Operator continued the conversation by typing a reply on Ultron's
-        # response card. Fire another followup on the underlying escalation
-        # so Ultron can keep the back-and-forth going.
-        op_reply = (body.reason or "").strip()
-        esc_id = rec["payload"].get("escalation_id")
-        if op_reply and esc_id and state.get_escalation(esc_id) is not None:
-            from .agents import ultron as ultron_mod
-            asyncio.create_task(ultron_mod.followup_on_escalation(
-                world, esc_id, body.decision, op_reply,
-            ))
+    # What the decision MEANS is the plugin's business, not the core's. This
+    # was a sixteen-branch if/elif carrying the web agency's whole domain
+    # vocabulary — bounced addresses, thin dossiers, QA loops — in the file
+    # that is supposed to know none of it. Each gate now declares
+    # `on_decision`, and a plugin adding one touches only its own files.
+    gate = environment.current().gate(rec["kind"])
+    if gate is not None and gate.on_decision:
+        await gate.on_decision(world, rec, body.decision, body.reason)
+    elif gate is None:
+        # An undeclared kind still resolves — the card clears and the operator
+        # is not stuck — but it is worth saying, because the usual cause is a
+        # gate raised by code whose plugin forgot to declare it.
+        state.log_event(
+            "user_approval", from_="operator", to=rec.get("requesting_agent"),
+            summary=f"no plugin declares approval kind {rec['kind']!r}; "
+                    f"recorded the decision and did nothing else",
+            outcome="undeclared", details={"approval_id": approval_id})
 
     state.log_event(
         "user_approval",

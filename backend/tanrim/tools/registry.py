@@ -1,11 +1,15 @@
 """Auto-discovered MCP tool registry.
 
-Tools live as Python modules under `<repo>/state/tools/<name>.py` (outside the
-source tree so uvicorn's --reload doesn't restart the server when Tinker writes
-a new file). Each module must export a top-level `mcp_server` built via
-`claude_agent_sdk.create_sdk_mcp_server`.
+A tool is a Python module exporting a top-level `mcp_server` built with
+`claude_agent_sdk.create_sdk_mcp_server`. They are discovered from every
+plugin's `tools/` directory, so a tool belongs to whichever plugin needs it
+rather than to the environment.
 
-Tinker writes new tool files here at runtime; we hot-reload via `reload()`.
+`state/tools/` is still searched, last, and is no longer where anything lives.
+It was the runtime drop for tools Tinker fabricated; Tinker is gone, and the
+seven tools that had accumulated there were all written by hand. Keeping it as
+a search path costs one `glob` and means a tool dropped in by hand while
+debugging still loads.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ from typing import Any
 
 from ..config import ROOT
 
+#: The legacy runtime drop, searched last so a plugin always wins on a clash.
 TOOLS_DIR = ROOT / "state" / "tools"
 SERVERS: dict[str, Any] = {}
 LOAD_ERRORS: dict[str, str] = {}
@@ -24,14 +29,38 @@ LOAD_ERRORS: dict[str, str] = {}
 log = logging.getLogger(__name__)
 
 
+def tool_dirs() -> list[Path]:
+    """Directories still scanned for tool modules.
+
+    Only the runtime drop. A plugin's tools arrive through `Plugin.tools()`;
+    reaching into `<plugin>/tools/` from here was the core reading a plugin's
+    files, which is precisely what the contract removed.
+    """
+    return [TOOLS_DIR]
+
+
 def reload() -> None:
+    global _loaded
+    _loaded = True
     SERVERS.clear()
     LOAD_ERRORS.clear()
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-    for path in sorted(TOOLS_DIR.glob("*.py")):
+    supplied = _from_environment()
+    if supplied is not None:
+        SERVERS.update(supplied)
+    # A plugin's tool always wins. `seen` started empty and never held the
+    # plugin-supplied names, so the comment promised the opposite of what the
+    # code did: a stale module left in `state/tools/` would have overwritten a
+    # plugin's tool of the same name.
+    seen: set[str] = set(SERVERS)
+    for path in [q for d in tool_dirs() if d.is_dir()
+                 for q in sorted(d.glob("*.py"))]:
         if path.name.startswith("_"):
             continue
         name = path.stem
+        if name in seen:
+            continue
+        seen.add(name)
         try:
             mod_name = f"tanrim._tools_dyn.{name}"
             spec = importlib.util.spec_from_file_location(mod_name, path)
@@ -51,16 +80,60 @@ def reload() -> None:
             log.exception("failed to load tool %s", name)
 
 
+#: Whether `reload()` has run. Not `bool(SERVERS)`: an install with no tools
+#: at all is a legitimate state and would otherwise re-scan on every lookup.
+_loaded = False
+
+
+def _from_environment() -> dict[str, Any] | None:
+    """The installed plugins' tools, or None if nothing is booted.
+
+    A plugin OWNS its tools and hands them over as `Tool(name, server)`; the
+    core no longer globs anyone's `tools/` directory. The directory scan below
+    survives only for `state/tools/`, the runtime drop a fabricated tool lands
+    in, which belongs to no plugin.
+    """
+    from .. import environment
+
+    if not environment.booted():
+        return None
+    out: dict[str, Any] = {}
+    for name, tool in environment.current().tools().items():
+        if tool.server is None:
+            # `py_tools` reports a module that would not import, or that has
+            # no `mcp_server`, as a Tool with no server rather than dropping
+            # it. Keeping the reason is the whole point: a tool that silently
+            # disappears is a room whose agent quietly has fewer capabilities.
+            LOAD_ERRORS[name] = tool.description or "no server"
+            continue
+        out[name] = tool.server
+    return out
+
+
+def _ensure() -> None:
+    """Load on first use.
+
+    `reload()` ran at import, which made importing this module discover and
+    import every installed plugin — and a plugin that imports the core closes
+    a cycle through `agent_helpers`, which is what imports this. Deferring to
+    first use costs nothing: nothing asks for a tool during boot.
+    """
+    global _loaded
+    if not _loaded:
+        _loaded = True
+        reload()
+
+
 def get(name: str) -> Any | None:
+    _ensure()
     return SERVERS.get(name)
 
 
 def list_tools() -> list[str]:
+    _ensure()
     return sorted(SERVERS)
 
 
 def list_errors() -> dict[str, str]:
+    _ensure()
     return dict(LOAD_ERRORS)
-
-
-reload()

@@ -13,9 +13,16 @@ state/secrets.json
 # All regenerable; nothing here is code worth tracking.
 state/
 
-# Agent prompts. These are the part of this project worth keeping private, so
-# the working copies stay local. `prompts.example/` is committed and documents
-# what each file is for — copy it to `prompts/` and write your own.
+# Installed plugins. Each one is its own repository now, cloned in here — so
+# this checkout can be public while the plugins stay private. Removing them
+# from here does NOT remove them from this repository's history; making it
+# public would still expose everything they once held.
+plugins/
+
+# Agent prompts, wherever they are not inside a plugin. A plugin's own
+# repository tracks its prompts — keeping them out of version control as well
+# as out of a public core meant they lived on one laptop, and a fresh clone
+# booted with 42 missing files.
 prompts/
 
 # Vendored third-party skill data (3.6 MB of CSVs). Re-fetch with:
@@ -35,3 +42,22 @@ prompts/
 # input. Nothing in the app reads from here — assets it needs are copied
 # into frontend/public/ and committed deliberately.
 brand/
+
+# Plugin prompts, for the same reason as `prompts/`: the text is the private
+# part. The committed half is the `prompts=(...)` declaration in plugin.py.
+plugins/*/prompts/
+plugins/*/__pycache__/
+
+# Flutter app build output
+app/build/
+app/.dart_tool/
+app/linux/flutter/ephemeral/
+app/android/.gradle/
+
+# A plugin's personal data. `plugins/*/prompts/` above covers the prompt text;
+# this covers the rest of what a plugin is given ABOUT a person rather than
+# about the work. `job_hunt`'s profile holds a phone number, an address and a
+# tax id, and it sits next to a committed `profile.example.yaml` that shows the
+# shape — which is exactly the arrangement where the wrong one gets added.
+plugins/*/profile/profile.yaml
+plugins/*/profile/*.pdf

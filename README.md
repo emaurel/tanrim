@@ -1,208 +1,167 @@
 # Tanrim
 
-An agent-operated web agency, rendered as a pixel-art dungeon.
+An environment for running agent-operated work, drawn as a place you can walk
+around.
 
-Agents find local businesses that trade but have no website — or a bad one —
-research them properly, build them a site on spec, verify it renders, publish a
-preview, and email the owner a link and a quote. Each stage of that pipeline is
-a **room**; each agent is a sprite you can watch walk between workbenches. You
-sit above it and pass two approval gates.
+Work moves through **rooms**. Each room is staffed by an **agent** that does
+one kind of job; each unit of work is a **record** that moves from stage to
+stage, gathering what each room produced. Anything irreversible or
+outward-facing stops at a **gate** and waits for a person.
 
-Built on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview).
+Tanrim itself knows none of that work. It owns the machinery — a world, a
+worker pool, a durable ledger, an enforced state machine, an approval
+mechanism, an agent runner and an HTTP surface — and every stage, room, agent,
+gate, tool and route arrives from a **plugin**. An install with no plugins has
+nothing to do, which is the correct empty state rather than an error.
 
-![rooms](docs/world.png)
+Built on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk).
 
----
+![A castle's eleven rooms, each with the worker that staffs it. Two are
+working; two carry an approval badge.](docs/img/world.png)
 
-## Why it looks like a game
+<table>
+<tr>
+<td><img src="docs/img/castle.png" alt="A castle's window: what it is an
+instance of, its records grouped by stage, and its rooms."></td>
+<td><img src="docs/img/record.png" alt="A record's window: the blocks its
+plugin answered with, and the history the core built."></td>
+</tr>
+<tr>
+<td><b>A castle</b> — one running instance of a plugin. Its work comes first
+and its rooms last: you open a room to see what is in it, not to look at the
+building.</td>
+<td><b>A record</b> — drawn from a small block vocabulary the plugin answers
+with. The history is the core's, built from the state machine for every kind
+of work.</td>
+</tr>
+</table>
 
-Because a multi-agent pipeline is otherwise impossible to supervise. When six
-agents are working, "which one is doing what, on which lead, and why is that one
-idle" is the question you actually need answered, and a log doesn't answer it. A
-room with labelled benches and a sprite standing at one does.
+Regenerate them with `cd app && tool/screenshots.sh`. They are rendered from
+the real widgets against a real dump of the rooms, so re-running the script is
+the whole job of keeping them true — the picture this replaced was three weeks
+old and predated castles, windows and the record view entirely. The businesses
+on the board are invented; the real ledger holds people who have not been
+contacted.
 
-That's not decoration: the workbenches are the routing table. A room's manifest
-declares which lead stages are worked at which bench, and that declaration is
-what the dispatcher reads.
+## What you get
 
-## The pipeline
-
-The unit of work is a **Lead**. Every agent enriches the same record and moves
-its stage; nothing reads "the most recent upstream artifact", because a dozen
-leads sit at different stages at once.
-
-```mermaid
-flowchart TD
-    START(["you name a place"]) -->|"nova · The Map Table"| sourced
-
-    sourced["sourced"] -->|"probe · Weighing Bench"| qualified
-    sourced -->|"a site exists"| needs_review
-    sourced -->|"no email, or not trading"| disqualified
-
-    needs_review["needs_review"] -->|"lens · Incumbent Wall<br/>worth rebuilding"| qualified
-    needs_review -->|"their site is fine"| disqualified
-
-    qualified["qualified"] -->|"probe · Dossier Desk"| enriched
-    qualified -->|"dossier too thin<br/>raises a card"| qualified
-
-    enriched["enriched"] -->|"lens · The Light Box<br/>reads their photographs"| visualised
-    visualised["visualised"] -->|"forge · The Build Floor"| built
-
-    built["built"] -->|"lens · Inspection Bay"| qa_passed
-    built -->|"lens fails it"| qa_failed
-    qa_failed["qa_failed"] -->|"forge rebuilds from the problems"| built
-
-    qa_passed["qa_passed"] --> G1{"your approval"}
-    G1 -->|"courier deploys to Cloudflare Pages"| published
-    G1 -->|"rejected, with your reason"| qa_failed
-
-    published["published"] --> G2{"your approval"}
-    G2 -->|"echo sends the email"| contacted
-    G2 -->|"rejected, no reason given"| lost
-
-    contacted["contacted"] --> R{"what they said"}
-    R -->|"they want changes<br/>their words become the brief"| qa_failed
-    R -->|"they accepted and paid"| replied
-    R -->|"they declined"| lost
-    R -->|"no reply in 21 days"| lost
-
-    replied["replied"] --> G3{"you deliver it"}
-    G3 -->|"domain bought, banner off, files sent"| won["won"]
-
-    classDef gate fill:#f6ebd6,stroke:#96631c,stroke-width:2px,color:#3a2708
-    classDef dead fill:#f7e4e1,stroke:#97423b,color:#4a1f1b
-    classDef done fill:#e8f0e4,stroke:#4a7c46,color:#1f3a1d
-    classDef reply fill:#e6eef5,stroke:#3d5a80,color:#16283d
-    class G1,G2,G3 gate
-    class R reply
-    class disqualified,qa_failed,lost dead
-    class won done
-```
-
-The three amber diamonds are where it waits for you. Everything between them
-moves on its own: when a lead's stage changes, the room whose workbench declares
-that stage is dispatched.
-
-A change request from the business is the *same* path as you rejecting a build —
-their words go into `qa.problems`, the lead returns to `qa_failed`, and it walks
-the whole build, QA and publish loop again. Nothing special-cases it, except that
-a `revision` marker tells Forge the business has already seen this site and
-Scribe to send a short "here's the change" note rather than the pitch again.
-
-## The parts worth stealing
-
-**Nothing may condemn a website it hasn't looked at.** An HTTP fetch cannot tell
-a WAF block from a dead site — the first real lead returned 403 to every script
-and 200 to a browser, and the pipeline nearly emailed a working restaurant to
-say their site was broken. So `audit_website` returns `inconclusive`, never a
-score, for 401/403/429/503, and only a model that has rendered a page in
-Playwright and opened the screenshot is allowed to judge it.
-
-**Photographs carry facts no text source has.** Reading a restaurant's published
-photos recovered two priced dishes off a chalkboard, the real wall colour
-(terracotta, where "French bistro" had us guessing burgundy), and the fact that
-no exterior signage was legible in any of twelve photos — which is why that lead
-needed a logo designed rather than reproduced.
-
-**Every fact on a page carries a source URL.** The dossier is the only source of
-page content, anything uncited is quarantined as `unverified`, and reviews are
-context for the writer, never content for the page.
-
-**Agents hire each other.** A room is staffed by up to three interchangeable
-workers, hired when a second lead needs the room and retired when their lead
-finishes. An agent mid-run can also hire a specialist for one subtask — a logo,
-an icon set — which can ask another room to review its work before handing back,
-then dies.
-
-**Rooms are declarative.** Adding a room is adding `rooms/<id>.yaml`. Adding a
-workbench is a few lines in one. Neither needs a Python or TypeScript change.
+- **A map of the work.** Rooms on an isometric world, one sprite per worker,
+  walking to the bench it is working at. Zoom out and rooms give way to
+  castles; a castle is one running instance of a plugin.
+- **A state machine that is law.** Declared transitions are enforced, with an
+  operator override that is recorded as one. Every move appends to the
+  record's history in the same write, including which fields it produced.
+- **Gates.** Anything that reaches the outside world waits for a person, and
+  the card shows what saying yes does.
+- **Concurrency that is accounted for.** Rooms hire extra workers on demand
+  and retire them; one dispatch per record per role, claimed synchronously;
+  token spend recorded per run, with cache reads and writes billed properly.
+- **An app that manages the whole thing** — start and stop the server, install
+  and disable plugins, build castles, read records, decide approvals.
 
 ## Running it
 
 ```bash
-uv venv .venv && uv pip install --python .venv/bin/python -e .
-.venv/bin/python -m playwright install chromium     # Lens needs a real browser
+uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]"
+.venv/bin/python -m playwright install chromium   # a reviewing agent LOOKS
+cp .env.example .env                              # ANTHROPIC_API_KEY at minimum
 
-cp -r prompts.example prompts                       # then write the prompts
-cp .env.example .env                                # ANTHROPIC_API_KEY at minimum
-
-PYTHONPATH=backend .venv/bin/python -m uvicorn tanrim.server:app --port 8765
-# in another terminal
-cd frontend && npm install && npm run dev            # http://localhost:5173
+.venv/bin/python -m uvicorn tanrim.server:app --port 8765
 ```
 
-### The prompts are not in this repository
+Then the app:
 
-`prompts/` is gitignored. Every agent's role and output schema loads from
-`prompts/<agent>/<NAME>.md` at startup, and `prompts.example/` documents what
-each file is for without giving away the text. The server prints exactly which
-files are missing if you skip this step.
+```bash
+cd app
+flutter run -d linux --release
+```
 
-That's the one part you'll have to write yourself, and it's most of where the
-behaviour lives.
+`--release` matters — a debug build is un-optimised JIT, and this draws an
+animated map.
 
-### Optional
+`.env.example` carries plugin settings as well as the environment's own. It
+has to: a plugin's variables are read from the same process, and one file you
+can see beats three you cannot. Nothing in `backend/tanrim/` reads them.
 
-- `TANRIM_AGENCY_NAME` and `TANRIM_SENDER_EMAIL` — outreach is **blocked**
-  until these are set. Cold email without an identifiable sender and a working
-  opt-out is both illegal in most places and undeliverable everywhere.
-- `SMTP_*` — without these, approving a send hands you the email to send
-  yourself rather than sending anything. A good way to start.
-- The Factory can use [`ui-ux-pro-max`](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill)
-  for palette, type and accessibility data. It's gitignored for size; re-fetch
-  its `.claude/skills/ui-ux-pro-max` subtree into `.claude/skills/`.
+The app can start the server for you: point it at this checkout in
+**Settings → Server**. It guesses the path from where it was built.
 
-## Things the code enforces, because prompts are not guarantees
+## Installing a plugin
 
-- **Quote, never invoice.** An unsolicited invoice is a deceptive-billing
-  pattern. The draft is scanned for billing language and Echo's preflight blocks
-  a flagged one.
-- **No contact route, no lead.** A qualification without an email is overridden
-  to disqualified.
-- **Previews are marked.** Every published page gets `noindex` and an
-  "unofficial preview, not affiliated" banner injected in code.
-- **QA cannot pass unseen.** A `pass` without `visually_verified` is downgraded.
-- **A build must produce files.** No `index.html` means the run failed, whatever
-  the model reported — and a failed rebuild restores the previous build rather
-  than leaving its debris.
-- **One dispatch per lead per role**, claimed synchronously, because several
-  things can dispatch the same work in the same instant.
+A plugin is a directory in `plugins/` with a `plugin.py` in it. `plugins/` is
+gitignored here, so each plugin is its own repository: clone it in and reload.
 
-## Legal reality, briefly
+```bash
+git clone git@github.com:you/your-plugin.git plugins/your_plugin
+curl -X POST http://127.0.0.1:8765/plugins/reload
+```
 
-This builds unsolicited work for real businesses and emails real people. It is
-set up for **small, hand-approved batches** — both gates exist for that reason.
-Previews are `noindex` and clearly labelled as unaffiliated. Photographs found
-on review platforms are read for information and never republished; the build
-uses captioned image slots the owner fills. Cold B2B outreach in the EU is
-workable on legitimate-interest grounds, but it needs genuine relevance, a real
-sender identity and a working opt-out, and it collapses if you blast it.
+Or use **Settings → Plugins** in the app, which clones, reloads, and lets you
+switch a plugin off without deleting it.
 
-Nothing here removes your responsibility for what gets sent.
+Removing a plugin removes its stages, rooms, agents, gates, tools and routes
+with it. There is a test that asserts exactly that — and the suite runs with
+`plugins/` empty, skipping about sixty tests that have nothing to assert
+against, because a checkout with no plugins is a legitimate state.
+
+## Writing a plugin
+
+Start with **[docs/CONTRACT.md](docs/CONTRACT.md)** — what a plugin IS, every
+question the environment asks, and what the answers mean.
+
+`plugins.example/` is a complete worked plugin kept small enough to read in
+one sitting: a pipeline, a room with two benches, an agent, a gate, a step
+gate, two kinds of hook, a record schema, prompts and a self-check. Copy the
+directory into `plugins/` to run it — and rename its `id` and its stages
+first, or its generic stage names will collide with an installed plugin's.
+
+`tests/test_example_plugin.py` boots it and runs its job with the model
+stubbed, so it cannot quietly rot again: it spent a while calling two `state`
+functions that do not exist, booting perfectly and dying the first time
+anybody pressed Run.
+
+Or start from **[tanrim-plugin-template](https://github.com/emaurel/tanrim-plugin-template)**
+— the same example plus tests that run and a walkthrough. It is a **private**
+repository today, so the link 404s unless you have been given access:
+
+```bash
+gh repo create my-plugin --private --clone \
+   --template emaurel/tanrim-plugin-template
+mv my-plugin /path/to/agent_environment/plugins/my_plugin
+```
 
 ## Layout
 
 ```
-rooms/               room + workbench manifests, read by both sides
-prompts/             agent prompts (gitignored; see prompts.example/)
-backend/tanrim/   orchestrator, agents, tools, FastAPI + WebSocket server
-frontend/            Vite + TS + Phaser SPA
-state/               leads, generated sites, ledgers (gitignored)
+backend/tanrim/     the environment — ~9,700 lines across 26 modules
+app/                the operator's app — Flutter, ~7,400 lines in app/lib
+frontend/           the retired Vite web client. Not served; app/ replaced it
+plugins/            installed plugins (gitignored; clone them in)
+plugins.example/    the worked example, deliberately not installed
+state/              JSON ledgers and whatever plugins write
+docs/CONTRACT.md    the plugin contract
+CLAUDE.md           the architecture, and the reasoning behind it
 ```
 
-`CLAUDE.md` is the working notes — the architecture, and a record of what broke
-and why it's built the way it is. Read that before changing anything.
+The separation is enforced by tests rather than by convention:
+`backend/tanrim/` may not import a plugin, may not name a stage or a role, and
+may not serve a route about the work.
 
-`docs/research.md` opens up the research half — sourced to visualised, what is
-decided in code rather than by a model, what each step costs, and an honest
-list of where it is weakest.
+## Tests
 
-`docs/pipeline.html` is the same pipeline in more detail — every transition with
-the agent and bench that performs it, the full room-to-stage routing table, and
-what the code does that the plan doesn't say. Open it in a browser; it was
-generated by reading `state.STAGES`, the `workbenches:` blocks and every
-`advance_lead()` call site, so it describes the code rather than the intent.
+```bash
+.venv/bin/python -m pytest -q
+```
 
-## Licence
+Bare, with no path: `pytest.ini` sets `testpaths = tests plugins/*/tests`, and
+naming a path overrides it — `pytest tests/` silently skips every plugin's
+suite.
 
-MIT.
+Runs the environment's suite plus every installed plugin's own — a plugin's
+tests travel with it and still run by default.
+
+## Status
+
+Working software, under active development, with one operator. The interfaces
+between the environment and its plugins are stable enough to build against;
+the app changes often.

@@ -4,70 +4,20 @@ import asyncio
 import time
 from typing import Any
 
+from . import environment
 from . import rooms as rooms_mod
 from . import state, workers
-from .agents import tinker, ultron
-from .runners import AGENT_RUNNERS
+from . import runners as _runners
 from .world import World
 
-MAX_RERUNS = 2  # safety cap so a request_tool loop can't run forever
 
 # How many times one follow-up may be drafted before the sweep gives up on it.
 # A rejected draft is redrafted with the operator's note as the brief, and that
 # is the loop this bounds: three attempts at one nudge is already generous for
 # a message whose whole job is to be four sentences long.
-MAX_FOLLOWUP_ATTEMPTS = 3
-# How long to leave a follow-up alone after an attempt that did not raise a
-# card. Long enough that a preview host being down costs one fetch an hour
-# rather than one every three seconds.
-FOLLOWUP_RETRY_SECONDS = 30 * 60
-
-
-def _mark_attempt(lead_id: str, touch: int, why: str | None) -> None:
-    """Record that a follow-up attempt was made and what stopped it.
-
-    Written onto the draft so it survives a restart. `rejected` is cleared
-    here: whatever the operator asked for has now been attempted, and leaving
-    the flag set would redraft the same note on every pass.
-    """
-    lead = state.get_lead(lead_id) or {}
-    followups = [dict(f) for f in (lead.get("followups") or [])]
-    found = False
-    for f in followups:
-        if f.get("touch") == touch:
-            f["attempts"] = int(f.get("attempts") or 0) + 1
-            f["last_attempt_ts"] = time.time()
-            f["rejected"] = False
-            if why:
-                f["last_problem"] = str(why)[:300]
-            found = True
-    if not found:
-        # Nothing was written — the drafting run itself failed. Keep the count
-        # somewhere, or a lead whose draft cannot be produced is retried for
-        # ever.
-        followups.append({"touch": touch, "attempts": 1,
-                          "last_attempt_ts": time.time(), "sent": False,
-                          "rejected": False, "last_problem": str(why or "")[:300]})
-    state.update_lead(lead_id, followups=followups)
-
-
-def _rewrite_brief(draft: dict[str, Any] | None) -> str:
-    """The instruction for a redraft, built from why the last one was refused."""
-    if not draft:
-        return ""
-    note = (draft.get("operator_feedback") or "").strip()
-    if not note:
-        return ""
-    return ("YOU ARE REWRITING. The operator rejected your previous follow-up "
-            f"with this note, which is the brief for this attempt:\n  \"{note}\"\n"
-            "Your previous version was:\n"
-            f"  subject: {draft.get('subject', '')}\n"
-            f"  body: {(draft.get('body_final') or '')[:600]}")
-
-
-# How settled a lead must look before the sweep recovers it. Long enough to
+# How settled a record must look before the sweep recovers it. Long enough to
 # outlast a server restart and the tail of a killed run; short enough that a
-# genuinely stuck lead is picked up while the operator is still watching.
+# genuinely stuck record is picked up while the operator is still watching.
 RECOVERY_QUIET_SECONDS = 4 * 60
 
 
@@ -78,6 +28,25 @@ RECOVERY_QUIET_SECONDS = 4 * 60
 # for 4.0-5.0 s at a time. Timing each step is how you find out which one
 # without guessing; anything over the threshold is logged with its name.
 SLOW_STEP_SECONDS = 0.25
+
+
+def _somewhere(room_id: str | None = None) -> str:
+    """A room to file an operator card in.
+
+    The named room if it exists, otherwise ANY room, otherwise nothing. The
+    fallback was the literal `"throne"` — one plugin's room id, in the core —
+    so in any other install a crash card was filed to a room that does not
+    exist and the operator could neither see it nor clear it.
+    """
+    from . import environment
+
+    if room_id:
+        return room_id
+    if environment.booted():
+        existing = environment.current().rooms()
+        if existing:
+            return existing[0].id
+    return ""
 
 
 async def _timed(name: str, coro: Any) -> Any:
@@ -111,16 +80,15 @@ class Orchestrator:
     def __init__(self, world: World) -> None:
         self.world = world
         self._tasks: list[asyncio.Task] = []
-        # Last stage we saw each lead at. Seeded from the board on boot so
+        # Last stage we saw each record at. Seeded from the board on boot so
         # nothing fires retroactively for work that is already settled; after
         # that, a CHANGE is what triggers the next room.
-        self._lead_stages: dict[str, str] = {
-            lead["id"]: lead.get("stage", "") for lead in state.list_leads(limit=10_000)
+        self._record_stages: dict[str, str] = {
+            record["id"]: record.get("stage", "") for record in state.list_records(limit=10_000)
         }
-        # (lead_id, stage) pairs already dispatched, so recovery of a stalled
-        # lead happens once rather than every tick.
+        # (record_id, stage) pairs already dispatched, so recovery of a stalled
+        # record happens once rather than every tick.
         self._dispatched: set[tuple[str, str]] = set()
-        self._last_mail_poll = 0.0
         # Mark all current reports as already processed so we don't replay
         # history on every restart. Only NEW reports trigger a Sonnet reaction.
         self._processed_reports: set[str] = {
@@ -151,181 +119,20 @@ class Orchestrator:
             await self.world.tick()
             await asyncio.sleep(0.1)
 
-    async def _read_mail(self) -> None:
-        """Fetch replies and file their attachments, then read what they said.
+    async def _plugin_sweeps(self) -> None:
+        """Whatever the installed plugins do on a clock.
 
-        Polled on a slow clock: a business answers within a day, and hammering
-        an IMAP server is how an account gets rate-limited. A mailbox that is
-        unreachable must never take the loop down — outreach is the one part of
-        this that depends on someone else's server.
+        `_expire_silence` and `_followup_sweep` used to live here, which put
+        the web agency's follow-up policy — quiet records, the silence timer,
+        the redraft brief — inside the core's tick loop. They moved to
+        `web_agency/sweeps.py` behind the `tick` hook, which the contract had
+        declared and nothing had ever fired.
+
+        `broadcast` runs every listener even if one raises, and re-raises the
+        failures together afterwards: they belong to different plugins and are
+        not each other's business.
         """
-        from . import config, mailbox
-        from .agents import echo
-
-        if not mailbox.configured():
-            return
-        if time.time() - self._last_mail_poll < config.MAIL_POLL_MINUTES * 60:
-            return
-        self._last_mail_poll = time.time()
-
-        try:
-            arrived = await asyncio.to_thread(mailbox.poll)
-            # A poll that matches nothing logs nothing, so there was no way to
-            # tell "no replies yet" from "the poller never ran". Record the
-            # heartbeat instead of an event per poll, which would be noise
-            # every five minutes.
-            state.set_meta("last_mail_poll", {
-                "ts": time.time(), "matched": len(arrived),
-                "ok": True,
-            })
-        except Exception as e:  # noqa: BLE001
-            state.set_meta("last_mail_poll", {
-                "ts": time.time(), "ok": False,
-                "error": f"{type(e).__name__}: {e}"[:200],
-            })
-            state.log_event(
-                "run_end", from_="echo",
-                summary=f"could not read the mailbox: {type(e).__name__}: {e}"[:240],
-                outcome="failed",
-            )
-            return
-
-        for record in arrived:
-            try:
-                # A delivery failure is a fact, not a message to interpret —
-                # it goes nowhere near the model.
-                if record.get("kind") == "bounce":
-                    await echo.record_bounce(
-                        self.world, record["lead_id"], record["recipient"],
-                        bool(record.get("permanent")),
-                        str(record.get("detail") or ""))
-                    continue
-                await echo.triage_inbound(self.world, record["lead_id"])
-            except Exception as e:  # noqa: BLE001
-                # The message and its attachments are already stored; only the
-                # reading failed, and the operator can still see it.
-                state.log_event(
-                    "run_end", from_="echo",
-                    summary=f"stored the reply from {record.get('business')} but "
-                            f"could not read it: {type(e).__name__}"[:200],
-                    outcome="failed", details={"lead_id": record["lead_id"]},
-                )
-
-    async def _expire_silence(self) -> None:
-        """Treat a long silence as a no.
-
-        A lead sits at `contacted` until the business answers, and most never
-        will. Without this the board fills with leads that are neither won nor
-        lost, which buries the ones still worth chasing.
-        """
-        from . import config, sandbox
-
-        cutoff = time.time() - config.NO_REPLY_DAYS * 86400
-        for lead in state.list_leads(stage="contacted", limit=500):
-            # The fixture never ages into `lost`; nobody was ever written to.
-            if sandbox.is_sandbox(lead):
-                continue
-            # From the last message we actually SENT them, not `updated_ts`.
-            # Any write to the lead bumps that field, so drafting a follow-up —
-            # which reaches nobody — used to buy the lead another three weeks of
-            # life, and so did any incidental patch. Silence is measured from
-            # the last thing that landed in their inbox, which is the only
-            # clock the business itself is running on.
-            sends = [float(r.get("ts") or 0) for r in (lead.get("sent_log") or [])]
-            sent = max(sends) if sends else float(lead.get("updated_ts") or 0)
-            if sent and sent < cutoff:
-                state.advance_lead(
-                    lead["id"], "lost", agent="system",
-                    note=f"no reply in {config.NO_REPLY_DAYS} days",
-                )
-                state.log_event(
-                    "run_end", from_="system",
-                    summary=f"{lead.get('name')}: no reply in "
-                            f"{config.NO_REPLY_DAYS} days — marked lost",
-                    outcome="completed", details={"lead_id": lead["id"]},
-                )
-
-    async def _followup_sweep(self) -> None:
-        """Nudge businesses that were emailed once and have gone quiet.
-
-        The gap this closes: of the first 21 leads, every single one received
-        exactly one message and nothing afterwards, and `_expire_silence` then
-        filed it as lost. The site was already built, published and paid for in
-        compute, so a lead dropped after one touch is the cheapest thing in
-        this pipeline to throw away.
-
-        Deliberately one lead per tick. Drafting is a model call, and a backlog
-        of quiet leads would otherwise fire a dozen of them in the same second
-        — for a queue the operator can only read one card at a time anyway.
-        Nothing here sends: Echo raises the gate and it waits.
-
-        All the retry state lives ON THE LEAD rather than in this object,
-        because the orchestrator's memory is emptied by every restart and the
-        thing being bounded is a model call that costs money. A counter that
-        forgets itself on reboot is not a ceiling.
-        """
-        from . import config
-        from .agents import echo, scribe
-
-        if not config.followups_enabled():
-            return
-
-        pending_leads = {
-            a["payload"].get("lead_id")
-            for a in state.list_user_approvals(status="pending", limit=200)
-        }
-        for lead in state.list_leads(stage="contacted", limit=500):
-            lead_id = lead["id"]
-            # A card already open for this business needs nothing from us, and
-            # a second one for the same lead is how one message is approved
-            # twice.
-            if lead_id in pending_leads:
-                continue
-            touch = echo.followup_due(lead)
-            if touch is None:
-                continue
-
-            draft = next((f for f in (lead.get("followups") or [])
-                          if f.get("touch") == touch), None)
-            attempts = int((draft or {}).get("attempts") or 0)
-            if attempts >= MAX_FOLLOWUP_ATTEMPTS:
-                continue
-            # A draft that could not be raised — a dead preview link, a
-            # registry timeout — is retried, but on a slow clock. Without the
-            # backoff a lead whose preview host is down re-runs this every
-            # three seconds, and each attempt is an HTTP fetch.
-            last_try = float((draft or {}).get("last_attempt_ts") or 0)
-            if last_try and time.time() - last_try < FOLLOWUP_RETRY_SECONDS:
-                continue
-
-            needs_draft = draft is None or draft.get("rejected")
-            try:
-                if needs_draft:
-                    result = await scribe.run_followup(
-                        self.world, lead_id, touch,
-                        instruction=_rewrite_brief(draft))
-                    if not result.get("ok"):
-                        _mark_attempt(lead_id, touch, result.get("error"))
-                        state.log_event(
-                            "run_end", from_="scribe",
-                            summary=f"could not draft follow-up {touch} for "
-                                    f"{lead.get('name')}: {result.get('error')}"[:240],
-                            outcome="failed", details={"lead_id": lead_id})
-                        return
-                raised = await echo.request_followup(self.world, lead_id, touch)
-                if not raised.get("ok"):
-                    _mark_attempt(lead_id, touch,
-                                  "; ".join(raised.get("problems") or
-                                            [str(raised.get("error"))])[:300])
-            except Exception as e:  # noqa: BLE001
-                _mark_attempt(lead_id, touch, f"{type(e).__name__}: {e}")
-                state.log_event(
-                    "run_end", from_="echo",
-                    summary=f"follow-up sweep failed on {lead.get('name')}: "
-                            f"{type(e).__name__}: {e}"[:240],
-                    outcome="failed", details={"lead_id": lead_id})
-            # One per tick, whatever happened to it.
-            return
+        await environment.current().broadcast("tick", self.world)
 
     def report_interrupted_runs(self) -> int:
         """Say which runs died with the previous process.
@@ -358,15 +165,15 @@ class Orchestrator:
             )
         return len(orphans)
 
-    async def _advance_leads(self) -> None:
-        """Move a lead to the next room the moment its stage changes.
+    async def _advance_records(self) -> None:
+        """Move a record to the next room the moment its stage changes.
 
         This is the pipeline's transport, and it is deliberately deterministic.
         It used to run through Ultron reacting to `report_to_ultron`, which
         meant an LLM had to read an event log and infer what happened next —
         and it got it wrong: Forge finished a rebuild, Ultron saw the PREVIOUS
         cycle's QA pass and courier dispatch still in its memory, decided the
-        lead was already handled, and the build sat at `built` with nobody
+        record was already handled, and the build sat at `built` with nobody
         looking at it.
 
         Stage → room is already declared by the workbenches, so no inference is
@@ -378,67 +185,76 @@ class Orchestrator:
         from .agent_helpers import in_flight_for_role
 
         recovered = 0
-        for lead in state.list_leads(limit=500):
-            lead_id = lead["id"]
-            stage = lead.get("stage") or ""
-            changed = self._lead_stages.get(lead_id) != stage
-            self._lead_stages[lead_id] = stage
+        for record in state.list_records(limit=500):
+            record_id = record["id"]
+            stage = record.get("stage") or ""
+            was = self._record_stages.get(record_id)
+            changed = was != stage
+            self._record_stages[record_id] = stage
+            if changed and was is not None:
+                # `stage_changed` is declared and was never fired. The write
+                # itself is synchronous so it cannot await a hook; this is the
+                # first async moment after one, and where the rest of the
+                # transport already reacts to a move. `was is None` is the
+                # boot seed, not a change.
+                await environment.current().broadcast(
+                    "stage_changed", self.world, record, was, stage)
 
             role = role_for_stage(stage)
             if role is None:
                 continue
 
-            # Which room works a stage can depend on WHICH PIPELINE the lead is
+            # Which room works a stage can depend on WHICH PIPELINE the record is
             # on, and the manifests cannot express that: a `prospect` at
             # `published` is waiting for Scribe to write a pitch, a `port` at
             # the same stage is waiting for the operator to say the client
             # approved the rebuild. The manifests stay the router for every
             # room; the table decides whether that room is the right one here.
-            kind = state.lead_kind(lead)
+            kind = state.record_kind(record)
             allowed_roles = state.roles_for(stage, kind)
             if not allowed_roles:
-                continue  # terminal for this kind of lead
+                continue  # terminal for this kind of record
             if role not in allowed_roles:
                 if allowed_roles == {"operator"}:
-                    await self._raise_client_approval(lead)
+                    await self._raise_step_gate(record, stage, kind)
                 continue
 
             if not changed:
-                # Recovery for a lead that is sitting at a workable stage with
+                # Recovery for a record that is sitting at a workable stage with
                 # nobody on it — a restart, or a run that died. Bounded to one
-                # per tick and once per (lead, stage), so a boot with a full
+                # per tick and once per (record, stage), so a boot with a full
                 # board doesn't fire every agent at once.
-                if (lead_id, stage) in self._dispatched or recovered >= 1:
+                if (record_id, stage) in self._dispatched or recovered >= 1:
                     continue
-                if any(w.get("lead_id") == lead_id for w in in_flight_for_role(role)):
+                if any(w.get("lead_id") == record_id for w in in_flight_for_role(role)):
                     continue
                 # A restart is the one thing that empties `_dispatched`, so
                 # every restart hands the recovery branch a fresh allowance.
                 # Restarting four times while a build was running therefore
                 # re-dispatched the same build three times — each new process
-                # correctly seeing a lead with nobody on it, because the run
-                # it had just killed left no trace. A recently touched lead is
+                # correctly seeing a record with nobody on it, because the run
+                # it had just killed left no trace. A recently touched record is
                 # left alone: either something is about to pick it up, or a run
                 # died seconds ago and its files are still settling.
-                if time.time() - float(lead.get("updated_ts") or 0) < RECOVERY_QUIET_SECONDS:
+                if time.time() - float(record.get("updated_ts") or 0) < RECOVERY_QUIET_SECONDS:
                     continue
-                # Old leads that were parked deliberately stay parked.
-                if time.time() - float(lead.get("updated_ts") or 0) > 6 * 3600:
+                # Old records that were parked deliberately stay parked.
+                if time.time() - float(record.get("updated_ts") or 0) > 6 * 3600:
                     continue
                 recovered += 1
 
             if role is None:
                 continue  # terminal, or nobody works this stage
-            runner = AGENT_RUNNERS.get(role)
+            runner = _runners.agent_runners().get(role)
             if runner is None:
                 continue
-            self._dispatched.add((lead_id, stage))
+            self._dispatched.add((record_id, stage))
             # Gates are the operator's. Courier and Echo raise an approval card
-            # rather than acting, so dispatching them here is safe — but a lead
+            # rather than acting, so dispatching them here is safe — but a record
             # already carrying a pending card for this room needs nothing.
             pending = [
                 a for a in state.list_user_approvals(status="pending", limit=200)
-                if a["payload"].get("lead_id") == lead_id
+                if a["payload"].get("lead_id") == record_id
             ]
             if pending:
                 continue
@@ -448,108 +264,102 @@ class Orchestrator:
             # the step rather than to one arrow. Courier and Echo are gated in
             # code and raise their own richer cards, so they are not doubled up.
             if (state.step_is_gated(stage)
-                    and stage not in state.PERMANENT_GATES):
+                    and stage not in state.permanent_gates()):
                 state.add_user_approval(
                     kind="stage_gate",
-                    room_id=rooms_mod.room_for_role(role) or "throne",
+                    room_id=_somewhere(rooms_mod.room_for_role(role)),
                     requesting_agent=role,
-                    summary=f"{lead.get('name')} is at '{stage}' — run {role}?",
+                    summary=f"{record.get('name')} is at '{stage}' — run {role}?",
                     payload={
-                        "lead_id": lead_id,
-                        "business": lead.get("name"),
+                        "lead_id": record_id,
+                        "business": record.get("name"),
                         "stage": stage,
                         "role": role,
                         "outcomes": [
                             {"to": to, "kind": kind}
                             for f, to, r, kind, kinds in state.PIPELINE
                             if f == stage and r == role
-                            and state.lead_kind(lead) in kinds
+                            and state.record_kind(record) in kinds
                         ],
                         "what_this_means":
                             f"You asked to be consulted before {role} works a "
-                            f"lead at '{stage}'. Approve to run it now; reject "
-                            f"to leave the lead parked here. Untick this step "
+                            f"record at '{stage}'. Approve to run it now; reject "
+                            f"to leave the record parked here. Untick this step "
                             f"in Settings to stop being asked.",
                     },
                 )
                 state.log_event(
                     "dispatch_end", from_="system", to=role,
-                    summary=f"{lead.get('name')} at '{stage}' → {role}: "
+                    summary=f"{record.get('name')} at '{stage}' → {role}: "
                             "asking first, this step is gated",
                     outcome="gated",
-                    details={"lead_id": lead_id, "stage": stage},
+                    details={"lead_id": record_id, "stage": stage},
                 )
                 await self.world.publish({"type": "approvals_updated"})
                 continue
 
             state.log_event(
                 "dispatch_end", from_="system", to=role,
-                summary=f"{lead.get('name')} "
+                summary=f"{record.get('name')} "
                         + (f"reached '{stage}'" if changed
                            else f"was stalled at '{stage}'")
                         + f" → {role}",
                 outcome="dispatched",
-                details={"lead_id": lead_id, "stage": stage},
+                details={"lead_id": record_id, "stage": stage},
             )
             task = asyncio.create_task(runner(self.world, {
-                "lead_id": lead_id,
-                "prompt": f"This lead just reached '{stage}'.",
+                "lead_id": record_id,
+                "prompt": f"This record just reached '{stage}'.",
             }))
-            # The mark above says "this (lead, stage) has been dispatched", and
+            # The mark above says "this (record, stage) has been dispatched", and
             # the recovery branch trusts it forever. But a room at capacity
             # refuses the work and the run never happens — so with five workers
-            # and nineteen leads arriving at once, five would run and fourteen
+            # and nineteen records arriving at once, five would run and fourteen
             # would sit at their stage untouched until a restart.
             #
             # A refusal is a normal outcome, not a dispatch, so the mark comes
-            # back off and the sweep picks the lead up on a later tick.
+            # back off and the sweep picks the record up on a later tick.
             task.add_done_callback(
-                lambda t, key=(lead_id, stage): self._unmark_if_refused(t, key))
+                lambda t, key=(record_id, stage): self._unmark_if_refused(t, key))
 
-    async def _raise_client_approval(self, lead: dict[str, Any]) -> None:
-        """A port client's rebuild is published — did they say yes?
+    async def _raise_step_gate(self, record: dict[str, Any], stage: str,
+                               kind: str) -> None:
+        """A stage whose only outgoing move is the operator's. Ask them.
 
-        No email. They asked for this and are already a customer, so the
-        operator shows them the preview however they like and ticks the card.
-        Approving is what moves the lead to `won`, which is what the Launch Pad
-        works.
+        Which question, in which room, with what on the card, is the plugin's:
+        it declares a `StepGate` for that (stage, pipeline) and builds the
+        payload. This used to be `_raise_client_approval`, fifty lines of one
+        plugin's vocabulary in the core — a `client_approved` card in a room
+        called `launch` requested by an agent called `porter`, with French
+        project prose — raised for ANY plugin's record that reached such a
+        stage. An install without those two plugins raised an undeclared gate
+        kind in a room that does not exist.
         """
-        lead_id = lead["id"]
+        gate = environment.current().step_gate(stage, kind)
+        if gate is None:
+            return
+        record_id = record["id"]
         already = [
             a for a in state.list_user_approvals(status="pending", limit=200)
-            if a["payload"].get("lead_id") == lead_id
-            and a["kind"] == "client_approved"
+            if a["payload"].get("lead_id") == record_id
+            and a["kind"] == gate.gate
         ]
         if already:
             return
+        payload = gate.build(self.world, record)
         state.add_user_approval(
-            kind="client_approved",
-            room_id="launch",
-            requesting_agent="porter",
-            summary=f"Did {lead.get('name')} approve their rebuilt site?",
-            payload={
-                "lead_id": lead_id,
-                "business": lead.get("name"),
-                "preview_url": lead.get("preview_url"),
-                "old_site": ((lead.get("profile") or {}).get("existing_site")
-                             or {}).get("url") or lead.get("website"),
-                "must_not_lose": ((lead.get("profile") or {})
-                                  .get("must_not_lose") or [])[:20],
-                "what_this_means":
-                    "This is a port: the client asked us to rebuild the site "
-                    "they already had, and the new one is now on a preview URL. "
-                    "Nothing has been sent to them — show them the preview "
-                    "however you like. Approve once they have said yes, which "
-                    "moves the lead to 'won' and lets the Launch Pad create "
-                    "their account. Reject to send it back to be changed, with "
-                    "whatever you type below as the brief.",
-            },
+            kind=gate.gate,
+            room_id=_somewhere(gate.room or rooms_mod.room_for_role(gate.agent)),
+            requesting_agent=gate.agent,
+            summary=payload.pop("summary", None)
+                    or f"{record.get('name')} is at '{stage}'",
+            payload=payload,
         )
         state.log_event(
-            "user_approval", from_="porter", to="operator",
-            summary=f"{lead.get('name')}: rebuilt site published — waiting on "
-                    f"the client's approval",
-            details={"lead_id": lead_id},
+            "user_approval", from_=gate.agent or "system", to="operator",
+            summary=f"{record.get('name')}: waiting on the operator at "
+                    f"'{stage}'",
+            details={"lead_id": record_id},
         )
         await self.world.publish({"type": "approvals_updated"})
 
@@ -564,6 +374,13 @@ class Orchestrator:
         result = task.result()
         if isinstance(result, dict) and not result.get("ok"):
             err = str(result.get("error") or "").lower()
+            # A PERMANENT refusal keeps the mark. The same input reaches the
+            # same refusal, so unmarking re-dispatches on the very next tick
+            # and for ever: the sandbox record, which Courier will never
+            # publish, was being dispatched and refused every three seconds —
+            # about 29,000 log events a day saying the same thing.
+            if result.get("permanent"):
+                return
             # "already running" is a genuine duplicate: the work IS happening,
             # so leave the mark. Capacity and busy-room refusals are not.
             if "already running" not in err and "already working" not in err:
@@ -574,56 +391,20 @@ class Orchestrator:
         await asyncio.sleep(2.0)
         while True:
             try:
-                pending = state.list_tool_requests(status="pending", limit=5)
-                for req in pending:
-                    await ultron.review(self.world, req["id"])
-                    await self.world.publish({"type": "approvals_updated"})
-                approved = state.list_tool_requests(status="approved", limit=5)
-                for req in approved:
-                    await tinker.fabricate(self.world, req["id"])
-                    await self.world.publish({"type": "approvals_updated"})
-                    fresh = state.get_tool_request(req["id"])
-                    if (
-                        fresh
-                        and fresh["status"] == "ready"
-                        and fresh.get("original_task")
-                        and fresh.get("rerun_count", 0) < MAX_RERUNS
-                    ):
-                        runner = AGENT_RUNNERS.get(fresh["requesting_agent"])
-                        if runner is not None:
-                            state.update_tool_request(
-                                fresh["id"],
-                                rerun_count=fresh.get("rerun_count", 0) + 1,
-                            )
-                            asyncio.create_task(runner(self.world, fresh["original_task"]))
-
-                # Denial: re-fire the requesting agent so they can adapt with
-                # the updated tool-history context (which now includes the
-                # denial reason). Bounded by rerun_count so we don't loop.
-                denied = state.list_tool_requests(status="denied", limit=10)
-                for req in denied:
-                    if req.get("rerun_count", 0) > 0:
-                        continue
-                    task = req.get("original_task")
-                    if not task:
-                        continue
-                    runner = AGENT_RUNNERS.get(req["requesting_agent"])
-                    if runner is None:
-                        continue
-                    if not state.may_rerun_task(req["requesting_agent"], task):
-                        state.update_tool_request(req["id"], rerun_count=1)
-                        continue
-                    state.update_tool_request(req["id"], rerun_count=1)
-                    state.bump_task_rerun(req["requesting_agent"], task)
-                    asyncio.create_task(runner(self.world, task))
-
+                # The tool-request loop lived here: an agent emitted
+                # `request_tool`, Ultron reviewed it, Tinker wrote a module to
+                # `state/tools/` and hot-reloaded the registry. In four weeks it
+                # produced two tools, `etsy_search` and `etsy_trend_analyzer`,
+                # both for the print-on-demand business this pivoted away from
+                # on 2026-09-01 — and nothing since. Every tool the web agency
+                # actually uses was written by hand. A gatekeeper loop, an
+                # agent, a room, a panel and an approval kind for a capability
+                # nobody reached for is cost without return, so it is gone.
                 # Leads that changed stage → dispatch the room that works it.
-                await _timed("advance_leads", self._advance_leads())
-                await _timed("expire_silence", self._expire_silence())
-                await _timed("followup_sweep", self._followup_sweep())
-                await _timed("read_mail", self._read_mail())
+                await _timed("advance_records", self._advance_records())
+                await _timed("plugin_sweeps", self._plugin_sweeps())
 
-                # Retire ephemeral workers whose lead has finished its run
+                # Retire ephemeral workers whose record has finished its run
                 # through the pipeline. Rooms keep their base agent, so a room
                 # never looks abandoned; only the extra hires go.
                 retired = await _timed("workers.sweep", workers.sweep(self.world))
@@ -636,9 +417,18 @@ class Orchestrator:
 
                 # Pending agent escalations → Ultron responds.
                 pending_esc = state.list_escalations(status="pending", limit=10)
-                for esc in pending_esc:
-                    await _timed("ultron.respond_to_escalation", ultron.respond_to_escalation(self.world, esc["id"]))
-                    await self.world.publish({"type": "approvals_updated"})
+                if pending_esc and environment.current().listeners("escalation"):
+                    for esc in pending_esc:
+                        # BROADCAST: every plugin that wants to hear about a
+                        # stuck agent does. `hook()` was used here, which
+                        # returns the LAST registrant only — so the moment a
+                        # second plugin registered, the first was silently
+                        # switched off, which is the exact failure a list of
+                        # listeners exists to prevent.
+                        await _timed("escalation",
+                                     environment.current().broadcast(
+                                         "escalation", self.world, esc["id"]))
+                        await self.world.publish({"type": "approvals_updated"})
 
                 # Resolved escalations → re-fire the agent so the rerun sees
                 # Ultron's guidance via format_escalations().
@@ -655,18 +445,23 @@ class Orchestrator:
                     task = esc.get("original_task")
                     if not task:
                         continue
-                    runner = AGENT_RUNNERS.get(esc["agent"])
+                    runner = _runners.agent_runners().get(esc["agent"])
                     if runner is None:
                         continue
 
                     # Brake 1: Ultron's own judgement. If he told them to stand
                     # down, re-firing them contradicts the instruction he just
                     # gave and starts the loop.
-                    response = esc.get("ultron_response") or {}
+                    # `ultron_response` is the old field name; records
+                    # written before the rename still carry it.
+                    response = (esc.get("response")
+                                or esc.get("ultron_response") or {})
                     if response.get("rerun_agent") is False:
                         state.update_escalation(esc["id"], rerun_dispatched=True)
                         state.log_event(
-                            "ask_response", from_="ultron", to=esc["agent"],
+                            "ask_response",
+                            from_=environment.current().overseer() or "system",
+                            to=esc["agent"],
                             summary=f"no rerun: guidance was to stand down — "
                                     f"{(response.get('guidance') or '')[:120]}",
                             outcome="no_rerun",
@@ -694,7 +489,7 @@ class Orchestrator:
                         if not already:
                             state.add_user_approval(
                                 kind="rerun_halted",
-                                room_id=esc.get("room") or "throne",
+                                room_id=_somewhere(esc.get("room")),
                                 requesting_agent=esc["agent"],
                                 summary=f"{esc['agent']} is stuck in a loop on the same "
                                         f"task and has been stopped",
@@ -723,7 +518,9 @@ class Orchestrator:
                 # Process oldest first so chains form in the right order.
                 for report in reversed(new_reports):
                     self._processed_reports.add(report["id"])
-                    await _timed("ultron.react_to_report", ultron.react_to_report(self.world, report))
+                    await _timed("agent_report",
+                                 environment.current().broadcast(
+                                     "agent_report", self.world, report))
             except Exception as e:  # never let this loop die silently
                 print(f"[gatekeeper] {type(e).__name__}: {e}")
             await asyncio.sleep(3.0)

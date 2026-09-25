@@ -1,0 +1,26 @@
+# A room is a place on the map with a bench per job. Geometry is in tiles; the
+# bench layout is computed if you leave `position`/`size` off, so you never do
+# the arithmetic by hand.
+id: hall
+name: The Hall
+purpose: Where a greeting is written, and where you approve it before it goes.
+position: { x: 0, y: 4 }
+size: { w: 12, h: 8 }
+color: "#2b3a4a"
+max_workers: 2
+workbenches:
+  # `stages` is the routing table. Declaring a stage here is what makes that
+  # stage reachable — nothing else registers it.
+  - id: desk
+    name: The Writing Desk
+    job: Writing the greeting
+    stages: [drafting]
+  # A stage nobody WORKS still needs a bench. `written` is waiting on you, not
+  # on an agent — but the orchestrator asks `role_for_stage` before it asks
+  # anything else, and with no bench declaring `written` that answers None and
+  # the run loop moves on. The step gate below it would then never be raised
+  # and the record would sit at `written` for ever, with no error anywhere.
+  - id: outbox
+    name: The Outbox
+    job: Waiting on your approval
+    stages: [written]

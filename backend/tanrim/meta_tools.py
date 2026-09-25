@@ -1,6 +1,13 @@
 """Per-agent meta MCP tools — capabilities every agent has by default.
 
-Currently: `request_tool` — the agent emits a tool request that flows to
+Currently the two escalation tools — `ask_<overseer>` and
+`report_to_<overseer>`, named from the role a plugin declares as its
+overseer — plus delegation. `request_tool` used to live
+here too — an agent could ask for a capability it lacked, Ultron reviewed it
+and Tinker wrote the module. It produced two tools in four weeks, both for the
+business this pivoted away from, and nothing after; every tool the web agency
+uses was written by hand. It is gone.
+
 Ultron for review and (if approved) Tinker for fabrication.
 """
 from __future__ import annotations
@@ -42,54 +49,24 @@ def make_meta_server(
     """
     speaker = worker_id or agent_id
     ctx = delegation_context or {}
+    # Who an agent escalates to. Declared by the plugin: the two tool names
+    # below were `ask_ultron` and `report_to_ultron`, built into the core from
+    # one plugin's agent, so a plugin whose overseer is called something else
+    # could not have them. With `overseer() == "ultron"` the names, and the
+    # prompts looked up for them, are byte-identical to before.
+    from . import environment
+
+    boss = environment.current().overseer() if environment.booted() else ""
     # Budget lives in this closure, so it is per-run: a fresh server is built
     # for every agent turn.
     budget = {"used": 0}
 
     @tool(
-        "request_tool",
-        _P("request_tool"),
-        {
-            "name": str,
-            "description": str,
-            "why": str,
-        },
-    )
-    async def request_tool_fn(args: dict[str, Any]) -> dict[str, Any]:
-        req = state.add_tool_request(
-            requesting_agent=agent_id,
-            requesting_room=room_id,
-            name=args["name"],
-            description=args["description"],
-            why=args["why"],
-            original_task=original_task,
-        )
-        state.log_event(
-            "tool_request",
-            from_=agent_id, to="ultron",
-            summary=f"requested '{args['name']}': {args.get('why', '')[:160]}",
-            outcome=None,
-            details={"request_id": req["id"], "name": args["name"]},
-        )
-        if world is not None:
-            await world.talk(speaker, "ultron", seconds=6.0, label=f"requests {args['name']}")
-        return {
-            "content": [{
-                "type": "text",
-                "text": (
-                    f"Tool request submitted (id={req['id']}). "
-                    f"The Armory will review it. The tool will not be "
-                    f"available on this run — finish your task without it."
-                ),
-            }]
-        }
-
-    @tool(
-        "ask_ultron",
-        _P("ask_ultron"),
+        f"ask_{boss}",
+        _P(f"ask_{boss}") if boss else "",
         {"message": str},
     )
-    async def ask_ultron_fn(args: dict[str, Any]) -> dict[str, Any]:
+    async def ask_boss_fn(args: dict[str, Any]) -> dict[str, Any]:
         rec = state.add_escalation(
             agent=agent_id,
             room=room_id,
@@ -97,20 +74,23 @@ def make_meta_server(
             original_task=original_task,
         )
         state.log_event(
+            # The kind is wire format — `state/events.json` already holds
+            # thousands of these and the Archives panel filters on it.
             "ask_ultron",
-            from_=agent_id, to="ultron",
+            from_=agent_id, to=boss,
             summary=args["message"][:200],
             outcome=None,
             details={"escalation_id": rec["id"]},
         )
         if world is not None:
-            await world.talk(speaker, "ultron", seconds=6.0, label=f"asks: {args['message'][:30]}")
+            await world.talk(speaker, boss, seconds=6.0,
+                             label=f"asks: {args['message'][:30]}")
         return {
             "content": [{
                 "type": "text",
                 "text": (
-                    f"Question submitted to Ultron (id={rec['id']}). He'll respond "
-                    f"and you'll be auto-rerun with his guidance. For THIS run, "
+                    f"Question submitted to {boss} (id={rec['id']}). They will "
+                    f"respond and you will be auto-rerun with the guidance. For THIS run, "
                     f"give your best answer with the limitations you have, and "
                     f"clearly note the blocker."
                 ),
@@ -118,22 +98,23 @@ def make_meta_server(
         }
 
     @tool(
-        "report_to_ultron",
-        _P("report_to_ultron"),
+        f"report_to_{boss}",
+        _P(f"report_to_{boss}") if boss else "",
         {"summary": str},
     )
-    async def report_to_ultron_fn(args: dict[str, Any]) -> dict[str, Any]:
+    async def report_to_boss_fn(args: dict[str, Any]) -> dict[str, Any]:
         summary = (args.get("summary") or "").strip()
         if not summary:
             return {"content": [{"type": "text", "text": "summary required"}]}
         state.log_event(
             "agent_report",
-            from_=speaker, to="ultron",
+            from_=speaker, to=boss,
             summary=summary[:240],
             outcome=None,
         )
         if world is not None:
-            await world.talk(speaker, "ultron", seconds=4.0, label=f"reports: {summary[:30]}")
+            await world.talk(speaker, boss, seconds=4.0,
+                             label=f"reports: {summary[:30]}")
         return {
             "content": [{
                 "type": "text",
@@ -147,7 +128,9 @@ def make_meta_server(
     # only when it has a working directory for the helper to write into.
     from .delegation import MAX_DEPTH, MAX_PER_RUN
 
-    tools = [request_tool_fn, ask_ultron_fn, report_to_ultron_fn]
+    # No overseer declared, no escalation tools. An environment with nobody
+    # to ask should not offer an agent a tool that reaches nobody.
+    tools = [ask_boss_fn, report_to_boss_fn] if boss else []
 
     # Subtasks started but not yet collected, by handle. Held in this closure
     # so the set is per-run, like the budget, and cannot leak between builds.
@@ -168,7 +151,7 @@ def make_meta_server(
             instruction=args.get("instruction") or "",
             deliverable=args.get("deliverable") or "",
             cwd=Path(ctx["cwd"]),
-            lead_id=ctx.get("lead_id"),
+            record_id=ctx.get("lead_id"),
             depth=MAX_DEPTH,
         )
 
@@ -273,7 +256,7 @@ def make_meta_server(
                 instruction=args.get("instruction") or "",
                 deliverable=args.get("deliverable") or "",
                 cwd=Path(cwd),
-                lead_id=ctx.get("lead_id"),
+                record_id=ctx.get("lead_id"),
                 depth=MAX_DEPTH,
             )
         except RoomAtCapacity as e:
@@ -347,7 +330,13 @@ def make_meta_server(
         if not cwd:
             return {"content": [{"type": "text", "text":
                 "No working directory, so there is nothing to review."}]}
-        reviewer = (args.get("reviewer") or "lens").strip().lower()
+        # No default reviewer. It was `"lens"` — the core naming one plugin's
+        # agent as the fallback judge, which in any other install is a role
+        # that does not exist.
+        reviewer = (args.get("reviewer") or "").strip().lower()
+        if not reviewer:
+            return {"content": [{"type": "text", "text":
+                    "name a reviewer: which role should judge this?"}]}
         files = [f.strip() for f in re.split(r"[,\n]+", args.get("files") or "") if f.strip()]
         try:
             out = await run_review(
@@ -356,7 +345,7 @@ def make_meta_server(
                 question=args.get("question") or "Is this good enough to use?",
                 cwd=Path(cwd),
                 files=files,
-                lead_id=ctx.get("lead_id"),
+                record_id=ctx.get("lead_id"),
                 requested_by=speaker,
             )
         except Exception as e:  # noqa: BLE001

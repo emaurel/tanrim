@@ -29,10 +29,10 @@ class AgentState:
     # individual ("forge", "forge-2"). Memory and context belong to the role;
     # locks, sprites and status belong to the worker.
     role: str = ""
-    # Workers beyond the first are spawned on demand and retired when the lead
+    # Workers beyond the first are spawned on demand and retired when the record
     # they were hired for finishes its run through the pipeline.
     ephemeral: bool = False
-    lead_id: str | None = None
+    record_id: str | None = None
     # Which station in the room this worker is at, if any. Set for the duration
     # of a job so the map shows what kind of work is happening where.
     workbench: str | None = None
@@ -96,14 +96,22 @@ class World:
     # ---------- Workers ----------
 
     def workers(self, role: str) -> list[AgentState]:
-        """Every agent currently filling this role, base and ephemeral."""
+        """Every agent currently filling this role, base and ephemeral.
+
+        Scoped to the castle in hand: two agencies both have a Forge, and one
+        being busy says nothing about the other.
+        """
+        from .castles import scoped_here
+        role = scoped_here(role)
         return [a for a in self.agents.values() if (a.role or a.id) == role]
 
     ROMAN = ["", "II", "III", "IV", "V", "VI"]
 
-    async def spawn_worker(self, role: str, lead_id: str | None = None) -> AgentState:
+    async def spawn_worker(self, role: str, record_id: str | None = None) -> AgentState:
         """Hire another agent for a role that's already busy. The new sprite
         appears in the same room — the frontend creates it on first sight."""
+        from .castles import scoped_here
+        role = scoped_here(role)
         base = self.agents.get(role)
         if base is None:
             raise KeyError(f"no base agent for role {role}")
@@ -123,7 +131,7 @@ class World:
             x=x, y=y, target_x=x, target_y=y,
             role=role,
             ephemeral=True,
-            lead_id=lead_id,
+            record_id=record_id,
             station=base.station,
             workbench=base.station,
         )
@@ -131,9 +139,64 @@ class World:
         await self.publish({"type": "agent_update", "agent": worker.__dict__})
         return worker
 
+    async def resync(self) -> dict[str, list[str]]:
+        """Bring the world back in line with the installed plugins.
+
+        Called after the environment is re-booted, so that installing or
+        removing a plugin changes the map without restarting the process.
+
+        It MUTATES rather than rebuilding. A fresh `World.boot()` would be
+        two lines, and would also throw away every sprite's position, the
+        ephemeral workers that were hired for records in flight, and the
+        subscriber queues every open client is reading from — so the map would
+        go blank and every browser would have to reconnect to learn that a
+        plugin it does not care about had arrived.
+
+        Rooms that survive keep their agents exactly where they were standing.
+        """
+        from .rooms import load_rooms
+
+        before = {a.id for a in self.agents.values()}
+        self.rooms = load_rooms()
+        known = {room.id for room in self.rooms}
+
+        # Agents whose room is gone go with it, ephemeral or not. A base agent
+        # is normally permanent — a room should never look abandoned — but its
+        # room no longer exists, so there is nothing for it to be standing in.
+        for agent_id, agent in list(self.agents.items()):
+            if agent.home_room not in known:
+                del self.agents[agent_id]
+
+        for room in self.rooms:
+            for spec in room.agents:
+                held = self.agents.get(spec.id)
+                if held is not None:
+                    # Already staffed. Its position is its own business.
+                    continue
+                x, y = self._idle_spot(room, spec.station)
+                self.agents[spec.id] = AgentState(
+                    id=spec.id, name=spec.name, color=spec.color,
+                    home_room=room.id, room_id=room.id,
+                    x=x, y=y, target_x=x, target_y=y,
+                    role=spec.id, station=spec.station,
+                    workbench=spec.station,
+                )
+
+        now = {a.id for a in self.agents.values()}
+        for agent_id in sorted(before - now):
+            await self.publish({"type": "agent_removed", "agent_id": agent_id})
+        for agent_id in sorted(now - before):
+            await self.publish(
+                {"type": "agent_update", "agent": self.agents[agent_id].__dict__})
+        # The map itself is rebuilt from `/rooms`, which the client refetches.
+        await self.publish({"type": "rooms_changed"})
+        return {"added": sorted(now - before), "removed": sorted(before - now)}
+
     async def despawn_worker(self, agent_id: str) -> bool:
         """Retire an ephemeral worker. The base agent of a role is never
         removed — a room should never look abandoned."""
+        from .castles import scoped_here
+        agent_id = scoped_here(agent_id)
         agent = self.agents.get(agent_id)
         if agent is None or not agent.ephemeral or agent.busy:
             return False
@@ -167,12 +230,16 @@ class World:
         self._subscribers.discard(q)
 
     def room(self, room_id: str) -> RoomSpec:
+        from .castles import scoped_here
+        room_id = scoped_here(room_id)
         for r in self.rooms:
             if r.id == room_id:
                 return r
         raise KeyError(room_id)
 
     async def move_to(self, agent_id: str, room_id: str, status: str = "walking") -> None:
+        from .castles import scoped_here
+        agent_id, room_id = scoped_here(agent_id), scoped_here(room_id)
         agent = self.agents[agent_id]
         target = self.room(room_id)
         agent.room_id = room_id
@@ -187,6 +254,8 @@ class World:
         self, agent_id: str, room_id: str, bench_id: str
     ) -> None:
         """Walk a worker to a station inside its room for the duration of a job."""
+        from .castles import scoped_here
+        agent_id, room_id = scoped_here(agent_id), scoped_here(room_id)
         from .rooms import workbench as find_bench
 
         agent = self.agents.get(agent_id)
@@ -216,6 +285,8 @@ class World:
         Back to the idle strip along the bottom of the room — or to this
         agent's own station, if it has one.
         """
+        from .castles import scoped_here
+        agent_id = scoped_here(agent_id)
         agent = self.agents.get(agent_id)
         if agent is None:
             return
@@ -230,12 +301,16 @@ class World:
         await self.publish({"type": "agent_update", "agent": agent.__dict__})
 
     async def say(self, agent_id: str, text: str, seconds: float = 4.0) -> None:
+        from .castles import scoped_here
+        agent_id = scoped_here(agent_id)
         agent = self.agents[agent_id]
         agent.say = text
         agent.say_until = time.time() + seconds
         await self.publish({"type": "agent_update", "agent": agent.__dict__})
 
     async def set_status(self, agent_id: str, status: str) -> None:
+        from .castles import scoped_here
+        agent_id = scoped_here(agent_id)
         agent = self.agents[agent_id]
         agent.status = status
         await self.publish({"type": "agent_update", "agent": agent.__dict__})
@@ -243,6 +318,8 @@ class World:
     async def talk(self, from_id: str, to_id: str, seconds: float = 5.0, label: str | None = None) -> None:
         """Visualize one agent communicating with another. The frontend draws a
         blinking line between the two sprites for the given duration."""
+        from .castles import scoped_here
+        from_id, to_id = scoped_here(from_id), scoped_here(to_id)
         if from_id not in self.agents or to_id not in self.agents:
             return
         await self.publish({

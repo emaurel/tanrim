@@ -51,6 +51,40 @@ _TIERS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# What the outside world charges.
+#
+# Model calls are not the only spend. Google bills per request for the
+# Business Profile and per image for Street View, and until now none of it was
+# counted anywhere — so a record's true cost was understated by whatever the
+# research spent looking things up.
+#
+# These are list-price ESTIMATES, per call, and they move. Override any of them
+# with TANRIM_API_PRICING rather than editing code, and treat a total built
+# on them as indicative: the authority is the provider's own console.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_API_PRICING = {
+    # Places API (New) is tiered by the fields requested; a text search plus a
+    # details call with contact and atmosphere fields lands around here.
+    "google.places.search": 0.032,
+    "google.places.details": 0.020,
+    "google.places.photo": 0.007,
+    "google.streetview.image": 0.007,
+    # Free, and recorded anyway so the call volume is visible.
+    "google.streetview.metadata": 0.0,
+    "ovh.cart": 0.0,
+    "osm.node": 0.0,
+    "rdap.query": 0.0,
+    "register.search": 0.0,
+}
+try:
+    API_PRICING = {**_DEFAULT_API_PRICING,
+                   **json.loads(os.getenv("TANRIM_API_PRICING", "{}"))}
+except Exception:  # noqa: BLE001
+    API_PRICING = dict(_DEFAULT_API_PRICING)
+
+
 def price_for(model: str) -> tuple[dict[str, float], bool]:
     """The rate for a model, and whether it is a real entry or a guess."""
     p = PRICING.get(model)
@@ -107,7 +141,7 @@ def record(
     cache_write: int = 0,
     cache_read: int = 0,
     ts: float | None = None,
-    lead_id: str | None = None,
+    record_id: str | None = None,
     workbench: str | None = None,
 ) -> dict[str, Any]:
     """Record one call's spend.
@@ -124,12 +158,12 @@ def record(
         "ts": ts if ts is not None else time.time(),
         "agent_id": agent_id,
         "model": model,
-        # Which lead this was spent on. Absent on older rows, which is why
-        # per-lead totals start from when this was added rather than being
+        # Which record this was spent on. Absent on older rows, which is why
+        # per-record totals start from when this was added rather than being
         # reconstructed — nothing recorded the association before.
-        "lead_id": lead_id,
+        "lead_id": record_id,
         # Which bench the run was at. This is what separates a site build from
-        # the logo drawn beside it: both are `forge` on the same lead, so
+        # the logo drawn beside it: both are `forge` on the same record, so
         # without it the two are indistinguishable in the ledger and there is
         # no way to answer "what does a logo cost".
         "workbench": workbench,
@@ -181,74 +215,9 @@ def aggregate(records: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
         b["output_tokens"] += r["output_tokens"]
         b["cost_usd"] += r["cost_usd"]
     return sorted(buckets.values(), key=lambda x: -x["cost_usd"])
-
-
-def seed_demo() -> int:
-    """Populate the ledger with plausible demo data spread across the last 24h."""
-    import random
-    now = time.time()
-    samples: list[tuple[str, str, int, int, float]] = []
-    plan = [
-        ("ultron",  "claude-opus-4-7",   1200, 600,  6),
-        ("nova",    "claude-haiku-4-5",  4200, 1100, 18),
-        ("nova",    "claude-sonnet-4-6", 6800, 1900, 4),
-        ("forge",   "claude-sonnet-4-6", 9400, 1800, 12),
-        ("forge",   "claude-haiku-4-5",  3200, 600,  6),
-        ("scribe",  "claude-haiku-4-5",  2100, 1500, 22),
-        ("courier", "claude-haiku-4-5",  900,  400,  9),
-        ("echo",    "claude-haiku-4-5",  1600, 900,  14),
-        ("sage",    "claude-sonnet-4-6", 5200, 700,  3),
-        ("tinker",  "claude-sonnet-4-6", 4400, 1200, 2),
-        ("coin",    "claude-haiku-4-5",  500,  300,  4),
-    ]
-    for agent_id, model, in_tok_avg, out_tok_avg, n in plan:
-        for _ in range(n):
-            ts = now - random.random() * 24 * 3600
-            it = max(50, int(random.gauss(in_tok_avg, in_tok_avg * 0.25)))
-            ot = max(20, int(random.gauss(out_tok_avg, out_tok_avg * 0.30)))
-            samples.append((agent_id, model, it, ot, ts))
-    samples.sort(key=lambda s: s[4])
-    for agent_id, model, it, ot, ts in samples:
-        record(agent_id, model, it, ot, ts=ts)
-    return len(samples)
-
-# ---------------------------------------------------------------------------
-# What the outside world charges.
-#
-# Model calls are not the only spend. Google bills per request for the
-# Business Profile and per image for Street View, and until now none of it was
-# counted anywhere — so a lead's true cost was understated by whatever the
-# research spent looking things up.
-#
-# These are list-price ESTIMATES, per call, and they move. Override any of them
-# with TANRIM_API_PRICING rather than editing code, and treat a total built
-# on them as indicative: the authority is the provider's own console.
-# ---------------------------------------------------------------------------
-
-_DEFAULT_API_PRICING = {
-    # Places API (New) is tiered by the fields requested; a text search plus a
-    # details call with contact and atmosphere fields lands around here.
-    "google.places.search": 0.032,
-    "google.places.details": 0.020,
-    "google.places.photo": 0.007,
-    "google.streetview.image": 0.007,
-    # Free, and recorded anyway so the call volume is visible.
-    "google.streetview.metadata": 0.0,
-    "ovh.cart": 0.0,
-    "osm.node": 0.0,
-    "rdap.query": 0.0,
-    "register.search": 0.0,
-}
-try:
-    API_PRICING = {**_DEFAULT_API_PRICING,
-                   **json.loads(os.getenv("TANRIM_API_PRICING", "{}"))}
-except Exception:  # noqa: BLE001
-    API_PRICING = dict(_DEFAULT_API_PRICING)
-
-
-def record_api(sku: str, *, lead_id: str | None = None, calls: int = 1,
+def record_api(sku: str, *, record_id: str | None = None, calls: int = 1,
                agent_id: str = "", note: str = "") -> dict[str, Any]:
-    """Record external API usage against a lead."""
+    """Record external API usage against a record."""
     unit = API_PRICING.get(sku)
     rec = {
         "id": str(uuid.uuid4()),
@@ -257,7 +226,7 @@ def record_api(sku: str, *, lead_id: str | None = None, calls: int = 1,
         "sku": sku,
         "agent_id": agent_id or sku.split(".")[0],
         "model": sku,
-        "lead_id": lead_id,
+        "lead_id": record_id,
         "calls": int(calls),
         "input_tokens": 0, "output_tokens": 0,
         "cache_write_tokens": 0, "cache_read_tokens": 0,
@@ -274,9 +243,9 @@ def record_api(sku: str, *, lead_id: str | None = None, calls: int = 1,
     return rec
 
 
-def for_lead(lead_id: str) -> dict[str, Any]:
-    """Everything spent on one lead, split by where it went."""
-    rows = [r for r in list_records() if r.get("lead_id") == lead_id]
+def for_record(record_id: str) -> dict[str, Any]:
+    """Everything spent on one record, split by where it went."""
+    rows = [r for r in list_records() if r.get("lead_id") == record_id]
     models: dict[str, dict[str, Any]] = {}
     apis: dict[str, dict[str, Any]] = {}
     for r in rows:
@@ -294,7 +263,7 @@ def for_lead(lead_id: str) -> dict[str, Any]:
             b["cost_usd"] += float(r.get("cost_usd") or 0)
     # Also split by bench, which is the split that answers a question you
     # cannot otherwise ask: a site build and the logo drawn for it are both
-    # `forge` on the same lead, and only the bench tells them apart.
+    # `forge` on the same record, and only the bench tells them apart.
     benches: dict[str, dict[str, Any]] = {}
     for r in rows:
         if r.get("kind") == "api":
@@ -311,7 +280,7 @@ def for_lead(lead_id: str) -> dict[str, Any]:
     model_total = round(sum(b["cost_usd"] for b in models.values()), 4)
     api_total = round(sum(b["cost_usd"] for b in apis.values()), 4)
     return {
-        "lead_id": lead_id,
+        "lead_id": record_id,
         "agents": sorted(models.values(), key=lambda b: -b["cost_usd"]),
         "benches": sorted(benches.values(), key=lambda b: -b["cost_usd"]),
         "apis": sorted(apis.values(), key=lambda b: -b["cost_usd"]),
@@ -324,11 +293,11 @@ def for_lead(lead_id: str) -> dict[str, Any]:
     }
 
 
-def totals_by_lead() -> dict[str, float]:
-    """Total spent per lead, in ONE pass over the ledger.
+def totals_by_record() -> dict[str, float]:
+    """Total spent per record, in ONE pass over the ledger.
 
-    `for_lead` filters the whole ledger per call, so a list view asking for 23
-    leads scanned 764 records 23 times — which was the slowest part of `/leads`
+    `for_record` filters the whole ledger per call, so a list view asking for 23
+    records scanned 764 records 23 times — which was the slowest part of `/records`
     once everything else was fixed. This is for rows that need only a number.
     """
     out: dict[str, float] = {}
@@ -340,15 +309,15 @@ def totals_by_lead() -> dict[str, float]:
     return out
 
 
-def by_lead() -> list[dict[str, Any]]:
-    """Per-lead totals, dearest first. Rows with no lead are left out."""
+def by_record() -> list[dict[str, Any]]:
+    """Per-record totals, dearest first. Rows with no record are left out."""
     seen = {r.get("lead_id") for r in list_records() if r.get("lead_id")}
-    return sorted((for_lead(lid) for lid in seen),
+    return sorted((for_record(lid) for lid in seen),
                   key=lambda b: -b["total"])
 
 
 def unattributed() -> dict[str, Any]:
-    """Spend that predates per-lead tracking, so the totals still reconcile."""
+    """Spend that predates per-record tracking, so the totals still reconcile."""
     rows = [r for r in list_records() if not r.get("lead_id")]
     return {"rows": len(rows),
             "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in rows), 2)}
