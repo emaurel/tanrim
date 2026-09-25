@@ -266,6 +266,32 @@ def agent_runners() -> dict[str, "Runner"]:
     return _CACHE
 
 
+def runner_for(role: str | None) -> "Runner | None":
+    """The runner for a role, scoped or not.
+
+    The table is keyed by BASE role — `lens` — because that is what an
+    `AgentSpec` declares and there is one runner per role however many castles
+    exist. But everything that asks holds a SCOPED id: `rooms.role_for_stage`
+    answers `lens@b2e8e8`, because it reads the id off a room on the map.
+
+    So every caller doing `agent_runners().get(role)` got None, silently. That
+    included `Orchestrator._advance_records`, which is the pipeline's whole
+    transport — it `continue`s when the lookup misses, so with castles
+    installed no record has ever moved stage to stage on its own. Every run
+    came from an operator pressing a button.
+
+    Stripping here rather than at each call site, which is the rule castles
+    are built on: the environment goes on answering about `lens`, and every
+    accessor strips the castle first, centrally, because the alternative is
+    twenty callers each remembering to.
+    """
+    if not role:
+        return None
+    from . import castles
+
+    return agent_runners().get(castles.base(role))
+
+
 def __getattr__(name: str):
     if name == "AGENT_RUNNERS":
         return agent_runners()

@@ -687,6 +687,39 @@ class _WorldPageState extends State<WorldPage> {
           if (a.busy && (a.recordId ?? '').isNotEmpty) a.recordId!,
       };
 
+  /// Start a record's next step from its row.
+  ///
+  /// The server picks the room from the stage — the same call the record
+  /// window makes, so a row and an open record cannot disagree about what
+  /// "run" means.
+  Future<void> _runRecord(WorkRecord r) => _recordAction(
+        () => _api!.post('/leads/${r.id}/run-next'),
+        '${r.name}: started',
+      );
+
+  Future<void> _stopRecord(WorkRecord r) => _recordAction(
+        () => _api!.post('/leads/${r.id}/stop', {'reason': 'stopped from the board'}),
+        '${r.name}: stopped',
+      );
+
+  Future<void> _recordAction(Future<dynamic> Function() send, String ok) async {
+    String message = ok;
+    try {
+      final out = await send();
+      // A refusal answers `ok: false` with a sentence — nothing running, or a
+      // stage nobody works. Half the refusals here are deliberate, and the
+      // sentence is the useful part.
+      if (out is Map && out['ok'] == false) message = '${out['error']}';
+    } on ApiError catch (e) {
+      message = e.message;
+    } catch (e) {
+      message = '$e';
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 4)));
+  }
+
   List<AppWindow> _openWindows(List<AgentState> agents) {
     final out = <AppWindow>[];
     for (final id in _windows) {
@@ -753,6 +786,8 @@ class _WorldPageState extends State<WorldPage> {
           deadStages: _deadStages,
           selectedRecord: _selectedRecord,
           working: _workingRecords(agents),
+          onRunRecord: _runRecord,
+          onStopRecord: _stopRecord,
           onTapRecord: (r) {
             setState(() => _selectedRecord = r.id);
             _open('record:${r.id}');

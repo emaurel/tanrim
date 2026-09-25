@@ -18,6 +18,8 @@ class Board extends StatelessWidget {
     required this.onTapRecord,
     this.selectedId,
     this.working = const {},
+    this.onRun,
+    this.onStop,
   });
 
   final List<WorkRecord> records;
@@ -34,6 +36,11 @@ class Board extends StatelessWidget {
   /// for a new field. A record is "being worked on" if somebody is standing
   /// at a bench holding it.
   final Set<String> working;
+
+  /// Start the record's next step, or stop what is on it. Both optional: the
+  /// board is also drawn in places with no server to ask.
+  final void Function(WorkRecord)? onRun;
+  final void Function(WorkRecord)? onStop;
 
   @override
   Widget build(BuildContext context) {
@@ -75,6 +82,8 @@ class Board extends StatelessWidget {
           onTapRecord: onTapRecord,
           selectedId: selectedId,
           working: working,
+          onRun: onRun,
+          onStop: onStop,
         );
       },
     );
@@ -88,6 +97,8 @@ class _StageGroup extends StatefulWidget {
     required this.dimmed,
     required this.onTapRecord,
     required this.working,
+    required this.onRun,
+    required this.onStop,
     this.selectedId,
   });
 
@@ -96,6 +107,8 @@ class _StageGroup extends StatefulWidget {
   final bool dimmed;
   final void Function(WorkRecord) onTapRecord;
   final Set<String> working;
+  final void Function(WorkRecord)? onRun;
+  final void Function(WorkRecord)? onStop;
   final String? selectedId;
 
   @override
@@ -172,6 +185,8 @@ class _StageGroupState extends State<_StageGroup> {
               selected: r.id == widget.selectedId,
               working: widget.working.contains(r.id),
               onTap: () => widget.onTapRecord(r),
+              onRun: widget.onRun == null ? null : () => widget.onRun!(r),
+              onStop: widget.onStop == null ? null : () => widget.onStop!(r),
             ),
         const SizedBox(height: 6),
       ],
@@ -184,12 +199,16 @@ class _RecordRow extends StatelessWidget {
       {required this.record,
       required this.selected,
       required this.working,
-      required this.onTap});
+      required this.onTap,
+      this.onRun,
+      this.onStop});
 
   final WorkRecord record;
   final bool selected;
   final bool working;
   final VoidCallback onTap;
+  final VoidCallback? onRun;
+  final VoidCallback? onStop;
 
   @override
   Widget build(BuildContext context) {
@@ -231,6 +250,23 @@ class _RecordRow extends StatelessWidget {
             const SizedBox(width: 8),
             Text(ago(record.updated),
                 style: const TextStyle(fontSize: 11, color: Colors.white30)),
+            // Start and stop on the row itself. Opening a record to press Run
+            // is two clicks and a window for something you decide from the
+            // board — you can see there which stage everything is sitting at,
+            // which is exactly what tells you what to start.
+            if (working && onStop != null)
+              _RowButton(
+                icon: Icons.stop_circle_outlined,
+                tooltip: 'stop what is working this',
+                tone: const Color(0xFFE0A458),
+                onPressed: onStop!,
+              )
+            else if (!working && onRun != null)
+              _RowButton(
+                icon: Icons.play_arrow_rounded,
+                tooltip: 'run the next step',
+                onPressed: onRun!,
+              ),
           ],
         ),
       ),
@@ -238,6 +274,41 @@ class _RecordRow extends StatelessWidget {
   }
 }
 
+
+/// A small action on a record row.
+///
+/// Sized down hard: the row is 32px and a stock `IconButton` reserves 48,
+/// which pushed the timestamp off the end of a narrow window.
+class _RowButton extends StatelessWidget {
+  const _RowButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+    this.tone,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+  final Color? tone;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(left: 4),
+        child: Tooltip(
+          message: tooltip,
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: BorderRadius.circular(4),
+            child: Padding(
+              padding: const EdgeInsets.all(3),
+              child: Icon(icon, size: 17,
+                  color: tone ?? Colors.white.withValues(alpha: .55)),
+            ),
+          ),
+        ),
+      );
+}
 
 /// Somebody is working this record right now.
 ///

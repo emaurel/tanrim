@@ -245,7 +245,7 @@ class Orchestrator:
 
             if role is None:
                 continue  # terminal, or nobody works this stage
-            runner = _runners.agent_runners().get(role)
+            runner = _runners.runner_for(role)
             if runner is None:
                 continue
             self._dispatched.add((record_id, stage))
@@ -445,7 +445,7 @@ class Orchestrator:
                     task = esc.get("original_task")
                     if not task:
                         continue
-                    runner = _runners.agent_runners().get(esc["agent"])
+                    runner = _runners.runner_for(esc["agent"])
                     if runner is None:
                         continue
 

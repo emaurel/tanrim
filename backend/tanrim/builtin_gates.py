@@ -38,7 +38,7 @@ async def on_stage_gate(world, card: dict[str, Any], decision: str,
     stage = card["payload"].get("stage")
     if not record_id:
         return
-    runner = runners.agent_runners().get(role) if role else None
+    runner = runners.runner_for(role)
 
     if role and decision == "approved" and runner is not None:
         record = state.get_record(record_id)

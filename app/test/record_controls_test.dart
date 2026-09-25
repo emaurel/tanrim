@@ -116,6 +116,85 @@ void main() {
     });
   });
 
+  group('running from the board', () {
+    testWidgets('a row offers run, and a working row offers stop', (t) async {
+      // Two clicks and a window to press Run is the wrong shape for something
+      // you decide FROM the board — the board is where you can see which
+      // stage everything is sitting at, which is what tells you what to run.
+      t.view
+        ..physicalSize = const Size(560, 700)
+        ..devicePixelRatio = 1.0;
+      addTearDown(t.view.reset);
+
+      final started = <String>[];
+      final stopped = <String>[];
+      final rows = [
+        WorkRecord(const {
+          'id': 'a', 'name': 'Running', 'stage': 'built',
+          'kind': 'prospect', 'castle_id': 'c1', 'updated_ts': 0,
+        }),
+        WorkRecord(const {
+          'id': 'b', 'name': 'Idle', 'stage': 'built',
+          'kind': 'prospect', 'castle_id': 'c1', 'updated_ts': 0,
+        }),
+      ];
+      await t.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Board(
+            records: rows,
+            stages: const ['built'],
+            deadStages: const [],
+            counts: const {'built': 2},
+            working: const {'a'},
+            onTapRecord: (_) {},
+            onRun: (r) => started.add(r.id),
+            onStop: (r) => stopped.add(r.id),
+          ),
+        ),
+      ));
+      await t.pumpAndSettle();
+      await t.tap(find.text('built'));
+      await t.pumpAndSettle();
+
+      // The idle row gets run; the working one gets stop, not both.
+      expect(find.byTooltip('run the next step'), findsOneWidget);
+      expect(find.byTooltip('stop what is working this'), findsOneWidget);
+
+      await t.tap(find.byTooltip('run the next step'));
+      await t.pumpAndSettle();
+      expect(started, ['b'], reason: 'run was offered on the wrong row');
+
+      await t.tap(find.byTooltip('stop what is working this'));
+      await t.pumpAndSettle();
+      expect(stopped, ['a']);
+    });
+
+    testWidgets('a board with no server offers neither', (t) async {
+      // `Board` is drawn in places with nothing to call — the callbacks are
+      // optional and the buttons must not appear without them.
+      await t.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Board(
+            records: [
+              WorkRecord(const {
+                'id': 'a', 'name': 'Idle', 'stage': 'built',
+                'kind': 'prospect', 'castle_id': 'c1', 'updated_ts': 0,
+              }),
+            ],
+            stages: const ['built'],
+            deadStages: const [],
+            counts: const {'built': 1},
+            onTapRecord: (_) {},
+          ),
+        ),
+      ));
+      await t.pumpAndSettle();
+      await t.tap(find.text('built'));
+      await t.pumpAndSettle();
+      expect(find.byTooltip('run the next step'), findsNothing);
+    });
+  });
+
   group('start and stop', () {
     testWidgets('start asks the server which room, rather than guessing',
         (t) async {
