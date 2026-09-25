@@ -197,3 +197,106 @@ def test_the_role_is_resolved_per_castle(ledger):
                 role = drain._role_here(castle["id"], step["from"])
                 if role and "@" in role:
                     assert role.endswith(f"@{castle['id']}"), role
+
+
+# --------------------------------------------------------------------------
+# A drain that achieves nothing must SAY so.
+#
+# `done + refused` shown as one number reads as progress, and a stage where
+# every single run declines looked exactly like one that was working. That is
+# how this was found: 120 records, 0 done, and a header counting up.
+
+
+@pytest.mark.asyncio
+async def test_it_gives_up_when_every_run_declines_the_same_way(
+        ledger, monkeypatch):
+    """The reason is about the STAGE, not any record — no profile configured,
+    a missing key — so the remaining sixty-seven will say it too. Grinding
+    through them achieves nothing and buries the reason under its own
+    progress."""
+    castle, stage, kind = _a_worked_stage()
+    _seed(stage, kind, 60)
+    tried = 0
+
+    async def always_declines(world, task):
+        nonlocal tried
+        tried += 1
+        return {"ok": False, "error": "no candidate profile"}
+
+    monkeypatch.setattr(drain._runners, "runner_for",
+                        lambda role: always_declines)
+    await drain.start(_World(), castle, stage, kind)
+    d = drain.get(castle, stage)
+    await d._task
+
+    assert d.gave_up
+    assert tried < 60, f"it ground through {tried} of 60 identical refusals"
+    assert d.last_refusal == "no candidate profile"
+    assert d.done == 0
+
+
+@pytest.mark.asyncio
+async def test_different_refusals_are_not_a_reason_to_give_up(
+        ledger, monkeypatch):
+    """Per-record judgements differ from each other, and those are exactly
+    the case the drain is FOR."""
+    castle, stage, kind = _a_worked_stage()
+    _seed(stage, kind, 20)
+    n = 0
+
+    async def each_its_own(world, task):
+        nonlocal n
+        n += 1
+        return {"ok": False, "error": f"record {n} is not ready"}
+
+    monkeypatch.setattr(drain._runners, "runner_for", lambda role: each_its_own)
+    await drain.start(_World(), castle, stage, kind)
+    d = drain.get(castle, stage)
+    await d._task
+
+    assert not d.gave_up
+    assert d.refused == 20, "it stopped on refusals that were all different"
+
+
+@pytest.mark.asyncio
+async def test_one_success_means_it_keeps_going(ledger, monkeypatch):
+    """Identical refusals AFTER something worked are per-record, not about
+    the stage — the drain has proof the stage is workable."""
+    castle, stage, kind = _a_worked_stage()
+    _seed(stage, kind, 20)
+    n = 0
+
+    async def first_works(world, task):
+        nonlocal n
+        n += 1
+        return {"ok": True} if n == 1 else {"ok": False, "error": "same"}
+
+    monkeypatch.setattr(drain._runners, "runner_for", lambda role: first_works)
+    await drain.start(_World(), castle, stage, kind)
+    d = drain.get(castle, stage)
+    await d._task
+
+    assert not d.gave_up
+    assert d.done == 1 and d.refused == 19
+
+
+@pytest.mark.asyncio
+async def test_the_reason_is_reported_not_just_the_count(ledger, monkeypatch):
+    """`done + refused` as one number is what made a drain achieving nothing
+    look like one that worked."""
+    castle, stage, kind = _a_worked_stage()
+    _seed(stage, kind, 10)
+
+    async def declines(world, task):
+        return {"ok": False, "error": "their site is unreachable"}
+
+    monkeypatch.setattr(drain._runners, "runner_for", lambda role: declines)
+    await drain.start(_World(), castle, stage, kind)
+    d = drain.get(castle, stage)
+    await d._task
+
+    got = d.as_json()
+    assert got["last_refusal"] == "their site is unreachable"
+    assert got["done"] == 0 and got["refused"] > 0, (
+        "done and refused must be separable, or the header cannot tell them "
+        "apart")

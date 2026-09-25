@@ -158,10 +158,23 @@ class _StageGroupState extends State<_StageGroup> {
     final d = widget.drain;
     final live = d != null && d['running'] == true;
     if (live) {
-      final done = ((d['done'] as num?) ?? 0) + ((d['refused'] as num?) ?? 0);
+      final ran = (d['done'] as num?)?.toInt() ?? 0;
+      final no = (d['refused'] as num?)?.toInt() ?? 0;
       return [
-        Text('$done/${d['total']}',
-            style: const TextStyle(fontSize: 11, color: Color(0xFF6BD68A))),
+        // Counted SEPARATELY. One number for done-plus-declined reads as
+        // progress, and a drain where every single run declines looked
+        // exactly like one that was working — which is how it was found.
+        if (ran > 0)
+          Text('$ran',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF6BD68A))),
+        if (ran > 0 && no > 0)
+          const Text(' · ',
+              style: TextStyle(fontSize: 11, color: Colors.white24)),
+        if (no > 0)
+          Text('$no declined',
+              style: const TextStyle(fontSize: 11, color: Color(0xFFE0A458))),
+        Text('  of ${d['total']}',
+            style: const TextStyle(fontSize: 11, color: Colors.white38)),
         const SizedBox(width: 2),
         IconButton(
           icon: const Icon(Icons.stop_rounded, size: 16),
@@ -192,6 +205,22 @@ class _StageGroupState extends State<_StageGroup> {
         onPressed: () => widget.onRunAll!(widget.stage),
       ),
     ];
+  }
+
+  /// Why the runs are declining, where the operator is already looking.
+  ///
+  /// A refusal is logged as an event, but "nothing changed" is noticed on
+  /// this header — and hunting an event log to find out why a button appeared
+  /// to do nothing is the same problem one step further away.
+  String _why() {
+    final d = widget.drain;
+    if (d == null) return '';
+    final why = '${d['last_refusal'] ?? ''}';
+    if (why.isEmpty) return '';
+    if (d['gave_up'] == true) {
+      return 'stopped — every run declined the same way: $why';
+    }
+    return ((d['done'] as num?) ?? 0) == 0 ? why : '';
   }
 
   @override
@@ -247,6 +276,13 @@ class _StageGroupState extends State<_StageGroup> {
             ),
           ),
         ),
+        if (_why().isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(left: 22, bottom: 6),
+            child: Text(_why(),
+                style: const TextStyle(
+                    fontSize: 11, height: 1.3, color: Color(0xFFE0A458))),
+          ),
         if (_open)
           for (final r in widget.rows)
             _RecordRow(

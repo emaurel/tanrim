@@ -436,6 +436,14 @@ is the same for seventy as for three.
 - **A refusal is counted, never raised.** The commonest refusal is a
   per-record judgement, and one of them ending the drain would make the
   button unreliable in exactly the case it exists for.
+- **But identical refusals with nothing achieved stop it.** If the first few
+  all decline for the SAME reason and none has succeeded, the reason is about
+  the stage rather than any record — no profile configured, a missing key —
+  and the remaining sixty-seven will say it too. `GIVE_UP_AFTER = 5`.
+- **Done and declined are counted separately, and the reason is reported.**
+  One number for `done + refused` reads as progress: a drain where all 120
+  runs declined looked exactly like one that was working, which is how the
+  brake above came to be written.
 - **Stop is not cancel.** It stops dispatching and lets what is in flight
   finish; killing a run mid-write is how a record ends up half-enriched.
 - **The queue is read in batches.** `_waiting` parses the whole ledger, and

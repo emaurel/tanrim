@@ -39,6 +39,11 @@ class Drain:
         self.total = 0
         self.done = 0
         self.refused = 0
+        #: Why the last one declined, and how many in a row said the same.
+        #: A drain of seventy that achieves nothing must be able to say so.
+        self.last_refusal = ""
+        self.same_refusal = 0
+        self.gave_up = False
         self.started: list[str] = []
         self.stopping = False
         self.error = ""
@@ -53,9 +58,22 @@ class Drain:
             "castle_id": self.castle_id, "stage": self.stage, "kind": self.kind,
             "total": self.total, "done": self.done, "refused": self.refused,
             "running": self.running, "stopping": self.stopping,
-            "error": self.error,
+            "error": self.error, "last_refusal": self.last_refusal,
+            "gave_up": self.gave_up,
         }
 
+
+#: How many identical refusals, with nothing achieved, before giving up.
+#:
+#: A drain exists to work a stage off. If the first few all decline for the
+#: SAME reason and none has succeeded, the reason is about the stage rather
+#: than about any record — no profile configured, a missing key — and the
+#: remaining sixty-seven will say it too. Grinding through them achieves
+#: nothing, takes minutes, and buries the reason under its own progress.
+#:
+#: Same reason, not just any refusal: per-record judgements differ from each
+#: other, and those are the case the drain is FOR.
+GIVE_UP_AFTER = 5
 
 #: Keyed by (castle, stage). A drain outlives the request that started it.
 _DRAINS: dict[tuple[str, str], Drain] = {}
@@ -199,12 +217,17 @@ async def _run(world: World, d: Drain, role: str) -> None:
     except Exception as exc:                          # noqa: BLE001
         d.error = f"{type(exc).__name__}: {exc}"
     finally:
+        if d.gave_up:
+            summary = (f"'{d.stage}': gave up after {d.refused} declined the "
+                       f"same way — {d.last_refusal}")
+        else:
+            summary = (f"'{d.stage}': {d.done} run, {d.refused} declined"
+                       + (" (stopped)" if d.stopping else ""))
         state.log_event(
-            "run_end", from_="operator",
-            summary=f"'{d.stage}': {d.done} run, {d.refused} declined"
-                    + (" (stopped)" if d.stopping else ""),
-            outcome="completed",
-            details={"stage": d.stage, "castle_id": d.castle_id})
+            "run_end", from_="operator", summary=summary[:240],
+            outcome="refused" if d.gave_up else "completed",
+            details={"stage": d.stage, "castle_id": d.castle_id,
+                     "error": d.last_refusal})
         await world.publish({"type": "records_updated"})
 
 
@@ -219,9 +242,16 @@ async def _one(world: World, d: Drain, runner, record: dict[str, Any]) -> None:
     try:
         got = await runner(world, {"lead_id": record["id"], "prompt": ""})
         if isinstance(got, dict) and got.get("ok") is False:
+            why = str(got.get("error") or "declined")
             d.refused += 1
+            d.same_refusal = d.same_refusal + 1 if why == d.last_refusal else 1
+            d.last_refusal = why
+            if d.done == 0 and d.same_refusal >= GIVE_UP_AFTER:
+                d.gave_up = True
+                d.stopping = True
         else:
             d.done += 1
+            d.same_refusal = 0
     except Exception:                                 # noqa: BLE001
         # `_skip_if_busy` already turns a crash into a refusal dict, so this
         # is the belt on top of that brace: a drain must not die with tasks

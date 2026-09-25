@@ -210,11 +210,69 @@ void _runAllTests() {
       ));
       await t.pumpAndSettle();
 
-      expect(find.text('12/70'), findsOneWidget);
+      expect(find.text('9'), findsOneWidget);          // actually done
+      expect(find.text('3 declined'), findsOneWidget);  // and not
+      expect(find.text('  of 70'), findsOneWidget);
       expect(find.byIcon(Icons.playlist_play_rounded), findsNothing);
       await t.tap(find.byIcon(Icons.stop_rounded));
       await t.pumpAndSettle();
       expect(stopped, 'spotted');
+    });
+
+    testWidgets('a drain where everything declines does not read as progress',
+        (t) async {
+      // One number for done-plus-declined is what made a stage achieving
+      // nothing look exactly like one that was working.
+      await t.pumpWidget(board(
+        onRunAll: (_) {},
+        onStopAll: (_) {},
+        drains: const {
+          'spotted': {'stage': 'spotted', 'total': 120, 'done': 0,
+                      'refused': 52, 'running': true, 'stopping': false,
+                      'last_refusal': 'no candidate profile'},
+        },
+      ));
+      await t.pumpAndSettle();
+
+      expect(find.text('52 declined'), findsOneWidget);
+      expect(find.text('52'), findsNothing,
+          reason: 'a bare count reads as work done');
+      expect(find.text('no candidate profile'), findsOneWidget,
+          reason: 'the reason was only in the event log');
+    });
+
+    testWidgets('giving up says so, and says why', (t) async {
+      await t.pumpWidget(board(
+        onRunAll: (_) {},
+        drains: const {
+          'spotted': {'stage': 'spotted', 'total': 120, 'done': 0,
+                      'refused': 8, 'running': false, 'stopping': true,
+                      'gave_up': true, 'last_refusal': 'set JOB_HUNT_PROFILE'},
+        },
+      ));
+      await t.pumpAndSettle();
+
+      expect(find.textContaining('every run declined the same way'),
+          findsOneWidget);
+      expect(find.textContaining('set JOB_HUNT_PROFILE'), findsOneWidget);
+    });
+
+    testWidgets('a drain that is working shows no scare text', (t) async {
+      await t.pumpWidget(board(
+        onRunAll: (_) {},
+        onStopAll: (_) {},
+        drains: const {
+          'spotted': {'stage': 'spotted', 'total': 20, 'done': 9,
+                      'refused': 1, 'running': true, 'stopping': false,
+                      'last_refusal': 'one record was not ready'},
+        },
+      ));
+      await t.pumpAndSettle();
+
+      expect(find.text('9'), findsOneWidget);
+      expect(find.text('1 declined'), findsOneWidget);
+      // Work IS happening, so one record's refusal is not the headline.
+      expect(find.text('one record was not ready'), findsNothing);
     });
 
     testWidgets('a drain already stopping cannot be stopped twice', (t) async {
