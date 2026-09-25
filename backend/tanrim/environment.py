@@ -123,6 +123,9 @@ class Environment:
     _agents: dict[str, AgentSpec] = field(default_factory=dict)
     _gates: dict[str, Gate] = field(default_factory=dict)
     _tools: dict[str, Tool] = field(default_factory=dict)
+    #: `skill name -> directory`, merged from every plugin. A room grants by
+    #: name; this is what a name resolves to.
+    _skills: dict[str, Any] = field(default_factory=dict)
     #: Every listener per hook name, in plugin order. A single slot meant two
     #: plugins wanting `tick` collided with no rule; broadcast and veto hooks
     #: fan out, suppliers take the last.
@@ -179,6 +182,7 @@ class Environment:
                 "agents": list(p.agents()),
                 "gates": list(p.gates()),
                 "tools": list(p.tools()),
+                "skills": dict(p.skills()),
                 "hooks": dict(p.hooks()),
                 "step_gates": list(p.step_gates()),
                 "room_handlers": dict(p.room_handlers()),
@@ -254,6 +258,13 @@ class Environment:
                         f"is what an operator decision MEANS, and two "
                         f"meanings for one card is a silent coin-toss")
                 self._gates[gate.kind] = gate
+            for name, path in self._said(p, "skills").items():
+                if name in self._skills:
+                    raise EnvironmentError(
+                        f"two plugins ship a skill called {name!r}; a room "
+                        f"grants a skill by name, so one of them would be "
+                        f"granted something it has never seen")
+                self._skills[name] = path
             for tool in self._said(p, "tools"):
                 if tool.name in self._tools:
                     raise EnvironmentError(
@@ -572,6 +583,10 @@ class Environment:
 
     def gate(self, kind: str) -> Gate | None:
         return self._gates.get(kind)
+
+    def skills(self) -> "dict[str, Any]":
+        """Every skill any plugin ships, by name."""
+        return dict(self._skills)
 
     def tools(self) -> dict[str, Tool]:
         return dict(self._tools)

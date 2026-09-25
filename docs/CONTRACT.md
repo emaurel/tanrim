@@ -455,6 +455,28 @@ hand the rest back to inference.
 
 ## The rest
 
+### `skills() -> Mapping[str, Path]`
+
+Claude Code skills this plugin ships, `name -> directory`. A room grants one
+by NAME in its manifest, and the name must resolve to a directory holding a
+`SKILL.md`.
+
+```python
+from tanrim.plugin_helpers import dir_skills
+
+def skills(self):
+    return dir_skills(HERE / "skills")
+```
+
+Ship them with the plugin that needs them. The environment used to look every
+name up in `<repo>/.claude/skills/`, which meant cloning a plugin gave you a
+room granting skills it did not have — and a missing skill is DROPPED
+silently, so nothing tells you.
+
+Two plugins claiming one name is refused at boot, like a duplicate gate or
+tool. `<repo>/.claude/skills/` still works as a drop for a skill belonging to
+no plugin, and cannot shadow one a plugin ships.
+
 ### `tools() -> Iterable[Tool]`
 
 An MCP server a room may be granted by name. `plugin_helpers.py_tools(dir,

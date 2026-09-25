@@ -276,3 +276,24 @@ class FilePrompts:
 
 def file_prompts(root: Path) -> FilePrompts:
     return FilePrompts(root)
+
+
+def dir_skills(directory: Path) -> dict[str, Path]:
+    """`name -> path` for every skill directory under `directory`.
+
+    A skill is a directory with a SKILL.md in it; the directory name is the
+    name a room grants. Anything else in there is ignored, so a `sources.json`
+    recording where each was vendored from can sit alongside them.
+
+    Like `yaml_rooms` and `py_tools`, this is a convenience a plugin CALLS. The
+    environment never reads a plugin's directories itself — a plugin that keeps
+    its skills somewhere else answers `skills()` differently and works
+    identically.
+    """
+    if not directory.is_dir():
+        return {}
+    return {
+        entry.name: entry
+        for entry in sorted(directory.iterdir())
+        if entry.is_dir() and (entry / "SKILL.md").is_file()
+    }

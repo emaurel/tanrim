@@ -471,16 +471,32 @@ approval kind for a capability nobody reached for is cost without return.
 
 ## Skills
 
-A room grants Claude Code skills via `skills:` in its manifest. Three
-non-obvious parts:
+A room grants Claude Code skills via `skills:` in its manifest, and **the
+plugin supplies them** — `Plugin.skills()` answers `name -> directory`, with
+`plugin_helpers.dir_skills()` as the convenience for the ordinary case.
+
+They used to live in one fixed directory the core owned, `<repo>/.claude/skills/`,
+which put a plugin's dependency outside the plugin: cloning a plugin gave you a
+room granting four skills and none of them. `resolve` drops a missing skill
+without a word, so the only symptom was worse output. `<repo>/.claude/skills/`
+survives as a drop for a skill that belongs to no plugin, exactly like
+`state/tools/`; a plugin owns its own names and the drop cannot shadow one.
+
+Four non-obvious parts:
 
 - Claude Code discovers project skills relative to the run's **cwd**, and
   agents are scoped to a per-record directory. Rather than widen an agent's
   cwd to the repo, each run gets a `<cwd>/.claude` symlink pointing at a
   skills-only tree. Anything that walks or copies a run directory must
   therefore skip symlinked dirs.
+- **One tree per distinct grant, not one shared tree.** The shared one only
+  ever added, so it accumulated every skill any room had ever been granted —
+  and Claude Code discovers what is in the TREE, not what the prompt mentioned.
+  A room granted four could invoke a fifth belonging to another room, and now
+  that plugins ship their own, to another plugin.
 - A skill that ships as a plugin and calls its own script via
-  `$CLAUDE_PLUGIN_ROOT` needs that set; the runner points it at the repo root.
+  `$CLAUDE_PLUGIN_ROOT` needs that set; the runner points it at whoever
+  supplies the granted skills, and at their common ancestor for a mixed grant.
 - A skill that works by shelling out needs `Bash` in the room's
   `builtin_tools`.
 

@@ -61,10 +61,11 @@ contacted.
 
 ## Running it
 
-Vendored third-party skills are not committed — they are somebody else's work.
-`.claude/skills/sources.json` records where each came from; the fetch commands
-are in `.gitignore`. A room that grants a skill missing from disk loses it
-silently, so fetch them before running one.
+A plugin ships the Claude Code skills its rooms grant, under
+`<plugin>/skills/`. Vendored third-party ones are not committed — they are
+somebody else's work — so each plugin's own README says how to fetch them. A
+room that grants a skill missing from disk loses it **silently**, so fetch
+them before running one.
 
 ```bash
 uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]"

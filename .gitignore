@@ -37,26 +37,9 @@ plugins/
 # booted with 42 missing files.
 prompts/
 
-# Vendored third-party skills. Somebody else's work, kept out of the tree
-# rather than redistributed under this repository's MIT — four of the five had
-# their licence recorded as "see upstream", which means nobody checked, and
-# the one with a confirmed MIT licence was the only one NOT committed.
-#
-# `.claude/skills/sources.json` stays tracked: it records where each came
-# from, which version, and when, and the room panel links each skill chip to
-# its upstream. Re-fetch before running the Factory, which grants four of them
-# to Forge — `skills.resolve` DROPS a skill that is not on disk and says
-# nothing, so a clone that skips this gets a Forge with three of its four
-# design skills and no error anywhere:
-#
-#   git clone --depth 1 https://github.com/Leonxlnx/taste-skill
-#   cp -r taste-skill/.claude/skills/{design-taste-frontend,high-end-visual-design} .claude/skills/
-#   git clone --depth 1 https://github.com/pbakaus/impeccable
-#   cp -r impeccable/.claude/skills/impeccable .claude/skills/
-#   git clone --depth 1 https://github.com/emilkowalski/skill
-#   cp -r skill/.claude/skills/emil-design-eng .claude/skills/
-#   git clone --depth 1 https://github.com/nextlevelbuilder/ui-ux-pro-max-skill
-#   cp -r ui-ux-pro-max-skill/.claude/skills/ui-ux-pro-max .claude/skills/
+# A skill dropped here belongs to no plugin — the same idea as `state/tools/`.
+# A plugin ships its own under `<plugin>/skills/` and answers `skills()`, so
+# nothing third-party needs to live in this repository at all.
 .claude/skills/*/
 
 # Generated site output that lands at the repo root. Forge is scoped to a

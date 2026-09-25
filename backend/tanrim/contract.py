@@ -632,6 +632,26 @@ class Plugin(ABC):
         """MCP servers this plugin's rooms may be granted."""
         return ()
 
+    def skills(self) -> "Mapping[str, Path]":
+        """Claude Code skills this plugin ships: `name -> directory`.
+
+        A room grants a skill by NAME in its manifest, and the name has to
+        resolve to a directory with a SKILL.md in it. The environment used to
+        look every name up in one fixed place, `<repo>/.claude/skills/`, which
+        put a plugin's dependency outside the plugin: cloning `web_agency`
+        gave you a Factory that grants four design skills and none of the
+        skills, and `skills.resolve` drops a missing one silently.
+
+        So a plugin supplies its own, the same way it supplies rooms, prompts
+        and tools. `plugin_helpers.dir_skills(HERE / "skills")` is the
+        convenience for the ordinary case; a plugin that generates them or
+        fetches them at `setup()` answers differently and works the same.
+
+        `<repo>/.claude/skills/` survives as a runtime drop that belongs to no
+        plugin, exactly like `state/tools/`.
+        """
+        return {}
+
     # -- talking to models --------------------------------------------------
 
     def prompt(self, module: str, name: str, kind: str | None) -> str | None:

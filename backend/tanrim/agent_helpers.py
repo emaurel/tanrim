@@ -744,11 +744,18 @@ async def run_agent(
             # Project discovery is what finds `<cwd>/.claude/skills`. It points
             # at a skills-only tree, so no settings or MCP config comes with it.
             opts["setting_sources"] = ["project"]
-            opts["add_dirs"] = [str(skills_mod.SKILLS_DIR)]
-            # ui-ux-pro-max ships as a plugin and invokes its own search script
-            # via $CLAUDE_PLUGIN_ROOT. Setting it to the repo root makes that
-            # path resolve without patching vendored content.
-            opts["env"] = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(ROOT)}
+            # The directories the granted skills actually live in — one per
+            # supplying plugin now, rather than one directory the core owned.
+            opts["add_dirs"] = sorted(
+                {str(p.parent) for n, p in skills_mod.index().items()
+                 if n in granted})
+            # A skill that ships as a plugin invokes its own scripts via
+            # $CLAUDE_PLUGIN_ROOT. It is the SUPPLIER's root that makes those
+            # paths resolve, which used to be the repo root because every skill
+            # lived there; with one grant per room the common ancestor of the
+            # granted skills is the honest answer.
+            opts["env"] = {**os.environ,
+                           "CLAUDE_PLUGIN_ROOT": str(skills_mod.plugin_root(granted))}
             # Built-in file tools are only actually EXECUTED when the claude_code
             # preset is enabled. Without it the model happily calls Write and the
             # call silently no-ops, so the agent reports success having written
