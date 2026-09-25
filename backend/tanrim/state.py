@@ -404,6 +404,24 @@ def add_room_tool(room_id: str, tool_name: str) -> None:
         _write(ROOM_TOOL_OVERRIDES_FILE, overrides)
 
 
+def set_room_tools(room_id: str, tools: list[str] | None) -> None:
+    """Which tools this install grants a room, or None for the manifest's.
+
+    Free choice: any registered tool may be granted to any room. That is
+    deliberate — the operator knows what they are doing and a room is theirs
+    to equip — but it does mean a room can be handed something nobody designed
+    its agent to hold, and the agent will see it in its tool list.
+    """
+    _ensure()
+    with _lock:
+        overrides: dict[str, list[str]] = _read(ROOM_TOOL_OVERRIDES_FILE, {})
+        if tools is None:
+            overrides.pop(room_id, None)
+        else:
+            overrides[room_id] = list(tools)
+        _write(ROOM_TOOL_OVERRIDES_FILE, overrides)
+
+
 def remove_tool_from_all_rooms(tool_name: str) -> None:
     """Strip a tool name from every room override (used after delete_tool)."""
     _ensure()

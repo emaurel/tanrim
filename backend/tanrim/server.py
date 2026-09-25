@@ -775,6 +775,111 @@ class GateToggle(BaseModel):
     on: bool
 
 
+@app.get("/capabilities")
+async def get_capabilities() -> dict[str, Any]:
+    """Every tool and skill installed, for a picker to choose from.
+
+    Separate from a room's own payload because it is the same answer for every
+    room and changes only when a plugin is installed — asking per room would
+    fetch the catalogue once per window.
+    """
+    from . import rooms as rooms_mod
+    from . import skills as skills_mod
+    from .tools import registry as tool_registry
+
+    return {
+        "tools": tool_registry.list_tools(),
+        "tool_errors": tool_registry.list_errors(),
+        "skills": skills_mod.catalog(skills_mod.available()),
+        "rooms": [{"id": r.id, "name": r.name,
+                   "tools": agent_helpers.resolve_room_tools(r.id),
+                   "skills": rooms_mod.skills_for(r.id)}
+                  for r in rooms_mod.load_rooms()],
+    }
+
+
+class RoomGrants(BaseModel):
+    """What this install grants a room. `null` restores the manifest's list."""
+    model_config = ConfigDict(extra="forbid")
+    tools: list[str] | None = None
+    skills: list[str] | None = None
+    #: Which of the two to write, since `null` is a meaningful value for each
+    #: and "not sent" cannot be told from "sent as null" otherwise.
+    set_tools: bool = False
+    set_skills: bool = False
+
+
+@app.post("/rooms/{room_id}/grants")
+async def set_room_grants(room_id: str, body: RoomGrants) -> dict[str, Any]:
+    """Override what a room grants its agent, for this install only.
+
+    Stored in `state/`, not written back to the plugin: which tools a room has
+    is the plugin author's decision and this is one operator's machine.
+    """
+    from . import rooms as rooms_mod
+
+    room = rooms_mod.find(room_id)
+    if room is None:
+        raise HTTPException(404, f"no such room: {room_id}")
+    if body.set_tools:
+        state.set_room_tools(room.id, body.tools)
+    if body.set_skills:
+        state.set_room_skills(room.id, body.skills)
+    # The room list is cached on the manifests' mtimes, and an override does
+    # not touch a manifest — so the cache has to be dropped by hand or the
+    # change is invisible until a restart.
+    rooms_mod.invalidate()
+    await world.publish({"type": "rooms_changed"})
+    return {"ok": True, "room": room.id,
+            "tools": agent_helpers.resolve_room_tools(room.id),
+            "skills": rooms_mod.skills_for(room.id)}
+
+
+class AgentIdentity(BaseModel):
+    """What an operator calls an agent on their own machine."""
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    color: str | None = None
+    description: str | None = None
+
+
+@app.post("/agents/{agent_id}/identity")
+async def set_agent_identity(agent_id: str, body: AgentIdentity) -> dict[str, Any]:
+    """Rename or recolour an agent, for this install only.
+
+    An empty string CLEARS a field back to what the plugin declared, which is
+    why they are optional rather than defaulted — sending `name: ""` is how
+    you undo a rename.
+    """
+    got = state.set_agent_override(
+        agent_id, name=body.name, color=body.color,
+        description=body.description)
+    from . import rooms as rooms_mod
+
+    rooms_mod.invalidate()
+    await world.publish({"type": "rooms_changed"})
+    return {"ok": True, "agent": agent_id, "override": got}
+
+
+@app.delete("/records/{record_id}")
+async def delete_record(record_id: str) -> dict[str, Any]:
+    """Remove a record entirely. Stops whatever is working it first."""
+    record = state.get_record(record_id)
+    if record is None:
+        raise HTTPException(404, "no such record")
+    stopped = agent_helpers.cancel_record(record_id, "the record was deleted")
+    for a in state.list_user_approvals(status="pending"):
+        if (a.get("payload") or {}).get("lead_id") == record_id:
+            state.resolve_user_approval(a["id"], "ignored",
+                                        "superseded: the record was deleted")
+    state.log_event("run_end", from_="operator", to="operator",
+                    summary=f"deleted {record.get('name')}",
+                    outcome="completed", details={"lead_id": record_id})
+    ok = state.delete_record(record_id)
+    await world.publish({"type": "approvals_updated"})
+    return {"ok": ok, "stopped": stopped}
+
+
 @app.post("/pipeline/gate")
 async def set_pipeline_gate(body: GateToggle) -> dict[str, Any]:
     if body.stage in state.permanent_gates():
