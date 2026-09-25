@@ -13,6 +13,18 @@ state/secrets.json
 # All regenerable; nothing here is code worth tracking.
 state/
 
+# Harvested photographs of real businesses — Google review-platform images and
+# Street View — keyed by record id. They are READ for information and never
+# republished, which is a rule the code enforces on a built page and which this
+# repository broke for months: 28 of them were tracked, for three named
+# businesses, in a repository intended to go public. They are somebody else's
+# copyright and somebody else's premises, and they are regenerable.
+leads/
+
+# Golden-test failure artifacts, written by `flutter test` when a comparison
+# fails. Debris from a run, not source.
+app/test/failures/
+
 # Installed plugins. Each one is its own repository now, cloned in here — so
 # this checkout can be public while the plugins stay private. Removing them
 # from here does NOT remove them from this repository's history; making it
