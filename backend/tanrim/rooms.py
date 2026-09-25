@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from . import castles as geom
+
 
 
 class Vec2(BaseModel):
@@ -457,8 +459,40 @@ def room_for_role(role: str) -> str | None:
     return fallback
 
 
-def mcp_servers_for(room_id: str) -> list[McpServerSpec]:
-    for room in load_rooms():
+def find(room_id: str):
+    """One room, whether the caller names it scoped or not.
+
+    Room ids on the map are scoped — `factory@b2e8e8` — but a plugin's agent
+    names its room the way it declared it, `factory`, because a plugin never
+    sees a castle. So every lookup that compares `room.id == room_id` misses
+    whenever the two sides disagree, and misses SILENTLY: a room that is not
+    found simply has no tools.
+
+    That is how Forge lost `site_inspect`. Its room grants it, `run_agent`
+    passes `room_id="factory"`, and the map holds `factory@b2e8e8` — so the
+    Factory resolved to no tools at all and Forge built blind, which is the
+    exact problem granting it that tool was meant to fix.
+
+    Scoped to the castle in hand, because with two castles a base id names
+    two rooms and only the run's context says which.
+    """
+    if not room_id:
+        return None
+    rooms = load_rooms()
+    for room in rooms:                       # exactly as asked for
         if room.id == room_id:
-            return list(room.mcp_servers)
-    return []
+            return room
+    wanted = geom.scoped_here(room_id)       # the caller's castle
+    for room in rooms:
+        if room.id == wanted:
+            return room
+    base = geom.base(room_id)                # any castle, if none is in hand
+    for room in rooms:
+        if geom.base(room.id) == base:
+            return room
+    return None
+
+
+def mcp_servers_for(room_id: str) -> list[McpServerSpec]:
+    room = find(room_id)
+    return list(room.mcp_servers) if room else []

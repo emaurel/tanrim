@@ -668,6 +668,39 @@ class Plugin(ABC):
         """
         return None
 
+    def room_capabilities(self, room_id: str, kind: str
+                          ) -> "Mapping[str, Iterable[str]] | None":
+        """Which of a room's tools and skills THIS kind of work uses.
+
+            def room_capabilities(self, room_id, kind):
+                if room_id == "factory" and kind == "port":
+                    return {"tools": ["site_inspect"], "skills": []}
+                return None
+
+        A room declares what is AVAILABLE in it, additively — `RoomPatch`
+        unions, so any plugin may contribute and none may strip another's
+        grant. This picks what a job actually uses out of that inventory. The
+        room stays the ceiling: a selection can only ever narrow, so a plugin
+        cannot grant itself something the room does not have.
+
+        **Silence is nothing, not everything.** A kind that names no tools
+        gets no tools. The alternative — silence meaning "all of it" — makes
+        every grant implicit and means a skill added to a shared room reaches
+        every other kind in it until that kind opts out. Enumerating is more
+        typing once and no surprises afterwards; the cost is the footgun on
+        the other side, where adding a skill to a room does nothing until some
+        kind selects it.
+
+        Asked of the plugins that own the KIND first, in the same order and
+        for the same reason as `prompt`: an extension decides what its own
+        work needs without the plugin it extends knowing it exists. The first
+        plugin to answer wins.
+
+        Keys are `tools` and `skills`. A key left out is an empty selection,
+        the same as naming nothing.
+        """
+        return None
+
     # -- asking the operator ------------------------------------------------
 
     def gates(self) -> Iterable[Gate]:

@@ -66,15 +66,42 @@ def usage_int(obj: Any, key: str) -> int:
         return 0
 
 
+def selected_for(room_id: str, record_id: str | None
+                 ) -> "dict[str, list[str]] | None":
+    """What the record's KIND uses out of this room, or None for no opinion.
+
+    A room declares what is available in it; the kind of work decides what
+    this job actually uses. The room stays the ceiling — the selection is
+    intersected with it, so a plugin cannot grant itself something the room
+    does not have.
+
+    None when nothing is running for a record (a sourcing sweep, a throne
+    dispatch) or when no plugin has spoken about this room and kind. Callers
+    read None as "everything the room grants".
+    """
+    if not record_id:
+        return None
+    try:
+        from . import environment
+
+        record = state.get_record(record_id)
+        if record is None:
+            return None
+        return environment.current().room_capabilities(
+            room_id, state.record_kind(record))
+    except Exception:                                      # noqa: BLE001
+        # A selection that cannot be computed must not take the run with it.
+        # Everything the room grants is the safe answer, and the one that
+        # matches what happened before selections existed.
+        return None
+
+
 def resolve_room_tools(room_id: str) -> list[str]:
     """Manifest tools + runtime overrides, filtered to those actually registered."""
-    from .rooms import load_rooms
+    from .rooms import find as find_room
 
-    base: list[str] = []
-    for room in load_rooms():
-        if room.id == room_id:
-            base = list(room.tools)
-            break
+    room = find_room(room_id)
+    base: list[str] = list(room.tools) if room else []
     overrides = state.get_room_tool_overrides().get(room_id, [])
     seen: set[str] = set()
     out: list[str] = []
@@ -681,6 +708,12 @@ async def run_agent(
             )
         }
         room_tools = resolve_room_tools(room_id)
+        # What this kind of work uses out of what the room has. Intersected,
+        # never unioned: the room is the ceiling and a selection only narrows.
+        selection = selected_for(room_id, record_id)
+        if selection is not None:
+            wanted = set(selection["tools"])
+            room_tools = [t for t in room_tools if t in wanted]
         for name in room_tools:
             srv = tool_registry.get(name)
             if srv is not None:
@@ -736,6 +769,9 @@ async def run_agent(
             opts["max_buffer_size"] = 64 * 1024 * 1024
 
         granted: list[str] = []
+        if selection is not None and skills:
+            allowed_skills = set(selection["skills"])
+            skills = [s for s in skills if s in allowed_skills]
         if skills and cwd is not None:
             granted = skills_mod.prepare(Path(str(cwd)), skills)
         if granted:

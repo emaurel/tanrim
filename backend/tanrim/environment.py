@@ -178,6 +178,9 @@ class Environment:
                 "pipelines": list(p.pipelines()),
                 "record_model": p.record_model(),
                 "record_view": p.record_view,
+                # A bound method, not a called one: it takes arguments, so it
+                # is asked per dispatch rather than answered once at boot.
+                "room_capabilities": p.room_capabilities,
                 "rooms": list(p.rooms()),
                 "agents": list(p.agents()),
                 "gates": list(p.gates()),
@@ -502,6 +505,31 @@ class Environment:
             if blocks:
                 return list(blocks)
         return view_mod.infer(record)
+
+    def room_capabilities(self, room_id: str, kind: str
+                          ) -> "dict[str, list[str]] | None":
+        """What this KIND of work uses out of a room's inventory.
+
+        None when no plugin has an opinion, which callers read as "everything
+        the room grants" — that is the pre-selection behaviour, kept for a
+        room nobody has spoken about. A plugin that ANSWERS is taken at its
+        word, including an empty list: silence and "nothing" are different
+        answers, and a kind that names no skills gets none.
+
+        Asked of the kind's owners first, like `prompt` and `record_view`, so
+        an extension decides what its own work needs without the plugin it
+        extends knowing it exists.
+        """
+        for plugin in self._owns_kind.get(kind, []) + list(self.plugins):
+            answer = self._answers.get(plugin.id, {}).get("room_capabilities")
+            if answer is None:
+                continue
+            said = answer(room_id, kind)
+            if said is None:
+                continue
+            return {"tools": list(said.get("tools") or []),
+                    "skills": list(said.get("skills") or [])}
+        return None
 
     def record_model(self, kind: str) -> Any | None:
         return self._models.get(kind)
