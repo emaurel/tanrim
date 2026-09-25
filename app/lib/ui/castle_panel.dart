@@ -26,6 +26,7 @@ class CastlePanel extends StatefulWidget {
     required this.deadStages,
     required this.onTapRecord,
     this.selectedRecord,
+    this.working = const {},
   });
 
   final Castle castle;
@@ -45,6 +46,9 @@ class CastlePanel extends StatefulWidget {
   final List<String> deadStages;
   final void Function(WorkRecord) onTapRecord;
   final String? selectedRecord;
+
+  /// Record ids an agent is busy on, so a row can say so.
+  final Set<String> working;
 
   @override
   State<CastlePanel> createState() => _CastlePanelState();
@@ -156,6 +160,7 @@ class _CastlePanelState extends State<CastlePanel> {
         counts: counts,
         onTapRecord: widget.onTapRecord,
         selectedId: widget.selectedRecord,
+        working: widget.working,
       );
     }
     return ListView(

@@ -17,6 +17,7 @@ class Board extends StatelessWidget {
     required this.counts,
     required this.onTapRecord,
     this.selectedId,
+    this.working = const {},
   });
 
   final List<WorkRecord> records;
@@ -25,6 +26,14 @@ class Board extends StatelessWidget {
   final Map<String, int> counts;
   final void Function(WorkRecord) onTapRecord;
   final String? selectedId;
+
+  /// Record ids with an agent busy on them right now.
+  ///
+  /// Derived from the agents the server already streams — each carries the
+  /// record it was spawned for and whether it is busy — rather than asking
+  /// for a new field. A record is "being worked on" if somebody is standing
+  /// at a bench holding it.
+  final Set<String> working;
 
   @override
   Widget build(BuildContext context) {
@@ -65,6 +74,7 @@ class Board extends StatelessWidget {
           dimmed: dead,
           onTapRecord: onTapRecord,
           selectedId: selectedId,
+          working: working,
         );
       },
     );
@@ -77,6 +87,7 @@ class _StageGroup extends StatefulWidget {
     required this.rows,
     required this.dimmed,
     required this.onTapRecord,
+    required this.working,
     this.selectedId,
   });
 
@@ -84,6 +95,7 @@ class _StageGroup extends StatefulWidget {
   final List<WorkRecord> rows;
   final bool dimmed;
   final void Function(WorkRecord) onTapRecord;
+  final Set<String> working;
   final String? selectedId;
 
   @override
@@ -97,6 +109,10 @@ class _StageGroupState extends State<_StageGroup> {
   /// is a long scroll and the SHAPE of the pipeline — where the work has piled
   /// up — is the thing you came to see and the thing you cannot see.
   bool _open = false;
+
+  /// How many of this stage's records have somebody on them.
+  int get _busy =>
+      widget.rows.where((r) => widget.working.contains(r.id)).length;
 
   @override
   Widget build(BuildContext context) {
@@ -132,6 +148,19 @@ class _StageGroupState extends State<_StageGroup> {
                       style: const TextStyle(
                           fontSize: 11, color: Colors.white70)),
                 ),
+                // Folded, a stage is one line — so the dot has to survive on
+                // it, or "something is running" is a thing you can only learn
+                // by opening every group.
+                if (_busy > 0) ...[
+                  const SizedBox(width: 8),
+                  const _WorkingDot(),
+                  if (_busy > 1) ...[
+                    const SizedBox(width: 4),
+                    Text('$_busy',
+                        style: const TextStyle(
+                            fontSize: 11, color: Color(0xFF6BD68A))),
+                  ],
+                ],
               ],
             ),
           ),
@@ -141,6 +170,7 @@ class _StageGroupState extends State<_StageGroup> {
             _RecordRow(
               record: r,
               selected: r.id == widget.selectedId,
+              working: widget.working.contains(r.id),
               onTap: () => widget.onTapRecord(r),
             ),
         const SizedBox(height: 6),
@@ -151,10 +181,14 @@ class _StageGroupState extends State<_StageGroup> {
 
 class _RecordRow extends StatelessWidget {
   const _RecordRow(
-      {required this.record, required this.selected, required this.onTap});
+      {required this.record,
+      required this.selected,
+      required this.working,
+      required this.onTap});
 
   final WorkRecord record;
   final bool selected;
+  final bool working;
   final VoidCallback onTap;
 
   @override
@@ -173,6 +207,10 @@ class _RecordRow extends StatelessWidget {
         ),
         child: Row(
           children: [
+            if (working) ...[
+              const _WorkingDot(),
+              const SizedBox(width: 8),
+            ],
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -198,4 +236,29 @@ class _RecordRow extends StatelessWidget {
       ),
     );
   }
+}
+
+
+/// Somebody is working this record right now.
+///
+/// A dot rather than a spinner: a run takes minutes, and an animation that
+/// long reads as a page that has not finished loading. Green because the only
+/// other coloured mark on a record is the red approval badge, and those two
+/// mean opposite things — one is "this is moving", the other "this is stuck
+/// waiting for you".
+class _WorkingDot extends StatelessWidget {
+  const _WorkingDot();
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: 'an agent is working on this',
+        child: Container(
+          width: 8,
+          height: 8,
+          decoration: const BoxDecoration(
+            color: Color(0xFF6BD68A),
+            shape: BoxShape.circle,
+          ),
+        ),
+      );
 }

@@ -17,11 +17,22 @@ class RecordWindow extends StatefulWidget {
     required this.api,
     required this.recordId,
     this.onOpenRoom,
+    this.working = false,
+    this.stages = const [],
   });
 
   final Api api;
   final String recordId;
   final void Function(String roomId)? onOpenRoom;
+
+  /// An agent is busy on this record right now. Drives the dot and which of
+  /// Start / Stop is offered.
+  final bool working;
+
+  /// Every stage this record's pipeline declares, for the hand-move control.
+  /// Comes from the server, because a plugin this build has never seen adds
+  /// stages nothing here could name.
+  final List<String> stages;
 
   @override
   State<RecordWindow> createState() => _RecordWindowState();
@@ -94,6 +105,7 @@ class _RecordWindowState extends State<RecordWindow> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _header(view),
+        _controls(view),
         _tabs(history),
         Expanded(child: _body(history, rest)),
       ],
@@ -171,12 +183,150 @@ class _RecordWindowState extends State<RecordWindow> {
   /// kind and a stage whatever else it has — and a view that could omit them
   /// would be a record you cannot place.
   Widget _header(Map<String, dynamic> view) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
-        child: Wrap(spacing: 6, runSpacing: 6, children: [
-          _chip('${view['kind'] ?? ''}'),
-          _chip('${view['stage'] ?? ''}', accent: true),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            if (widget.working) ...[
+              const _Dot(),
+              const Text('working',
+                  style: TextStyle(fontSize: 11.5, color: Color(0xFF6BD68A))),
+            ],
+            _chip('${view['kind'] ?? ''}'),
+            _chip('${view['stage'] ?? ''}', accent: true),
+          ],
+        ),
+      );
+
+  /// Start, stop, and move it by hand.
+  ///
+  /// All three existed as routes months before anything could reach them: the
+  /// retired web client had the buttons and the app never grew them, so the
+  /// only way to start a stalled record was curl.
+  Widget _controls(Map<String, dynamic> view) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+        child: Row(children: [
+          if (widget.working)
+            _button('Stop', Icons.stop_circle_outlined, _stop,
+                tone: const Color(0xFFE0A458))
+          else
+            _button('Start', Icons.play_arrow_rounded, _start),
+          const SizedBox(width: 8),
+          _button('Move…', Icons.alt_route_rounded, _move),
+          const Spacer(),
+          if (_busy)
+            const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2)),
         ]),
       );
+
+  bool _busy = false;
+
+  Widget _button(String label, IconData icon, Future<void> Function() run,
+          {Color? tone}) =>
+      OutlinedButton.icon(
+        onPressed: _busy ? null : () => run(),
+        icon: Icon(icon, size: 16),
+        label: Text(label, style: const TextStyle(fontSize: 12)),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: tone,
+          visualDensity: VisualDensity.compact,
+        ),
+      );
+
+  /// Run whatever the record's stage says comes next.
+  ///
+  /// The server picks the room — the pipeline already knows which one works
+  /// this stage, and a client that guessed would be a second router to keep
+  /// in step with the manifests.
+  Future<void> _start() => _act(() async {
+        final out = await widget.api.post(
+            '/leads/${widget.recordId}/run-next');
+        return 'started ${(out as Map)['started'] ?? ''}'.trim();
+      });
+
+  Future<void> _stop() => _act(() async {
+        final out = await widget.api
+            .post('/leads/${widget.recordId}/stop', {'reason': 'stopped from the panel'});
+        final m = (out as Map);
+        // `ok: false` with a sentence, not an HTTP error: nothing running is a
+        // normal answer to "stop", not a failure.
+        if (m['ok'] == false) return '${m['error']}';
+        return 'stopped ${(m['stopped'] as List?)?.join(', ') ?? ''}'.trim();
+      });
+
+  Future<void> _move() async {
+    final choice = await showDialog<_Move>(
+      context: context,
+      builder: (_) => _MoveDialog(
+        stages: widget.stages,
+        current: '${(_view ?? const {})['stage'] ?? ''}',
+      ),
+    );
+    if (choice == null) return;
+    await _act(() async {
+      try {
+        await widget.api.post('/leads/${widget.recordId}/stage',
+            {'stage': choice.stage, 'reason': choice.reason});
+      } on ApiError catch (e) {
+        // A 409 is the rework guard ADVISING, with a sentence explaining what
+        // the move would mean. Showing it and offering to go on is the whole
+        // point of it being advice rather than a refusal.
+        if (e.status != 409 || !mounted) rethrow;
+        final go = await _confirm(e.message);
+        if (!go) return 'not moved';
+        await widget.api.post('/leads/${widget.recordId}/stage',
+            {'stage': choice.stage, 'reason': choice.reason, 'force': true});
+      }
+      return 'moved to ${choice.stage}';
+    });
+  }
+
+  Future<bool> _confirm(String message) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Move it anyway?'),
+          content: SingleChildScrollView(
+              child: Text(message, style: const TextStyle(fontSize: 13))),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Move anyway')),
+          ],
+        ),
+      ) ??
+      false;
+
+  /// Run one action, show what it said, and reload.
+  ///
+  /// A refusal is not an error here — half of them are deliberate, and the
+  /// sentence the server sends back is the useful part.
+  Future<void> _act(Future<String> Function() run) async {
+    setState(() => _busy = true);
+    String message;
+    try {
+      message = await run();
+    } on ApiError catch (e) {
+      message = e.message;
+    } catch (e) {
+      message = '$e';
+    }
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (message.isNotEmpty) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text(message), duration: const Duration(seconds: 4)));
+    }
+    await _load();
+  }
 
   Widget _chip(String s, {bool accent = false}) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -191,4 +341,100 @@ class _RecordWindowState extends State<RecordWindow> {
                 fontSize: 11.5,
                 color: accent ? const Color(0xFF8ECAE6) : null)),
       );
+}
+
+class _Dot extends StatelessWidget {
+  const _Dot();
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 8,
+        height: 8,
+        decoration: const BoxDecoration(
+            color: Color(0xFF6BD68A), shape: BoxShape.circle),
+      );
+}
+
+/// A hand-move: where to, and why.
+class _Move {
+  const _Move(this.stage, this.reason);
+  final String stage;
+  final String reason;
+}
+
+/// The reason is not optional decoration.
+///
+/// `advance_record` writes it into the record's history, which is the only
+/// place "who moved this, and why" is answerable from later. A hand-move with
+/// no note is a stage that changed for reasons nobody can reconstruct.
+class _MoveDialog extends StatefulWidget {
+  const _MoveDialog({required this.stages, required this.current});
+
+  final List<String> stages;
+  final String current;
+
+  @override
+  State<_MoveDialog> createState() => _MoveDialogState();
+}
+
+class _MoveDialogState extends State<_MoveDialog> {
+  String? _stage;
+  final _reason = TextEditingController();
+
+  @override
+  void dispose() {
+    _reason.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final options =
+        widget.stages.where((s) => s != widget.current).toList();
+    return AlertDialog(
+      title: const Text('Move this record'),
+      content: SizedBox(
+        width: 360,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (options.isEmpty)
+            const Text('the server listed no stages to move to',
+                style: TextStyle(fontSize: 12, color: Colors.white54))
+          else
+            DropdownButtonFormField<String>(
+              initialValue: _stage,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'to'),
+              items: [
+                for (final s in options)
+                  DropdownMenuItem(value: s, child: Text(s)),
+              ],
+              onChanged: (v) => setState(() => _stage = v),
+            ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _reason,
+            maxLines: 2,
+            decoration: const InputDecoration(
+              labelText: 'why',
+              helperText: 'goes into the history, where it is the only record '
+                  'of why this moved',
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel')),
+        FilledButton(
+          onPressed: _stage == null || _reason.text.trim().isEmpty
+              ? null
+              : () => Navigator.pop(
+                  context, _Move(_stage!, _reason.text.trim())),
+          child: const Text('Move'),
+        ),
+      ],
+    );
+  }
 }

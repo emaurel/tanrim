@@ -603,7 +603,26 @@ def test_every_endpoint_the_app_gets_still_answers(real_env):
     # two literals in a trench coat, and the route it wants really is
     # `/plugins/{plugin_id}/enable`. A hole matches any one segment, and so
     # does a `{param}` on the route side.
-    templates = [getattr(r, "path", "") for r in app.routes]
+    # Flattened, because an included router is not flat. This FastAPI wraps
+    # each `include_router` in an `_IncludedRouter` that has no `path` of its
+    # own and holds the real routes inside — so a plain scan of `app.routes`
+    # sees the core's endpoints and NONE of the plugins', and every plugin
+    # path looks like a route that does not exist.
+    def _paths(routes) -> list[str]:
+        out: list[str] = []
+        for r in routes:
+            # `_IncludedRouter` has no `routes` and no `path`; the real ones
+            # hang off `original_router`.
+            inner = getattr(r, "routes", None) or getattr(
+                getattr(r, "original_router", None), "routes", None)
+            if inner:
+                out += _paths(inner)
+            path = getattr(r, "path", None)
+            if path:
+                out.append(path)
+        return out
+
+    templates = _paths(app.routes)
 
     def _shaped(path: str) -> bool:
         want = path.rstrip("/").split("/")

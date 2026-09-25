@@ -674,6 +674,19 @@ class _WorldPageState extends State<WorldPage> {
   }
 
   /// The open windows, rebuilt from live state every frame.
+  /// The records an agent is busy on right now.
+  ///
+  /// Derived rather than asked for: every agent already streams the record it
+  /// was spawned for and whether it is busy, so "is this record being worked
+  /// on" is a question the client can already answer. Adding a field to the
+  /// record for it would be a second copy of a fact, and the one that goes
+  /// stale — a record is written when a run ENDS, and the interesting moment
+  /// is while it is in flight.
+  Set<String> _workingRecords(List<AgentState> agents) => {
+        for (final a in agents)
+          if (a.busy && (a.recordId ?? '').isNotEmpty) a.recordId!,
+      };
+
   List<AppWindow> _openWindows(List<AgentState> agents) {
     final out = <AppWindow>[];
     for (final id in _windows) {
@@ -739,6 +752,7 @@ class _WorldPageState extends State<WorldPage> {
           stages: _stages,
           deadStages: _deadStages,
           selectedRecord: _selectedRecord,
+          working: _workingRecords(agents),
           onTapRecord: (r) {
             setState(() => _selectedRecord = r.id);
             _open('record:${r.id}');
@@ -763,6 +777,11 @@ class _WorldPageState extends State<WorldPage> {
         child: RecordWindow(
           api: _api!,
           recordId: recordId,
+          working: _workingRecords(agents).contains(recordId),
+          // Both lists, because a hand-move is the escape hatch FROM the
+          // pipeline — including into a terminal stage, which is where a
+          // record goes when the answer is "stop working this".
+          stages: [..._stages, ..._deadStages],
           onOpenRoom: (roomId) {
             setState(() => _selected = roomId);
             _open('room:$roomId');
