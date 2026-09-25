@@ -36,12 +36,9 @@ of work.</td>
 </tr>
 </table>
 
-Regenerate them with `cd app && tool/screenshots.sh`. They are rendered from
-the real widgets against a real dump of the rooms, so re-running the script is
-the whole job of keeping them true — the picture this replaced was three weeks
-old and predated castles, windows and the record view entirely. The businesses
-on the board are invented; the real ledger holds people who have not been
-contacted.
+Rendered from the real widgets by `cd app && tool/screenshots.sh`, so
+re-running it is the whole job of keeping them true. The rooms are a real dump
+of a running server; the businesses on the board are invented.
 
 ## What you get
 
@@ -61,12 +58,6 @@ contacted.
 
 ## Running it
 
-A plugin ships the Claude Code skills its rooms grant, under
-`<plugin>/skills/`. Vendored third-party ones are not committed — they are
-somebody else's work — so each plugin's own README says how to fetch them. A
-room that grants a skill missing from disk loses it **silently**, so fetch
-them before running one.
-
 ```bash
 uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]"
 .venv/bin/python -m playwright install chromium   # a reviewing agent LOOKS
@@ -85,12 +76,28 @@ flutter run -d linux --release
 `--release` matters — a debug build is un-optimised JIT, and this draws an
 animated map.
 
-`.env.example` carries plugin settings as well as the environment's own. It
-has to: a plugin's variables are read from the same process, and one file you
-can see beats three you cannot. Nothing in `backend/tanrim/` reads them.
+`.env.example` holds the environment's own four settings and nothing else.
+A plugin reads the same process environment, so its variables go in the same
+`.env` once you install one — what they are is the plugin's to document.
 
 The app can start the server for you: point it at this checkout in
 **Settings → Server**. It guesses the path from where it was built.
+
+A fresh clone comes up **empty** — no stages, no rooms, nobody on the map.
+That is correct rather than broken, and it is the whole claim this repository
+makes about itself. To see it do something, give it a plugin:
+
+```bash
+cp -r plugins.example plugins/hello
+curl -X POST http://127.0.0.1:8765/plugins/reload
+```
+
+A castle appears with The Hall in it. `plugins.example` takes a name, has an
+agent write a greeting, and asks you before it counts as sent — the whole
+contract in one small piece. **Rename its `id` and its stages first** if you
+have other plugins installed: `drafting`, `written` and `sent` are generic
+enough to collide, and a record with no explicit kind is resolved by its
+stage.
 
 ## Installing a plugin
 
@@ -104,6 +111,12 @@ curl -X POST http://127.0.0.1:8765/plugins/reload
 
 Or use **Settings → Plugins** in the app, which clones, reloads, and lets you
 switch a plugin off without deleting it.
+
+A plugin also ships the Claude Code skills its rooms grant, under
+`<plugin>/skills/`. Vendored third-party ones are usually not committed —
+they are somebody else's work — so the plugin's README says how to fetch them.
+A room granted a skill that is missing from disk loses it **silently**, so do
+that before running one.
 
 Removing a plugin removes its stages, rooms, agents, gates, tools and routes
 with it. There is a test that asserts exactly that — and the suite runs with
@@ -127,12 +140,13 @@ functions that do not exist, booting perfectly and dying the first time
 anybody pressed Run.
 
 Or start from **[tanrim-plugin-template](https://github.com/emaurel/tanrim-plugin-template)**
-— the same example plus tests that run and a walkthrough :
+— the same example plus tests that run and a walkthrough that goes from an
+empty castle to an agent doing a job. It is a GitHub template, so:
 
 ```bash
-gh repo create my-plugin --private --clone \
-   --template emaurel/tanrim-plugin-template
+gh repo create my-plugin --clone --template emaurel/tanrim-plugin-template
 mv my-plugin /path/to/tanrim/plugins/my_plugin
+curl -X POST http://127.0.0.1:8765/plugins/reload
 ```
 
 ## Layout
@@ -140,10 +154,11 @@ mv my-plugin /path/to/tanrim/plugins/my_plugin
 ```
 backend/tanrim/     the environment — ~9,700 lines across 26 modules
 app/                the operator's app — Flutter, ~7,400 lines in app/lib
+tests/              the environment's suite, built on synthetic plugins
 plugins/            installed plugins (gitignored; clone them in)
 plugins.example/    the worked example, deliberately not installed
-state/              JSON ledgers and whatever plugins write
-docs/CONTRACT.md    the plugin contract
+state/              JSON ledgers and whatever plugins write (gitignored)
+docs/CONTRACT.md    the plugin contract, in full
 CLAUDE.md           the architecture, and the reasoning behind it
 ```
 
@@ -163,6 +178,17 @@ suite.
 
 Runs the environment's suite plus every installed plugin's own — a plugin's
 tests travel with it and still run by default.
+
+## What it was built for
+
+Three plugins run on it, in their own private repositories: an agency that
+finds businesses trading without a website and builds them one on spec; a job
+search that reads fifteen boards and submits behind an approval; and an
+extension that adds two stages to the first. None of them is needed to read
+this repository, and none of them could be inferred from it — which is the
+point. The environment was pulled out of the first one, and the second is how
+we know the seam is in the right place: it was ported in with no change to the
+core.
 
 ## Status
 
