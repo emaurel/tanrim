@@ -6,7 +6,7 @@
 
     register it in build_handlers() below.
 
-Rooms without a handler fall back to the generic panel on the frontend.
+Rooms without a handler fall back to the generic panel in the app.
 """
 from __future__ import annotations
 

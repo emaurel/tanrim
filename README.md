@@ -135,7 +135,6 @@ mv my-plugin /path/to/agent_environment/plugins/my_plugin
 ```
 backend/tanrim/     the environment — ~9,700 lines across 26 modules
 app/                the operator's app — Flutter, ~7,400 lines in app/lib
-frontend/           the retired Vite web client. Not served; app/ replaced it
 plugins/            installed plugins (gitignored; clone them in)
 plugins.example/    the worked example, deliberately not installed
 state/              JSON ledgers and whatever plugins write

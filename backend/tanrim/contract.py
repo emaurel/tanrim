@@ -26,7 +26,7 @@ conveniences a plugin may CALL; they are not the mechanism.
 `Stage`, `Transition`, `Room`, `Workbench`, `AgentSpec` and `Gate` are the
 shared vocabulary. They have fixed shapes on purpose: it is what lets one map,
 one set of room panels, one approval UI and one router work for any plugin. A
-plugin that could invent its own idea of a room would need its own frontend,
+plugin that could invent its own idea of a room would need its own client,
 and then the environment is a library rather than an environment.
 
 What the environment does NOT define is what any of it MEANS. It knows a record

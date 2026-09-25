@@ -52,7 +52,7 @@ prompts/
 # reason as prompts/: the name and the mark are the part of this worth
 # keeping private, and the .kra files are a working directory, not a build
 # input. Nothing in the app reads from here — assets it needs are copied
-# into frontend/public/ and committed deliberately.
+# into the app's own tree and committed deliberately.
 brand/
 
 # Plugin prompts, for the same reason as `prompts/`: the text is the private

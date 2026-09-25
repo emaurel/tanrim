@@ -411,43 +411,67 @@ def test_an_environment_with_no_overseer_offers_no_escalation_tools(plugins):
     assert server is not None          # it still builds; it just offers less
 
 
-def test_every_action_the_frontend_posts_is_handled(real_env):
-    """Action names are WIRE FORMAT, like `lead_id` and the route paths.
+#: Room actions no UI posts, recorded so that the list cannot GROW unnoticed.
+#:
+#: The Vite frontend had buttons for these; the Flutter app has none. It posts
+#: exactly one thing — the `action_name` a room hands it in `/state` — so every
+#: other name a handler accepts is now reachable only from a route, and only
+#: `dispatch` is. Deleting the frontend is what orphaned them, and that is a
+#: product decision rather than a bug: they are either features to rebuild in
+#: the app or dead code to remove.
+ORPHANED_ACTIONS = {
+    "add_note", "add_secret", "cancel", "check_mail", "clear_events",
+    "delete_lead", "delete_note", "delete_secret", "find_contact",
+    "invoice_paid", "invoice_sent", "mark_contacted", "record_reply",
+    "reset", "seed_demo", "send_test_mail", "set_stage", "test_mail_setup",
+    "unpublish",
+}
 
-    The core's `lead` -> `record` rename was applied with a regex that
-    protected string literals in `backend/tanrim/` but not in the plugins —
-    so `if name == "delete_lead"` silently became `"delete_record"` while the
-    frontend kept posting `delete_lead`, and the delete button stopped
-    working with no error anywhere.
+
+def test_no_new_room_action_is_orphaned(real_env):
+    """An action nothing can send is dead on arrival.
+
+    This replaces a test that grepped the Vite frontend for what it posted.
+    The obvious successor — "does every room accept the action it advertises"
+    — is a tautology: `state()` reports `self.action_name` and `action()`
+    compares against `self.action_name`, so the two cannot disagree. The real
+    question the old test was asking is whether a name somebody can press
+    reaches a handler, and the answer now runs the other way: handlers accept
+    names no UI sends.
+
+    One-directional on purpose. A new orphan fails; removing one does not, so
+    working through the list is not a fight with the suite.
     """
     import re
     from pathlib import Path
 
-    src = Path("frontend/src")
-    if not src.is_dir():
-        pytest.skip("no frontend checkout")
+    accepted = set()
+    for path in [*Path("plugins").rglob("handlers.py"),
+                 Path("backend/tanrim/handlers.py")]:
+        accepted |= set(re.findall(r'name == "([a-z_]+)"', path.read_text()))
 
-    posted = set()
-    for path in src.rglob("*.ts"):
+    primary = set()
+    for path in [*Path("plugins").rglob("handlers.py"),
+                 Path("backend/tanrim/handlers.py")]:
         body = path.read_text()
-        for m in re.finditer(r'postRoomAction\([^,]+,\s*"([a-z_]+)"', body):
-            posted.add(m.group(1))
-
-    handled = set()
-    for path in Path("plugins").rglob("handlers.py"):
-        body = path.read_text()
-        handled |= set(re.findall(r'name == "([a-z_]+)"', body))
-        # the room's own primary action, declared rather than matched. Two
-        # forms: `action_name = "x"` and the tuple `agent_id, action_name =
-        # "probe", "run_probe"`.
-        handled |= set(re.findall(r'action_name\s*=\s*"([a-z_]+)"', body))
-        handled |= set(re.findall(
+        primary |= set(re.findall(r'action_name\s*=\s*"([a-z_]+)"', body))
+        primary |= set(re.findall(
             r'agent_id,\s*action_name(?:,\s*\w+)?\s*=\s*"[a-z_]+",\s*"([a-z_]+)"',
             body))
 
-    assert posted, "found no actions in the frontend — the regex stopped matching"
-    missing = sorted(posted - handled)
-    assert not missing, f"the frontend posts actions nothing handles: {missing}"
+    sendable = set(primary)
+    for path in Path("app/lib").rglob("*.dart"):
+        sendable |= set(re.findall(r"'([a-z_]+)'", path.read_text()))
+    for path in [*Path("plugins").rglob("routes.py"),
+                 Path("backend/tanrim/server.py")]:
+        sendable |= set(re.findall(r'"([a-z_]+)"', path.read_text()))
+
+    assert accepted, "found no room actions — the scan stopped matching"
+    new = sorted(accepted - sendable - ORPHANED_ACTIONS)
+    assert not new, (
+        f"these room actions are accepted but nothing sends them: {new}. "
+        f"Give the app a control for them, delete them, or add them to "
+        f"ORPHANED_ACTIONS with a reason.")
 
 
 def test_booting_invalidates_every_derived_cache(plugins):
@@ -497,7 +521,7 @@ def test_booting_invalidates_every_derived_cache(plugins):
     assert not still_full, f"a boot left these populated: {still_full}"
 
 
-def test_every_endpoint_the_frontend_gets_still_answers(real_env):
+def test_every_endpoint_the_app_gets_still_answers(real_env):
     """A deleted route is invisible until someone opens the page.
 
     Removing `continue_pipeline` — 38 lines of dead code — took `GET
@@ -518,20 +542,29 @@ def test_every_endpoint_the_frontend_gets_still_answers(real_env):
 
     from tanrim.server import app
 
-    src = Path("frontend/src")
+    src = Path("app/lib")
     if not src.is_dir():
-        pytest.skip("no frontend checkout")
+        pytest.skip("no app checkout")
 
+    # Dart interpolations are collapsed to a sentinel BEFORE the paths are
+    # matched. `'/plugins/$id/${enabled ? 'enable' : 'disable'}'` contains
+    # both a bare `$id` and a `${...}` holding its own quotes and spaces, so a
+    # regex that tries to read the path and the interpolation in one pass
+    # stops at the first space and yields `/plugins/$id/${enabled`.
+    HOLE = "\x00"
     wanted = set()
-    for path in src.rglob("*.ts"):
+    for path in src.rglob("*.dart"):
+        body = path.read_text()
+        body = re.sub(r"\$\{[^{}]*\}", HOLE, body)     # ${ ... }
+        body = re.sub(r"\$\w+", HOLE, body)             # $ident
         for m in re.finditer(
-                r'["`](/(?:leads|rooms|approvals|pipeline|plugins|invoices|health|staging)'
-                r'[^"`\s?]*)', path.read_text()):
+                r"""['"](/(?:leads|records|rooms|approvals|pipeline|plugins"""
+                r"""|invoices|health|staging|castles)[^'"\s?]*)""", body):
             wanted.add(m.group(1))
 
-    literal = {p for p in wanted if "${" not in p}
-    templated = {p for p in wanted if "${" in p}
-    assert literal and templated, "the frontend scan stopped matching"
+    literal = {p for p in wanted if HOLE not in p}
+    templated = {p for p in wanted if HOLE in p}
+    assert literal and templated, "the app scan stopped matching"
 
     def _routed(path: str) -> bool:
         from starlette.routing import Match
@@ -560,18 +593,33 @@ def test_every_endpoint_the_frontend_gets_still_answers(real_env):
         return bad
 
     bad = asyncio.run(check())
-    assert not bad, f"literal paths the frontend GETs that do not answer: {bad}"
+    assert not bad, f"literal paths the app GETs that do not answer: {bad}"
 
-    # Templated: does ANY route match the shape?
-    shapes = {re.sub(r"\$\{[^}]*\}", "x", p) for p in templated}
-    unmatched = []
-    for shape in sorted(shapes):
-        scope = {"type": "http", "method": "GET", "path": shape,
-                 "headers": [], "query_string": b"", "root_path": ""}
-        from starlette.routing import Match
-        if not any(r.matches(scope)[0] != Match.NONE for r in app.routes):
-            unmatched.append(shape)
-    assert not unmatched, f"no route matches: {unmatched}"
+    # Templated: does ANY route have this SHAPE?
+    #
+    # Compared segment by segment rather than by asking the router, because an
+    # interpolation is not always a path parameter: the app builds
+    # `/plugins/$id/${enabled ? 'enable' : 'disable'}`, whose last segment is
+    # two literals in a trench coat, and the route it wants really is
+    # `/plugins/{plugin_id}/enable`. A hole matches any one segment, and so
+    # does a `{param}` on the route side.
+    templates = [getattr(r, "path", "") for r in app.routes]
+
+    def _shaped(path: str) -> bool:
+        want = path.rstrip("/").split("/")
+        for template in templates:
+            have = template.rstrip("/").split("/")
+            if len(have) != len(want):
+                continue
+            if all(w == HOLE or h.startswith("{") or h == w
+                   for h, w in zip(have, want)):
+                return True
+        return False
+
+    unmatched = sorted(p for p in templated if not _shaped(p))
+    assert not unmatched, (
+        "no route has this shape: "
+        + str([p.replace(HOLE, "…") for p in unmatched]))
 
 
 def test_a_room_action_refuses_a_body_it_does_not_understand(real_env):

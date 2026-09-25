@@ -109,7 +109,7 @@ class World:
 
     async def spawn_worker(self, role: str, record_id: str | None = None) -> AgentState:
         """Hire another agent for a role that's already busy. The new sprite
-        appears in the same room — the frontend creates it on first sight."""
+        appears in the same room — the app creates it on first sight."""
         from .castles import scoped_here
         role = scoped_here(role)
         base = self.agents.get(role)
@@ -316,7 +316,7 @@ class World:
         await self.publish({"type": "agent_update", "agent": agent.__dict__})
 
     async def talk(self, from_id: str, to_id: str, seconds: float = 5.0, label: str | None = None) -> None:
-        """Visualize one agent communicating with another. The frontend draws a
+        """Visualize one agent communicating with another. The app draws a
         blinking line between the two sprites for the given duration."""
         from .castles import scoped_here
         from_id, to_id = scoped_here(from_id), scoped_here(to_id)

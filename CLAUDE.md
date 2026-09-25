@@ -26,7 +26,6 @@ repository documents it; if you are writing one, start at
 ```
 backend/tanrim/     the environment — ~9,700 lines across 26 modules
 app/                the operator's app — Flutter, ~7,400 lines in app/lib
-frontend/           the retired Vite web client. Not served; app/ replaced it
 plugins/            installed plugins (gitignored; clone them in)
 plugins.example/    a worked example, deliberately NOT installed. Covered by
                     tests/test_example_plugin.py, which boots it and RUNS its
