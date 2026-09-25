@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:tanrim/api/client.dart';
 import 'package:tanrim/model/castle.dart';
 import 'package:tanrim/model/record.dart';
 import 'package:tanrim/model/world.dart';
@@ -39,6 +40,7 @@ Future<void> _panel(
   void Function(Room)? onOpenRoom,
   List<WorkRecord> records = const [],
   List<AgentState> agents = const [],
+  Api? api,
 }) async {
   t.view
     ..physicalSize = const Size(520, 900)
@@ -55,6 +57,7 @@ Future<void> _panel(
         onOpenRoom: onOpenRoom ?? (_) {},
         records: records,
         agents: agents,
+        api: api,
         stages: const ['sourced', 'qualified'],
         deadStages: const ['lost'],
         onTapRecord: (_) {},
@@ -250,6 +253,40 @@ void main() {
       expect(t.getTopLeft(find.text('Comptoir des Lices')).dy,
           lessThan(t.getTopLeft(find.text('Table des Ormes')).dy));
       expect(find.text('1h 0m'), findsOneWidget);
+    });
+  });
+
+  group('the settings tab', () {
+    testWidgets('every tab has a name, including the ones that are not work',
+        (t) async {
+      // The label chain ended in `work[id]!`, so any tab it did not recognise
+      // took the whole window down with "null check operator used on a null
+      // value" — a red screen on every castle click. Nothing caught it,
+      // because no test here passed an `api` and without one the Settings tab
+      // does not exist.
+      await _panel(t, api: Api('http://127.0.0.1:1'), records: [
+        WorkRecord(const {
+          'id': 'r1', 'name': 'Table des Ormes', 'stage': 'sourced',
+          'kind': 'prospect', 'castle_id': 'c1', 'updated_ts': 0,
+        }),
+      ]);
+      expect(caughtException(), isNull, reason: 'opening the castle threw');
+      expect(find.text('Settings'), findsOneWidget);
+      expect(find.text('Rooms (2)'), findsOneWidget);
+      expect(find.text('prospect (1)'), findsOneWidget);
+    });
+
+    testWidgets('and it is last', (t) async {
+      await _panel(t, api: Api('http://127.0.0.1:1'));
+      expect(t.getTopLeft(find.text('Rooms (2)')).dx,
+          lessThan(t.getTopLeft(find.text('Settings')).dx));
+    });
+
+    testWidgets('no api, no tab — rather than one that writes nowhere',
+        (t) async {
+      await _panel(t);
+      expect(find.text('Settings'), findsNothing);
+      expect(caughtException(), isNull);
     });
   });
 

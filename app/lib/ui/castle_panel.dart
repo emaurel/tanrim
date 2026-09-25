@@ -188,11 +188,16 @@ class _CastlePanelState extends State<CastlePanel> {
               padding: const EdgeInsets.only(right: 6),
               child: _tabButton(
                   id,
-                  id == 'rooms'
-                      ? 'Rooms (${_mine.length})'
-                      : id == 'working'
-                          ? 'Working (${flight.length})'
-                          : '$id (${work[id]!.length})'),
+                  // Every tab that is not a KIND of work is named here. The
+                  // fallback reads `work[id]!`, so a tab this chain does not
+                  // recognise crashes the whole window — which is what
+                  // `settings` did the moment it was added.
+                  switch (id) {
+                    'settings' => 'Settings',
+                    'rooms' => 'Rooms (${_mine.length})',
+                    'working' => 'Working (${flight.length})',
+                    _ => '$id (${work[id]?.length ?? 0})',
+                  }),
             ),
         ],
       ),
