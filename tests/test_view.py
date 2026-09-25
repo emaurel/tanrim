@@ -69,10 +69,10 @@ def test_a_cited_row_carries_its_source():
     plugin, without being told what a dossier is.
     """
     got = view.infer({"items": [
-        {"name": "Construction", "source_url": "https://piscinesbellerive.com/"},
+        {"name": "Construction", "source_url": "https://piscinesbellerives.com/"},
     ]})
     table = next(b for b in got if b["block"] == "table")
-    assert table["rows"][0]["source"] == "https://piscinesbellerive.com/"
+    assert table["rows"][0]["source"] == "https://piscinesbellerives.com/"
 
 
 def test_scalars_collect_into_one_block_at_the_top():
