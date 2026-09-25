@@ -224,14 +224,13 @@ class _CastlePanelState extends State<CastlePanel> {
 
   Widget _body(Castle c) {
     if (_showing == 'gates') {
-      return CastleGates(
-        api: widget.api!,
-        castle: c,
-        // Only the kinds this castle actually has work for — a picker
-        // offering a pipeline that does not run here is a control with
-        // nothing behind it.
-        kinds: _work.keys.toList(),
-      );
+      // The kinds come from `/pipeline`, which answers with the ones this
+      // castle's PLUGIN declared. Taking them from the records here was
+      // wrong twice: a castle with no records yet offered nothing, so it
+      // could not be gated until after the first one arrived — which is
+      // exactly when you would want to — and a kind is a property of the
+      // pipeline, not of what happens to be sitting in it.
+      return CastleGates(api: widget.api!, castle: c);
     }
     if (_showing == 'settings') {
       return CastleSettings(

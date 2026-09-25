@@ -11,26 +11,19 @@ import 'settings_tab.dart';
 /// says nothing about a second agency, and a prospect at `published` is waiting
 /// for something a port at `published` is not.
 class CastleGates extends StatefulWidget {
-  const CastleGates({
-    super.key,
-    required this.api,
-    required this.castle,
-    required this.kinds,
-  });
+  const CastleGates({super.key, required this.api, required this.castle});
 
   final Api api;
   final Castle castle;
-
-  /// The kinds of work this castle actually has, so the picker offers only
-  /// pipelines that run here.
-  final List<String> kinds;
 
   @override
   State<CastleGates> createState() => _CastleGatesState();
 }
 
 class _CastleGatesState extends State<CastleGates> {
-  late String _kind = widget.kinds.isEmpty ? '' : widget.kinds.first;
+  /// The pipelines this castle's plugin declared, answered by `/pipeline`.
+  List<String> _kinds = const [];
+  String _kind = '';
   List<Map<String, dynamic>> _steps = const [];
   bool _loading = true;
   String _problem = '';
@@ -42,13 +35,22 @@ class _CastleGatesState extends State<CastleGates> {
   }
 
   Future<void> _load() async {
+    final adopted = _kind;
     setState(() => _loading = true);
     try {
       final d = await widget.api.get(
           '/pipeline?castle_id=${widget.castle.id}&kind=$_kind') as Map;
       if (!mounted) return;
+      final kinds = [for (final k in (d['kinds'] as List? ?? const [])) '$k'];
+      // A stage can be worked by more than one role on one pipeline; the tab
+      // asks about the STAGE, so the first row for it is the one to show.
       final seen = <String>{};
       setState(() {
+        _kinds = kinds;
+        // The first load asks with no kind, which is how the kinds arrive.
+        // Adopting one then means re-asking, so that the steps are this
+        // pipeline's rather than every pipeline's merged.
+        if (_kind.isEmpty && kinds.isNotEmpty) _kind = kinds.first;
         _steps = [
           for (final s in (d['steps'] as List? ?? const []))
             if (seen.add('${(s as Map)['stage']}'))
@@ -57,6 +59,8 @@ class _CastleGatesState extends State<CastleGates> {
         _loading = false;
         _problem = '';
       });
+      // Re-ask now that there is a kind, or the list is still the merged one.
+      if (adopted != _kind) return _load();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -100,13 +104,13 @@ class _CastleGatesState extends State<CastleGates> {
                 style: const TextStyle(
                     fontSize: 12, color: Color(0xFFE0A458))),
           ),
-        if (widget.kinds.length > 1)
+        if (_kinds.length > 1)
           Padding(
             padding: const EdgeInsets.only(bottom: 14),
             child: Wrap(
               spacing: 6,
               children: [
-                for (final k in widget.kinds)
+                for (final k in _kinds)
                   ChoiceChip(
                     label: Text(k, style: const TextStyle(fontSize: 11.5)),
                     selected: _kind == k,

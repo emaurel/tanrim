@@ -740,17 +740,25 @@ async def get_pipeline(castle_id: str = "", kind: str = "") -> dict[str, Any]:
     what the transport actually does — the same `role_for_stage` the transport
     uses is what names the room here.
 
-    `castle_id` and `kind` narrow which gates are reported as on. A gate is a
-    judgement about one pipeline in one place: wanting to check every build for
-    one agency says nothing about a second, and a prospect at `published` waits
-    for something a port at `published` does not.
+    `castle_id` and `kind` narrow it, and they narrow the STEPS, not just
+    which gates are reported as on. A gate is a judgement about one pipeline in
+    one place: wanting to check every build for one agency says nothing about a
+    second, and a prospect at `published` waits for something a port at
+    `published` does not.
+
+    Narrowing the steps matters more than it sounds. Every plugin's pipelines
+    are merged into one table here, so an unfiltered answer listed a web
+    agency's stages inside a job hunt's castle — and the switch beside one of
+    them wrote a gate for (this castle, application, that stage), a row no
+    dispatch will ever consult. A control that looks like it worked and does
+    nothing is the failure this whole tab is arranged to avoid.
     """
     gates = dict(state.stage_gates())          # the old global ones
     gates.update(state.scoped_gates(castle_id, kind))
     _permanent = state.permanent_gates(kind or None)
     counts = state.counts_by_stage()
     steps = []
-    for step in state.pipeline_steps():
+    for step in state.pipeline_steps(only_kind=kind or None):
         stage, role = step["from"], step["role"]
         # An `operator` step has no room: it is a gate, not a dispatch.
         room_id = None if role in ("operator", "system") else rooms_mod.room_for_role(role)
@@ -774,10 +782,31 @@ async def get_pipeline(castle_id: str = "", kind: str = "") -> dict[str, Any]:
     return {
         "steps": steps,
         "stages": list(state.STAGES),
-        "kinds": list(state.KINDS),
+        # The kinds worth OFFERING here. A castle is one instance of one
+        # plugin, so its pipelines are that plugin's — asked from a castle,
+        # answering with every kind installed offers pipelines that do not run
+        # there. Derived from what the plugin declared rather than from which
+        # kinds have records, or a castle could not be gated until after its
+        # first record arrived, which is exactly when you would want to.
+        "kinds": _kinds_of_castle(castle_id) if castle_id else list(state.KINDS),
         "dead_stages": sorted(state.DEAD_STAGES),
         "gates": gates,
     }
+
+
+def _kinds_of_castle(castle_id: str) -> list[str]:
+    """The kinds of work that happen in one castle.
+
+    `state.kinds_in_castle` is the inverse of the map that decides where a
+    record lands, so this offers exactly the pipelines that run here — an
+    extension's included, which asking the castle's own plugin what it declared
+    would miss.
+
+    An unknown castle falls back to every kind rather than to none: this only
+    decides what a picker offers, and offering too much is recoverable where
+    offering nothing is a dead tab.
+    """
+    return state.kinds_in_castle(castle_id) or list(state.KINDS)
 
 
 class GateToggle(BaseModel):

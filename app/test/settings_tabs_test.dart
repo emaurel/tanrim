@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tanrim/api/client.dart';
 import 'package:tanrim/model/castle.dart';
 import 'package:tanrim/model/world.dart';
+import 'package:tanrim/ui/castle_gates.dart';
 import 'package:tanrim/ui/castle_settings.dart';
 import 'package:tanrim/ui/room_settings.dart';
 import 'package:tanrim/ui/settings_tab.dart';
@@ -69,6 +70,7 @@ Future<void> _pump(WidgetTester t, Widget child) async {
 }
 
 void main() {
+  _gatesTests();
   group('castle settings', () {
     testWidgets('it renames through PATCH', (t) async {
       final api = _FakeApi();
@@ -275,6 +277,105 @@ void main() {
       await t.tap(find.text('Save'));
       await t.pumpAndSettle();
       expect(find.text('that plot is taken'), findsOneWidget);
+    });
+  });
+}
+
+/// Answers `/pipeline` the way the server does: the steps it returns depend on
+/// the `kind` it was asked for, and an unfiltered ask returns every plugin's.
+class _PipelineApi extends Api {
+  _PipelineApi() : super('http://127.0.0.1:1');
+  final List<String> asked = [];
+  final List<(String, Object?)> posted = [];
+
+  static const _all = [
+    {'stage': 'sourced', 'record_kind': 'application', 'role': 'scout',
+     'room_name': 'Scouts', 'gated': false, 'waiting': 0},
+    {'stage': 'screened', 'record_kind': 'application', 'role': 'reader',
+     'room_name': 'Desk', 'gated': true, 'waiting': 0, 'permanent': true,
+     'permanent_reason': 'this one sends an email'},
+    {'stage': 'answered', 'record_kind': 'prospect', 'role': 'probe',
+     'room_name': 'Probe', 'gated': false, 'waiting': 0},
+  ];
+
+  @override
+  Future<dynamic> get(String path) async {
+    asked.add(path);
+    final kind = Uri.parse(path).queryParameters['kind'] ?? '';
+    return {
+      'kinds': ['application'],
+      'steps': [
+        for (final s in _all)
+          if (kind.isEmpty || s['record_kind'] == kind) s,
+      ],
+    };
+  }
+
+  @override
+  Future<dynamic> post(String path, [Object? payload]) async {
+    posted.add((path, payload));
+    return {'ok': true};
+  }
+}
+
+void _gatesTests() {
+  group('castle gates', () {
+    testWidgets('a castle shows only the pipelines that run in it', (t) async {
+      // Every plugin's pipelines are merged into one table, so an unfiltered
+      // answer put a web agency's stages inside a job hunt's castle — and the
+      // switch beside one of them wrote a gate no dispatch would ever consult.
+      final api = _PipelineApi();
+      await _pump(t, CastleGates(api: api, castle: _castle()));
+      await t.pumpAndSettle();
+
+      expect(find.text('sourced'), findsOneWidget);
+      expect(find.text('answered'), findsNothing,
+          reason: 'another plugin\'s stage was listed in this castle');
+    });
+
+    testWidgets('the kind is adopted from the server, not from the records',
+        (t) async {
+      // Taken from the records, a castle with none yet offered nothing and
+      // could not be gated until after its first arrived — exactly when you
+      // would want to.
+      final api = _PipelineApi();
+      await _pump(t, CastleGates(api: api, castle: _castle()));
+      await t.pumpAndSettle();
+
+      expect(api.asked.first, contains('kind='));
+      expect(api.asked.last, contains('kind=application'),
+          reason: 'it never re-asked, so the list is still every pipeline');
+    });
+
+    testWidgets('toggling sends the castle and the kind it is showing',
+        (t) async {
+      final api = _PipelineApi();
+      await _pump(t, CastleGates(api: api, castle: _castle()));
+      await t.pumpAndSettle();
+
+      await t.tap(find.byType(Switch).first);
+      await t.pumpAndSettle();
+
+      final (path, body) = api.posted.single;
+      expect(path, '/pipeline/gate');
+      expect((body as Map)['castle_id'], 'c1');
+      expect(body['kind'], 'application');
+      expect(body['stage'], 'sourced');
+    });
+
+    testWidgets('a permanent gate cannot be moved, and says why', (t) async {
+      // Anything irreversible or outward-facing must never depend on a
+      // checkbox — so the switch does not move, rather than springing back.
+      final api = _PipelineApi();
+      await _pump(t, CastleGates(api: api, castle: _castle()));
+      await t.pumpAndSettle();
+
+      final switches = t.widgetList<Switch>(find.byType(Switch)).toList();
+      final permanent = switches[1];
+      expect(permanent.value, isTrue);
+      expect(permanent.onChanged, isNull,
+          reason: 'a permanent gate offered a switch that would do nothing');
+      expect(find.text('this one sends an email'), findsOneWidget);
     });
   });
 }

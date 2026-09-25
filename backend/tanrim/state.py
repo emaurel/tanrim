@@ -274,6 +274,20 @@ def home_castle_for(record: dict[str, Any]) -> str:
     return record.get("castle_id") or _home_castle().get(record_kind(record), "")
 
 
+def kinds_in_castle(castle_id: str) -> list[str]:
+    """The kinds of work that happen in one castle.
+
+    The inverse of `_home_castle`, and deliberately the same map rather than a
+    second answer to the same question: whatever this says a castle works is
+    exactly what will land there. Asking the plugin what it declared instead
+    misses an extension — `website_recreation` owns the `port` pipeline and has
+    no castle of its own, so its records live in the web agency's, and a gates
+    tab built from `web_agency`'s own pipelines would not offer the one kind
+    the operator most wants to stop.
+    """
+    return sorted(k for k, c in _home_castle().items() if c == castle_id)
+
+
 def records_in(castle_id: str) -> list[dict[str, Any]]:
     """Every record belonging to a castle.
 

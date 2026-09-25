@@ -33,9 +33,16 @@ def ledger(tmp_path, monkeypatch):
 
 
 def a_stage() -> str:
-    """Any real stage. `set_stage_gate` refuses one that is not on a pipeline,
-    so these cannot be invented."""
-    return sorted(state._machine()["STAGES"])[0]
+    """A real stage on the `port` pipeline — the kind these tests gate against.
+
+    `set_stage_gate` refuses one that is not on a pipeline at all, so these
+    cannot be invented; but a stage belonging to some OTHER kind would make
+    these read as if they proved something they do not.
+    """
+    steps = state.pipeline_steps(only_kind="port")
+    if not steps:
+        pytest.skip("no port pipeline installed")
+    return steps[0]["from"]
 
 
 def test_a_gate_in_one_castle_is_not_a_gate_in_another(ledger):
@@ -139,14 +146,21 @@ def client(ledger, monkeypatch):
         yield c
 
 
-def a_gateable_stage() -> str:
-    """A stage that is not already permanently gated — the route refuses to
-    toggle one of those, correctly."""
-    permanent = state.permanent_gates()
-    for stage in sorted(state._machine()["STAGES"]):
+def a_gateable_stage(kind: str = "port") -> str:
+    """A stage ON `kind`'s pipeline that is not already permanently gated.
+
+    On that pipeline, not merely somewhere in the merged table. The first
+    version of this took the alphabetically first stage of any kind, and the
+    tests below passed only because `/pipeline` was answering with every
+    plugin's steps regardless of what it was asked — the bug they were meant
+    to be describing.
+    """
+    permanent = state.permanent_gates(kind or None)
+    on_this_pipeline = [s["from"] for s in state.pipeline_steps(only_kind=kind)]
+    for stage in on_this_pipeline:
         if stage not in permanent:
             return stage
-    pytest.skip("every stage is permanently gated")
+    pytest.skip(f"no toggleable step on the {kind} pipeline")
 
 
 def test_the_route_scopes_what_it_writes(client):
@@ -171,6 +185,8 @@ def test_the_pipeline_reports_gates_for_the_scope_it_was_asked_about(client):
 
     assert stage in gated(castle_id="c1", kind="port")
     assert stage not in gated(castle_id="c2", kind="port")
+    # Asked about another pipeline, that stage is not even listed — which is
+    # the stronger statement, and the one that was not true before.
     assert stage not in gated(castle_id="c1", kind="prospect")
 
 
@@ -196,3 +212,68 @@ def test_a_permanent_step_cannot_be_toggled_at_all(client):
                     json={"stage": sg.stage, "on": False,
                           "castle_id": "c1", "kind": kind})
     assert r.status_code == 400
+
+
+# --------------------------------------------------------------------------
+# Which steps a castle's tab is even allowed to show.
+#
+# Every plugin's pipelines are merged into one table, so an unfiltered
+# `/pipeline` listed a web agency's stages inside a job hunt's castle. Worse
+# than clutter: the switch beside one of them wrote a gate for (this castle,
+# this castle's kind, that other plugin's stage), which no dispatch ever
+# consults. A control that looks like it worked and does nothing.
+
+
+def test_asking_for_one_kind_gets_only_that_kind(client):
+    kinds = client.get("/pipeline").json()["kinds"]
+    if len(kinds) < 2:
+        pytest.skip("only one pipeline installed; nothing to confuse it with")
+
+    for kind in kinds:
+        steps = client.get("/pipeline", params={"kind": kind}).json()["steps"]
+        assert steps, f"no steps at all for {kind}"
+        assert {s["record_kind"] for s in steps} == {kind}
+
+
+def test_a_castle_offers_only_the_pipelines_that_run_there(ledger, client):
+    castles = client.get("/castles").json()["castles"]
+    if not castles:
+        pytest.skip("no castles built")
+
+    every = set(client.get("/pipeline").json()["kinds"])
+    for c in castles:
+        offered = set(client.get(
+            "/pipeline", params={"castle_id": c["id"]}).json()["kinds"])
+        assert offered <= every
+        # The kinds whose records land here — the same map the transport uses,
+        # so what is offered cannot disagree with what will arrive.
+        assert offered == set(state.kinds_in_castle(c["id"]))
+
+
+def test_an_extension_pipeline_is_offered_in_the_castle_it_runs_in(ledger):
+    """An extension has no castle of its own: `website_recreation` owns the
+    `port` pipeline and its records live in the web agency's castle. A tab
+    built from the castle plugin's OWN declarations would not offer the one
+    kind the operator most wants to stop."""
+    from tanrim import environment as env_mod
+
+    described = env_mod.current().describe()
+    extensions = [d for d in described
+                  if d.get("requires") and d.get("pipelines")]
+    if not extensions:
+        pytest.skip("no installed extension declares a pipeline")
+
+    for ext in extensions:
+        for kind in ext["pipelines"]:
+            castle = state._home_castle().get(kind)
+            if not castle:
+                continue      # that base plugin has no castle built
+            assert kind in state.kinds_in_castle(castle), (
+                f"{kind} runs in {castle} but its tab would not offer it")
+
+
+def test_an_unknown_castle_offers_everything_rather_than_nothing(client):
+    """This decides what a picker offers. Offering too much is recoverable;
+    offering nothing is a dead tab."""
+    got = client.get("/pipeline", params={"castle_id": "no-such"}).json()
+    assert got["kinds"] == client.get("/pipeline").json()["kinds"]
