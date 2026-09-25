@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api/client.dart';
 import 'blocks.dart';
+import 'settings_tab.dart';
 
 /// One record, as its plugin chose to show it.
 ///
@@ -19,6 +20,7 @@ class RecordWindow extends StatefulWidget {
     this.onOpenRoom,
     this.working = false,
     this.stages = const [],
+    this.onDeleted,
   });
 
   final Api api;
@@ -33,6 +35,10 @@ class RecordWindow extends StatefulWidget {
   /// Comes from the server, because a plugin this build has never seen adds
   /// stages nothing here could name.
   final List<String> stages;
+
+  /// Closed by the window that owns it, since a deleted record has nothing
+  /// left to show.
+  final VoidCallback? onDeleted;
 
   @override
   State<RecordWindow> createState() => _RecordWindowState();
@@ -105,9 +111,13 @@ class _RecordWindowState extends State<RecordWindow> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _header(view),
-        _controls(view),
+        if (_tab != 'settings') _controls(view),
         _tabs(history),
-        Expanded(child: _body(history, rest)),
+        Expanded(
+          child: _tab == 'settings'
+              ? _settings(view)
+              : _body(history, rest),
+        ),
       ],
     );
   }
@@ -145,6 +155,52 @@ class _RecordWindowState extends State<RecordWindow> {
     );
   }
 
+  Widget _settings(Map<String, dynamic> view) => ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+        children: [
+          SettingsSection(
+            title: 'Stage',
+            note: 'The pipeline moves a record on its own. This is the escape '
+                'hatch for when it is wrong and no card exists to say so — the '
+                'reason is written into the history, where it is the only '
+                'account of why this moved.',
+            children: [
+              ReadOnlyRow(label: 'Now at', value: '${view['stage'] ?? ''}'),
+              ReadOnlyRow(label: 'Kind', value: '${view['kind'] ?? ''}'),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _move,
+                icon: const Icon(Icons.alt_route_rounded, size: 16),
+                label: const Text('Move it by hand'),
+              ),
+            ],
+          ),
+          SettingsSection(
+            title: 'Delete',
+            note: 'Whatever is working it is stopped first, and any card '
+                'waiting on it is resolved — both are about a record that will '
+                'not exist.',
+            children: [
+              DangerButton(
+                label: 'Delete this record',
+                title: 'Delete ${view['name'] ?? 'this record'}?',
+                explain: 'Its history, its dossier and everything any agent '
+                    'produced for it go with it. This cannot be undone.\n\n'
+                    'Files already built for it stay on disk.',
+                onConfirmed: () async {
+                  await _act(() async {
+                    await widget.api.send(
+                        'DELETE', '/records/${widget.recordId}');
+                    widget.onDeleted?.call();
+                    return 'deleted';
+                  });
+                },
+              ),
+            ],
+          ),
+        ],
+      );
+
   Widget _tabs(List<Map<String, dynamic>> history) {
     final steps =
         ((history.isEmpty ? const [] : history.first['steps'] ?? const [])
@@ -158,6 +214,8 @@ class _RecordWindowState extends State<RecordWindow> {
           _tabButton('details', 'Details'),
           const SizedBox(width: 6),
           _tabButton('history', 'History ($steps)'),
+          const SizedBox(width: 6),
+          _tabButton('settings', 'Settings'),
         ],
       ),
     );

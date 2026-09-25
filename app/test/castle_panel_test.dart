@@ -95,9 +95,11 @@ void main() {
     expect(opened, ['factory@c1']);
   });
 
-  testWidgets('razing says the records survive', (t) async {
+  testWidgets('raze is not in the Rooms tab any more', (t) async {
+    // One place per setting. It lived beside the room list, which is where
+    // you go to look at the building rather than to take it down.
     await _panel(t);
-    expect(find.textContaining('7 record(s) would be kept'), findsOneWidget);
+    expect(find.text('Raze this castle'), findsNothing);
   });
 
   group('the dialogs still build', () {

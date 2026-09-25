@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../api/client.dart';
+import 'kingdom_settings.dart';
+
 import '../model/castle.dart';
 
 /// Every castle you have, grouped by what they are instances of.
@@ -9,12 +12,13 @@ import '../model/castle.dart';
 /// more than one castle: two agencies' leads are not one queue, and nothing
 /// in the list said which was which. Work belongs to a castle, so it is
 /// reached through one.
-class Kingdom extends StatelessWidget {
+class Kingdom extends StatefulWidget {
   const Kingdom({
     super.key,
     required this.castles,
     required this.badges,
     required this.onOpen,
+    this.api,
   });
 
   final List<Castle> castles;
@@ -24,17 +28,65 @@ class Kingdom extends StatelessWidget {
 
   final void Function(Castle) onOpen;
 
+  /// For the Settings tab. Absent before the app has connected, and the tab
+  /// is absent with it rather than showing controls that cannot write.
+  final Api? api;
+
+  @override
+  State<Kingdom> createState() => _KingdomState();
+}
+
+class _KingdomState extends State<Kingdom> {
+  String _tab = 'castles';
+
   @override
   Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (widget.api != null)
+          SizedBox(
+            height: 34,
+            child: Row(children: [
+              const SizedBox(width: 12),
+              _tabButton('castles', 'Castles'),
+              const SizedBox(width: 6),
+              _tabButton('settings', 'Settings'),
+            ]),
+          ),
+        Expanded(
+          child: _tab == 'settings'
+              ? KingdomSettings(api: widget.api!)
+              : _castles(context),
+        ),
+      ],
+    );
+  }
+
+  Widget _tabButton(String id, String label) {
+    final on = _tab == id;
+    return TextButton(
+      onPressed: () => setState(() => _tab = id),
+      style: TextButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        backgroundColor:
+            on ? Colors.white.withValues(alpha: .10) : Colors.transparent,
+        foregroundColor: on ? Colors.white : Colors.white54,
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12)),
+    );
+  }
+
+  Widget _castles(BuildContext context) {
     final byPlugin = <String, List<Castle>>{};
-    for (final c in castles) {
+    for (final c in widget.castles) {
       byPlugin.putIfAbsent(c.pluginName, () => []).add(c);
     }
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 16),
       children: [
-        if (castles.isEmpty)
+        if (widget.castles.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 20),
             child: Text(
@@ -66,13 +118,13 @@ class Kingdom extends StatelessWidget {
   }
 
   Widget _row(Castle c) {
-    final waiting = badges[c.id] ?? 0;
+    final waiting = widget.badges[c.id] ?? 0;
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       color: Colors.white.withValues(alpha: .04),
       elevation: 0,
       child: InkWell(
-        onTap: () => onOpen(c),
+        onTap: () => widget.onOpen(c),
         borderRadius: BorderRadius.circular(6),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),

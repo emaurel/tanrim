@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../api/client.dart';
 import '../model/castle.dart';
+import 'castle_settings.dart';
 import '../model/record.dart';
 import '../model/world.dart';
 import 'board.dart';
@@ -30,6 +32,8 @@ class CastlePanel extends StatefulWidget {
     this.onRunRecord,
     this.onStopRecord,
     this.agents = const [],
+    this.api,
+    this.onChanged,
   });
 
   final Castle castle;
@@ -63,12 +67,17 @@ class CastlePanel extends StatefulWidget {
   /// is standing at and when it started.
   final List<AgentState> agents;
 
+  /// For the Settings tab, which writes directly rather than through a
+  /// callback per field — there are five of them and they all go to the same
+  /// place.
+  final Api? api;
+  final VoidCallback? onChanged;
+
   @override
   State<CastlePanel> createState() => _CastlePanelState();
 }
 
 class _CastlePanelState extends State<CastlePanel> {
-  final bool _busy = false;
 
   List<Room> get _mine => widget.rooms
       .where((r) => r.castleId == widget.castle.id || r.castleId.isEmpty)
@@ -129,6 +138,7 @@ class _CastlePanelState extends State<CastlePanel> {
       if (_inFlight.isNotEmpty) 'working',
       ..._work.keys,
       'rooms',
+      if (widget.api != null) 'settings',
     ];
     final wanted = _tab;
     if (wanted != null && tabs.contains(wanted)) return wanted;
@@ -165,6 +175,7 @@ class _CastlePanelState extends State<CastlePanel> {
       if (flight.isNotEmpty) 'working',
       ...work.keys,
       'rooms',
+      if (widget.api != null) 'settings',
     ];
     return SizedBox(
       height: 34,
@@ -203,6 +214,14 @@ class _CastlePanelState extends State<CastlePanel> {
   }
 
   Widget _body(Castle c) {
+    if (_showing == 'settings') {
+      return CastleSettings(
+        api: widget.api!,
+        castle: c,
+        onChanged: widget.onChanged ?? () {},
+        onRaze: widget.onRaze,
+      );
+    }
     if (_showing == 'working') return _working();
     if (_showing != 'rooms') {
       final mine = _work[_showing] ?? const <WorkRecord>[];
@@ -235,23 +254,7 @@ class _CastlePanelState extends State<CastlePanel> {
           )
         else
           for (final r in _mine) _roomRow(r),
-        const SizedBox(height: 22),
-        OutlinedButton.icon(
-          onPressed: _busy ? null : widget.onRaze,
-          icon: const Icon(Icons.local_fire_department_outlined, size: 17),
-          label: const Text('Raze this castle'),
-          style:
-              OutlinedButton.styleFrom(foregroundColor: Colors.red.shade300),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          c.records == 0
-              ? 'It holds no records.'
-              : 'Its ${c.records} record(s) would be kept — they are the work, '
-                  'and razing a place should not delete what was done there.',
-          style: const TextStyle(
-              fontSize: 11.5, color: Colors.white38, height: 1.4),
-        ),
+
       ],
     );
   }

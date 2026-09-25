@@ -741,6 +741,7 @@ class _WorldPageState extends State<WorldPage> {
           castles: _castles,
           badges: _castleBadges,
           onOpen: _goToCastle,
+          api: _api,
         ),
       );
     }
@@ -786,6 +787,8 @@ class _WorldPageState extends State<WorldPage> {
           deadStages: _deadStages,
           selectedRecord: _selectedRecord,
           working: _workingRecords(agents),
+          api: _api,
+          onChanged: () { _loadRooms(); _loadCastles(); },
           onRunRecord: _runRecord,
           onStopRecord: _stopRecord,
           agents: agents,
@@ -818,6 +821,7 @@ class _WorldPageState extends State<WorldPage> {
           // pipeline — including into a terminal stage, which is where a
           // record goes when the answer is "stop working this".
           stages: [..._stages, ..._deadStages],
+          onDeleted: () => _close(id),
           onOpenRoom: (roomId) {
             setState(() => _selected = roomId);
             _open('room:$roomId');

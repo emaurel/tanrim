@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api/client.dart';
 import '../model/record.dart';
+import 'room_settings.dart';
 import '../model/world.dart';
 
 /// A room, rendered from whatever its manifest and handler report.
@@ -129,6 +130,35 @@ class _RoomPanelState extends State<RoomPanel> {
     }
   }
 
+  /// Which half is showing. The room itself first; settings last, like every
+  /// other window.
+  String _tab = 'room';
+
+  Widget _tabs() => SizedBox(
+        height: 34,
+        child: Row(children: [
+          const SizedBox(width: 12),
+          _tabButton('room', 'Room'),
+          const SizedBox(width: 6),
+          _tabButton('settings', 'Settings'),
+        ]),
+      );
+
+  Widget _tabButton(String id, String label) {
+    final on = _tab == id;
+    return TextButton(
+      onPressed: () => setState(() => _tab = id),
+      style: TextButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        backgroundColor:
+            on ? Colors.white.withValues(alpha: .10) : Colors.transparent,
+        foregroundColor: on ? Colors.white : Colors.white54,
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12)),
+    );
+  }
+
+  @override
   @override
   Widget build(BuildContext context) {
     final s = _state;
@@ -146,6 +176,7 @@ class _RoomPanelState extends State<RoomPanel> {
         children: [
           _header(s),
           if (_error != null) _errorBar(),
+          if (s != null) _tabs(),
           Expanded(
             child: s == null
                 ? const Center(
@@ -153,6 +184,13 @@ class _RoomPanelState extends State<RoomPanel> {
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(strokeWidth: 2)))
+                : _tab == 'settings'
+                ? RoomSettings(
+                    api: widget.api,
+                    room: widget.room,
+                    workerLimit: (s['worker_limit'] as num?)?.toInt() ?? 1,
+                    onChanged: _load,
+                  )
                 : ListView(
                     padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
                     children: [
