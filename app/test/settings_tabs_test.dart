@@ -148,6 +148,60 @@ void main() {
       expect(body['skills'], isEmpty);
     });
 
+    testWidgets('the colour swatch IS the colour, and opens a wheel',
+        (t) async {
+      // A hex field was the first version and it is the wrong instrument:
+      // nobody reads `#98c1d9` and pictures a colour, and one character wrong
+      // gives a plausible different colour rather than an error.
+      final api = _FakeApi();
+      await _pump(t, RoomSettings(
+          api: api, room: _room(), workerLimit: 3, onChanged: () {}));
+
+      final swatch = find.descendant(
+          of: find.byType(ColorField), matching: find.byType(Container));
+      final box = t.widget<Container>(swatch.first).decoration as BoxDecoration;
+      expect(box.color, const Color(0xff98c1d9),
+          reason: 'the swatch showed something other than the agent colour');
+
+      await t.tap(find.descendant(
+          of: find.byType(ColorField), matching: find.byType(InkWell)));
+      await t.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsOneWidget);
+    });
+
+    testWidgets('picking a colour sends #rrggbb, which is what is stored',
+        (t) async {
+      final api = _FakeApi();
+      await _pump(t, RoomSettings(
+          api: api, room: _room(), workerLimit: 3, onChanged: () {}));
+
+      await t.tap(find.descendant(
+          of: find.byType(ColorField), matching: find.byType(InkWell)));
+      await t.pumpAndSettle();
+      // Accepting without moving anything: the round trip through HSV and back
+      // must not shift the colour, or opening the picker would change it.
+      await t.tap(find.widgetWithText(FilledButton, 'Use this'));
+      await t.pumpAndSettle();
+
+      final (_, path, body) = api.sent.last;
+      expect(path, '/agents/forge@c1/identity');
+      expect((body as Map)['color'], '#98c1d9');
+    });
+
+    testWidgets('cancelling sends nothing at all', (t) async {
+      final api = _FakeApi();
+      await _pump(t, RoomSettings(
+          api: api, room: _room(), workerLimit: 3, onChanged: () {}));
+
+      await t.tap(find.descendant(
+          of: find.byType(ColorField), matching: find.byType(InkWell)));
+      await t.pumpAndSettle();
+      await t.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await t.pumpAndSettle();
+
+      expect(api.sent, isEmpty);
+    });
+
     testWidgets('an agent is renamed per castle, not per role', (t) async {
       final api = _FakeApi();
       await _pump(t, RoomSettings(

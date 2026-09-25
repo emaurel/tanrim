@@ -202,11 +202,10 @@ class _RoomSettingsState extends State<RoomSettings> {
             hint: 'empty restores what the plugin declared',
             onSubmit: (v) => _identity(a.id, {'name': v}),
           ),
-          EditableField(
+          ColorField(
             label: 'Colour',
-            value: '#${(a.color & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}',
-            hint: '#rrggbb',
-            onSubmit: (v) => _identity(a.id, {'color': v}),
+            value: a.color,
+            onPicked: (v) => _identity(a.id, {'color': v}),
           ),
           ReadOnlyRow(label: 'Does', value: a.role),
         ],

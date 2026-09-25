@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 /// The pieces every window's Settings tab is built from.
@@ -266,4 +268,187 @@ class ReadOnlyRow extends StatelessWidget {
               child: Text(value, style: const TextStyle(fontSize: 12.5))),
         ]),
       );
+}
+
+/// A colour you pick by looking at it.
+///
+/// The swatch IS the current colour, and clicking it opens a wheel. A hex
+/// field was the first version and it is the wrong instrument: nobody reads
+/// `#98c1d9` and pictures a colour, and typing one character wrong gives you
+/// a silent, plausible, different colour rather than an error.
+class ColorField extends StatelessWidget {
+  const ColorField({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.onPicked,
+  });
+
+  final String label;
+  final int value;
+
+  /// `#rrggbb`, which is what the server stores.
+  final Future<String> Function(String) onPicked;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Row(children: [
+          SizedBox(
+            width: 110,
+            child: Text(label,
+                style: const TextStyle(fontSize: 12, color: Colors.white38)),
+          ),
+          InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () async {
+              final picked = await showDialog<Color>(
+                context: context,
+                builder: (_) => _WheelDialog(start: Color(value)),
+              );
+              if (picked == null) return;
+              await onPicked(
+                  '#${(picked.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}');
+            },
+            child: Container(
+              width: 34,
+              height: 22,
+              decoration: BoxDecoration(
+                color: Color(value),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: Colors.white24),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text('#${(value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}',
+              style: const TextStyle(
+                  fontSize: 11.5,
+                  color: Colors.white38,
+                  fontFamily: 'monospace')),
+        ]),
+      );
+}
+
+/// Hue on a wheel, then how light and how strong.
+///
+/// Built here rather than pulled in: it is three sliders and a circle, and a
+/// package for that is a dependency to keep current for the rest of the
+/// project's life.
+class _WheelDialog extends StatefulWidget {
+  const _WheelDialog({required this.start});
+
+  final Color start;
+
+  @override
+  State<_WheelDialog> createState() => _WheelDialogState();
+}
+
+class _WheelDialogState extends State<_WheelDialog> {
+  late HSVColor _c = HSVColor.fromColor(widget.start);
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Colour'),
+        content: SizedBox(
+          width: 300,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            SizedBox(
+              height: 180,
+              child: GestureDetector(
+                onPanDown: (d) => _fromWheel(d.localPosition),
+                onPanUpdate: (d) => _fromWheel(d.localPosition),
+                child: CustomPaint(
+                  painter: _WheelPainter(_c),
+                  size: const Size(180, 180),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            _slider('Light', _c.value, (v) => setState(() => _c = _c.withValue(v))),
+            _slider('Strong', _c.saturation,
+                (v) => setState(() => _c = _c.withSaturation(v))),
+            const SizedBox(height: 8),
+            Container(
+              height: 26,
+              decoration: BoxDecoration(
+                color: _c.toColor(),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: Colors.white24),
+              ),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, _c.toColor()),
+              child: const Text('Use this')),
+        ],
+      );
+
+  Widget _slider(String label, double v, ValueChanged<double> on) =>
+      Row(children: [
+        SizedBox(
+            width: 56,
+            child: Text(label,
+                style:
+                    const TextStyle(fontSize: 11.5, color: Colors.white38))),
+        Expanded(child: Slider(value: v, onChanged: on)),
+      ]);
+
+  void _fromWheel(Offset p) {
+    const r = 90.0;
+    final dx = p.dx - r;
+    final dy = p.dy - r;
+    final dist = (dx * dx + dy * dy);
+    if (dist > r * r) return;                 // outside the circle
+    // atan2 gives -pi..pi; hue wants 0..360 going round.
+    final angle = (dx == 0 && dy == 0) ? 0.0 : math.atan2(dy, dx);
+    setState(() => _c = _c.withHue((angle * 180 / math.pi + 360) % 360));
+  }
+}
+
+/// The hue ring, drawn as slices. A sweep gradient would be one call but the
+/// slices are exact at the seam, where a gradient wraps red into red.
+class _WheelPainter extends CustomPainter {
+  const _WheelPainter(this.current);
+
+  final HSVColor current;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = size.width / 2;
+    final centre = Offset(r, r);
+    for (var deg = 0; deg < 360; deg++) {
+      final paint = Paint()
+        ..color = HSVColor.fromAHSV(
+                1, deg.toDouble(), current.saturation, current.value)
+            .toColor()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * 0.42;
+      canvas.drawArc(
+        Rect.fromCircle(center: centre, radius: r * 0.78),
+        deg * math.pi / 180,
+        1.9 * math.pi / 180,
+        false,
+        paint,
+      );
+    }
+    // Where the current hue sits, so the wheel says what is selected.
+    final a = current.hue * math.pi / 180;
+    canvas.drawCircle(
+      centre + Offset(r * 0.78 * math.cos(a), r * 0.78 * math.sin(a)),
+      6,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_WheelPainter old) => old.current != current;
 }
