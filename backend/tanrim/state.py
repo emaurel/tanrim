@@ -1031,17 +1031,30 @@ META_FILE = STATE_DIR / "meta.json" if "STATE_DIR" in dir() else RECORDS_FILE.pa
 def set_meta(key: str, value: Any) -> None:
     with _lock:
         try:
-            data = _read(META_FILE)
+            data = _read(META_FILE, {})
         except (OSError, json.JSONDecodeError):
+            data = {}
+        # `_read` answers `[]` for a missing file and this ledger is the one
+        # that is an object, so a fresh install handed this a list and the
+        # first write raised rather than creating the file.
+        if not isinstance(data, dict):
             data = {}
         data[key] = value
         _write(META_FILE, data)
 
 
 def get_meta(key: str, default: Any = None) -> Any:
+    """One value out of the meta ledger, or `default`.
+
+    `_read` answers `[]` for a file that is not there — every other ledger is
+    a list and this one is the exception — so before the default was passed,
+    a missing `meta.json` raised `AttributeError` on `.get` rather than
+    answering. That only showed up on a fresh install or a test with its own
+    state directory, which is exactly where it is least welcome.
+    """
     try:
-        return _read(META_FILE).get(key, default)
-    except (OSError, json.JSONDecodeError):
+        return _read(META_FILE, {}).get(key, default)
+    except (OSError, json.JSONDecodeError, AttributeError):
         return default
 
 # ---------------------------------------------------------------------------
@@ -1484,26 +1497,78 @@ def permanent_gates(kind: str | None = None) -> dict[str, str]:
 
 
 def stage_gates() -> dict[str, bool]:
-    """Which pipeline steps the operator wants to be asked about."""
+    """The OLD global gates: every castle, every kind.
+
+    Kept because turning a gate off silently is the dangerous direction — work
+    would start dispatching to strangers without asking. Anything ticked
+    before gates became scoped still applies everywhere until it is unticked,
+    and unticking it here removes it for good.
+    """
     raw = get_meta("stage_gates", {}) or {}
     return {k: bool(v) for k, v in raw.items() if v}
 
 
-def set_stage_gate(stage: str, on: bool) -> dict[str, bool]:
-    """Tick or untick one step. Permanent gates cannot be turned off."""
+def scoped_gates(castle_id: str = "", kind: str = "") -> dict[str, bool]:
+    """Gates for one castle and one kind of work.
+
+    Scoped because a gate is a judgement about a particular pipeline in a
+    particular place: wanting to check every build for one agency says nothing
+    about a second agency, and a prospect at `published` is waiting for
+    something a port at `published` is not.
+    """
+    raw = get_meta("stage_gates_scoped", {}) or {}
+    got = ((raw.get(castle_id) or {}).get(kind) or {})
+    return {k: True for k, v in got.items() if v}
+
+
+def set_stage_gate(stage: str, on: bool, kind: str = "",
+                   castle_id: str = "") -> dict[str, bool]:
+    """Tick or untick one step, for one castle and one kind.
+
+    Without a castle and kind this writes the OLD global map, which is what a
+    caller that predates scoping means and what the legacy tests assert.
+    """
     if stage not in _machine()["STAGES"]:
         raise ValueError(f"unknown stage: {stage}")
-    gates = dict(get_meta("stage_gates", {}) or {})
+    if not castle_id and not kind:
+        gates = dict(get_meta("stage_gates", {}) or {})
+        if on:
+            gates[stage] = True
+        else:
+            gates.pop(stage, None)
+        set_meta("stage_gates", gates)
+        return {k: bool(v) for k, v in gates.items() if v}
+
+    raw = dict(get_meta("stage_gates_scoped", {}) or {})
+    per_castle = dict(raw.get(castle_id) or {})
+    per_kind = dict(per_castle.get(kind) or {})
     if on:
-        gates[stage] = True
+        per_kind[stage] = True
     else:
-        gates.pop(stage, None)
-    set_meta("stage_gates", gates)
-    return {k: bool(v) for k, v in gates.items() if v}
+        per_kind.pop(stage, None)
+    if per_kind:
+        per_castle[kind] = per_kind
+    else:
+        per_castle.pop(kind, None)
+    if per_castle:
+        raw[castle_id] = per_castle
+    else:
+        raw.pop(castle_id, None)
+    set_meta("stage_gates_scoped", raw)
+    return {k: True for k in per_kind}
 
 
-def step_is_gated(stage: str) -> bool:
-    """Should the pipeline ask before running the room that works `stage`?"""
-    return stage in permanent_gates() or bool(stage_gates().get(stage))
+def step_is_gated(stage: str, kind: str = "", castle_id: str = "") -> bool:
+    """Should the pipeline ask before running the room that works `stage`?
+
+    Three ways to be gated, and any of them is enough: the plugin declared it
+    permanent, the operator ticked it globally before gates were scoped, or
+    they ticked it for this castle and this kind.
+    """
+    if stage in permanent_gates(kind or None):
+        return True
+    if stage_gates().get(stage):
+        return True
+    return bool(scoped_gates(castle_id, kind).get(stage))
 
 

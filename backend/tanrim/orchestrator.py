@@ -263,8 +263,11 @@ class Orchestrator:
             # room would take is not yet known — that is why a gate belongs to
             # the step rather than to one arrow. Courier and Echo are gated in
             # code and raise their own richer cards, so they are not doubled up.
-            if (state.step_is_gated(stage)
-                    and stage not in state.permanent_gates()):
+            # Scoped to THIS record: a gate is a judgement about one
+            # pipeline in one place, and a second agency's settings have
+            # nothing to say about this one.
+            if (state.step_is_gated(stage, kind, state.home_castle_for(record))
+                    and stage not in state.permanent_gates(kind)):
                 state.add_user_approval(
                     kind="stage_gate",
                     room_id=_somewhere(rooms_mod.room_for_role(role)),

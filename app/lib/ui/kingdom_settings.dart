@@ -94,15 +94,17 @@ class _KingdomSettingsState extends State<KingdomSettings> {
           ),
         SettingsSection(
           title: 'Gates',
-          note: 'A gated stage stops and waits for you instead of dispatching. '
-              'Some cannot be switched off — anything that reaches a stranger '
-              'or spends money must never depend on a checkbox.',
+          note: 'Gates moved to each castle, where they are set per kind of '
+              'work — a judgement about one pipeline in one place says nothing '
+              'about another. Anything ticked here before that change still '
+              'applies everywhere, and this is where it is untied.',
           children: [
             for (final s in rows)
-              _gateRow('${s['stage']}', s['gated'] == true,
-                  s['permanent'] == true
-                      ? '${s['permanent_reason'] ?? 'always gated'}'
-                      : ''),
+              if (s['global'] == true)
+                _gateRow('${s['stage']}', true, ''),
+            if (!rows.any((s) => s['global'] == true))
+              const Text('none set globally',
+                  style: TextStyle(fontSize: 12, color: Colors.white38)),
           ],
         ),
         SettingsSection(

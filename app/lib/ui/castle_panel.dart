@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api/client.dart';
 import '../model/castle.dart';
+import 'castle_gates.dart';
 import 'castle_settings.dart';
 import '../model/record.dart';
 import '../model/world.dart';
@@ -138,6 +139,7 @@ class _CastlePanelState extends State<CastlePanel> {
       if (_inFlight.isNotEmpty) 'working',
       ..._work.keys,
       'rooms',
+      if (widget.api != null) 'gates',
       if (widget.api != null) 'settings',
     ];
     final wanted = _tab;
@@ -175,6 +177,7 @@ class _CastlePanelState extends State<CastlePanel> {
       if (flight.isNotEmpty) 'working',
       ...work.keys,
       'rooms',
+      if (widget.api != null) 'gates',
       if (widget.api != null) 'settings',
     ];
     return SizedBox(
@@ -194,6 +197,7 @@ class _CastlePanelState extends State<CastlePanel> {
                   // `settings` did the moment it was added.
                   switch (id) {
                     'settings' => 'Settings',
+                    'gates' => 'Gates',
                     'rooms' => 'Rooms (${_mine.length})',
                     'working' => 'Working (${flight.length})',
                     _ => '$id (${work[id]?.length ?? 0})',
@@ -219,6 +223,16 @@ class _CastlePanelState extends State<CastlePanel> {
   }
 
   Widget _body(Castle c) {
+    if (_showing == 'gates') {
+      return CastleGates(
+        api: widget.api!,
+        castle: c,
+        // Only the kinds this castle actually has work for — a picker
+        // offering a pipeline that does not run here is a control with
+        // nothing behind it.
+        kinds: _work.keys.toList(),
+      );
+    }
     if (_showing == 'settings') {
       return CastleSettings(
         api: widget.api!,

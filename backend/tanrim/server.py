@@ -733,15 +733,21 @@ async def plugins_remove(plugin_id: str, force: bool = False) -> dict[str, Any]:
 
 
 @app.get("/pipeline")
-async def get_pipeline() -> dict[str, Any]:
+async def get_pipeline(castle_id: str = "", kind: str = "") -> dict[str, Any]:
     """The stage graph, who works each step, and which steps are gated.
 
     Built from `state.PIPELINE` and the room manifests, so it cannot drift from
     what the transport actually does — the same `role_for_stage` the transport
     uses is what names the room here.
+
+    `castle_id` and `kind` narrow which gates are reported as on. A gate is a
+    judgement about one pipeline in one place: wanting to check every build for
+    one agency says nothing about a second, and a prospect at `published` waits
+    for something a port at `published` does not.
     """
-    gates = state.stage_gates()
-    _permanent = state.permanent_gates()
+    gates = dict(state.stage_gates())          # the old global ones
+    gates.update(state.scoped_gates(castle_id, kind))
+    _permanent = state.permanent_gates(kind or None)
     counts = state.counts_by_stage()
     steps = []
     for step in state.pipeline_steps():
@@ -757,6 +763,10 @@ async def get_pipeline() -> dict[str, Any]:
             "room_name": getattr(room, "name", room_id),
             "outcomes": step["outcomes"],
             "gated": stage in gates,
+            # A gate ticked before gates were scoped applies everywhere and
+            # cannot be unticked from a castle's tab — it would look like it
+            # worked and change nothing there.
+            "global": stage in state.stage_gates(),
             "permanent": stage in _permanent,
             "permanent_reason": _permanent.get(stage),
             "waiting": counts.get(stage, 0),
@@ -773,6 +783,10 @@ async def get_pipeline() -> dict[str, Any]:
 class GateToggle(BaseModel):
     stage: str
     on: bool
+    #: Which castle and which kind of work this applies to. Both empty writes
+    #: the OLD global map, which is what a caller predating scoping means.
+    castle_id: str = ""
+    kind: str = ""
 
 
 @app.get("/capabilities")
@@ -882,19 +896,24 @@ async def delete_record(record_id: str) -> dict[str, Any]:
 
 @app.post("/pipeline/gate")
 async def set_pipeline_gate(body: GateToggle) -> dict[str, Any]:
-    if body.stage in state.permanent_gates():
+    if body.stage in state.permanent_gates(body.kind or None):
         raise HTTPException(
             400, f"'{body.stage}' is always gated: "
                  f"{state.permanent_gates()[body.stage]}")
     try:
-        gates = state.set_stage_gate(body.stage, body.on)
+        gates = state.set_stage_gate(
+            body.stage, body.on, kind=body.kind, castle_id=body.castle_id)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    where = (f" for {body.kind} in {body.castle_id}"
+             if body.castle_id or body.kind else " everywhere")
     state.log_event(
         "user_approval", from_="operator",
         summary=f"{'now asking' if body.on else 'no longer asking'} before the "
-                f"'{body.stage}' step runs",
-        outcome="applied", details={"stage": body.stage, "on": body.on},
+                f"'{body.stage}' step runs{where}",
+        outcome="applied",
+        details={"stage": body.stage, "on": body.on,
+                 "kind": body.kind, "castle_id": body.castle_id},
     )
     await world.publish({"type": "approvals_updated"})
     return {"ok": True, "gates": gates}
