@@ -1217,7 +1217,7 @@ def _normalise(kind: str, fields: dict[str, Any]) -> dict[str, Any]:
     The store writes what it is given and has no idea what any field MEANS.
     `clean_email` lived here for a real reason — agents put prose in that
     field, and one record was saved as
-    `contact@example.fr (sourced from OSM node/1371087888 and SIRENE register)`,
+    `contact@example.fr (sourced from OSM node/1234567890 and SIRENE register)`,
     which is neither sendable nor matchable against an inbound `From` — but
     the RULE is the web agency's, not the ledger's.
     """
