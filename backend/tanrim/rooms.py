@@ -357,9 +357,7 @@ def _one_room(env: "Any", room: "Any", castle_id: str, dx: int, dy: int,
             # panel and the map label render — not the role id, which is
             # `id`. Passing the id put "probe" where "Qualifier. Audits the
             # existing site…" belongs, on every sprite.
-            agents=[AgentSpec(id=geom.scope(a.role, castle_id), name=a.name,
-                              role=a.description or a.role,
-                              color=a.color, station=a.station or None)
+            agents=[_identity(geom.scope(a.role, castle_id), a)
                     for a in env.agents_in(room.id)],
             workbenches=[
                 WorkbenchSpec(
@@ -459,6 +457,27 @@ def room_for_role(role: str) -> str | None:
     return fallback
 
 
+def _identity(agent_id: str, spec) -> "AgentSpec":
+    """One agent as the map should show it: the plugin's, then this install's.
+
+    A plugin declares the name and colour; an operator may prefer others on
+    their own machine, and that preference is not something to write back into
+    somebody else's repository. The override is stored per SCOPED id, so two
+    castles of one plugin can name their builders differently — telling them
+    apart is the point of having two.
+    """
+    from . import state
+
+    over = state.agent_overrides(agent_id)
+    return AgentSpec(
+        id=agent_id,
+        name=over.get("name") or spec.name,
+        role=over.get("description") or spec.description or spec.role,
+        color=over.get("color") or spec.color,
+        station=spec.station or None,
+    )
+
+
 def find(room_id: str):
     """One room, whether the caller names it scoped or not.
 
@@ -491,6 +510,24 @@ def find(room_id: str):
         if geom.base(room.id) == base:
             return room
     return None
+
+
+def skills_for(room_id: str) -> list[str]:
+    """The skills a room grants: this install's choice, else the manifest's.
+
+    `None` from the override store means nobody has chosen and the manifest
+    stands; an empty list means somebody chose none, which is a different
+    answer and has to survive as one.
+    """
+    from . import state
+
+    room = find(room_id)
+    if room is None:
+        return []
+    chosen = state.room_skill_overrides(room.id)
+    if chosen is None:
+        return list(room.skills)
+    return [s for s in chosen if s in set(room.skills)]
 
 
 def mcp_servers_for(room_id: str) -> list[McpServerSpec]:

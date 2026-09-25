@@ -156,3 +156,35 @@ def test_a_room_resolves_whether_the_caller_scopes_it_or_not(selective):
 
     assert rooms.find("nothing-like-this") is None
     assert rooms.find("") is None
+
+
+def test_no_plugin_looks_a_room_up_by_its_own_base_id():
+    """The bug class, caught at the shape that actually bit.
+
+    A plugin's `ROOM_ID` is the name it DECLARED — `factory`. Room ids on the
+    map are castle-scoped — `factory@b2e8e8`. Comparing the two never matches,
+    and misses in silence: the room is simply not found, so it has no tools
+    and no skills and nothing is logged.
+
+    It happened twice in the same file. `resolve_room_tools` cost Forge
+    `site_inspect`, the tool whose whole purpose is letting it screenshot its
+    own build; `_room_skills` cost it all four design skills. Both now go
+    through `rooms.find`, which resolves either form.
+
+    Narrow on purpose. An earlier version flagged every `\.id == room_id` in
+    the tree and caught four sites that are all correct — they either
+    normalise first (`world.py` calls `scoped_here`) or hold a scoped id on
+    both sides. A test that cries wolf is how people learn to skip one.
+    """
+    import re
+    from pathlib import Path
+
+    offenders = []
+    for path in Path("plugins").rglob("*.py"):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r"\.id\s*==\s*ROOM_ID\b", line):
+                offenders.append(f"{path}:{n}")
+    assert not offenders, (
+        "these compare a map room id against the plugin's own base name, "
+        "which never matches once castles exist — use `rooms.find`: "
+        + ", ".join(offenders))

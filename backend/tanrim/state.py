@@ -19,6 +19,19 @@ NOTES_FILE = STATE_DIR / "notes.json"
 #: and renaming it would be a migration with nothing to gain.
 RECORDS_FILE = STATE_DIR / "leads.json"
 ROOM_TOOL_OVERRIDES_FILE = STATE_DIR / "room_tool_overrides.json"
+#: Per-install edits to what a plugin declared: an agent's display name and
+#: colour, and which of a room's skills it grants.
+#:
+#: Here rather than in the plugin, because a plugin is somebody's repository
+#: and this is one operator's preference about one machine. Writing it back
+#: into `plugin.py` would put a local choice into a shared source tree and
+#: show up as a diff in a repo that is not ours to dirty — `persist_room`
+#: does exactly that for crew size, which is the exception the plugin OPTED
+#: into by implementing it.
+#:
+#: `state/` is already gitignored and belongs to no plugin, which is what
+#: "specific to this install" means here.
+OVERRIDES_FILE = STATE_DIR / "overrides.json"
 EVENTS_FILE = STATE_DIR / "events.json"
 TASK_RERUNS_FILE = STATE_DIR / "task_reruns.json"
 ESCALATIONS_FILE = STATE_DIR / "agent_escalations.json"
@@ -311,6 +324,70 @@ def delete_note(note_id: str) -> bool:
 
 
 # ---------- Tool requests (Nova → Ultron → Tinker pipeline) ----------
+
+def _overrides() -> dict[str, Any]:
+    _ensure()
+    return _read(OVERRIDES_FILE, {})
+
+
+def agent_overrides(agent_id: str) -> dict[str, Any]:
+    """Whatever this install has changed about an agent's identity.
+
+    Keyed by the SCOPED id — `forge@b2e8e8` — not the base role. Two castles
+    of one plugin are two of whatever that plugin does; renaming the builder
+    in one should not rename it in the other, because telling them apart is
+    the point of having two.
+    """
+    return dict((_overrides().get("agents") or {}).get(agent_id) or {})
+
+
+def set_agent_override(agent_id: str, **fields: Any) -> dict[str, Any]:
+    """Change an agent's display identity for this install only.
+
+    A field set to None or "" is REMOVED rather than stored empty, so
+    clearing a name falls back to what the plugin declared instead of
+    blanking the label.
+    """
+    _ensure()
+    with _lock:
+        data = _read(OVERRIDES_FILE, {})
+        agents = data.setdefault("agents", {})
+        current = dict(agents.get(agent_id) or {})
+        for key, value in fields.items():
+            if value in (None, ""):
+                current.pop(key, None)
+            else:
+                current[key] = value
+        if current:
+            agents[agent_id] = current
+        else:
+            agents.pop(agent_id, None)
+        _write(OVERRIDES_FILE, data)
+        return current
+
+
+def room_skill_overrides(room_id: str) -> list[str] | None:
+    """Which skills this install grants a room, or None for the manifest's.
+
+    None and [] are different answers, the same distinction
+    `room_capabilities` turns on: nobody has chosen, versus chosen none.
+    """
+    got = (_overrides().get("room_skills") or {}).get(room_id)
+    return list(got) if got is not None else None
+
+
+def set_room_skills(room_id: str, skills: list[str] | None) -> None:
+    """None restores the manifest's list; a list replaces it."""
+    _ensure()
+    with _lock:
+        data = _read(OVERRIDES_FILE, {})
+        bucket = data.setdefault("room_skills", {})
+        if skills is None:
+            bucket.pop(room_id, None)
+        else:
+            bucket[room_id] = list(skills)
+        _write(OVERRIDES_FILE, data)
+
 
 def get_room_tool_overrides() -> dict[str, list[str]]:
     _ensure()
