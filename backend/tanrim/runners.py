@@ -242,9 +242,47 @@ def _build() -> dict[str, "Runner"]:
     # dispatched by the Throne with a prompt, never with a record — and a
     # runner that exists only to refuse would turn `AGENT_RUNNERS.get(role)`
     # from "nobody does that" into a failed run.
-    return {agent.role: _skip_if_busy(agent.role, _runner(agent.role))
+    return {agent.role: _report_refusals(
+                agent.role, _skip_if_busy(agent.role, _runner(agent.role)))
             for agent in environment.current().agents()
             if agent.jobs or agent.default_job}
+
+
+def _report_refusals(name: str, runner: Runner) -> Runner:
+    """Record a run that DECLINED, rather than discarding it.
+
+    A refusal does not throw. It answers `{"ok": False, "error": ...}` — and
+    every dispatch site does `asyncio.create_task(runner(...))`, which throws
+    the answer away. So an agent that refused for a perfectly good reason left
+    `dispatch_end … started by hand` in the log and nothing whatsoever after
+    it: no event, no history entry, no mark on the record. Pressing Run looked
+    exactly like pressing a dead button.
+
+    Found with the screener, which refuses every application while no
+    candidate profile is set — correct behaviour, invisible. Half the refusals
+    in this environment are deliberate, and the room panel already learned
+    this lesson once by reading `last_result`; this is the same lesson one
+    level up, for the dispatch paths that have no panel.
+
+    Logged as `run_end` with `outcome="refused"`, distinct from `failed`: the
+    work did not happen and nothing is broken, which is a third thing the
+    event log could not previously say.
+    """
+    async def wrapped(world: World, task: dict[str, Any]) -> Any:
+        got = await runner(world, task)
+        if isinstance(got, dict) and got.get("ok") is False:
+            from . import state
+
+            record_id = (task or {}).get("lead_id") or (task or {}).get("record_id")
+            why = str(got.get("error") or "declined")
+            state.log_event(
+                "run_end", from_=name, outcome="refused",
+                summary=f"declined: {why}"[:200],
+                details={"lead_id": record_id, "error": why} if record_id
+                        else {"error": why},
+            )
+        return got
+    return wrapped
 
 
 def _runner(role: str) -> Runner:
