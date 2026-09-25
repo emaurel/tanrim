@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 from contextlib import asynccontextmanager
@@ -11,6 +12,7 @@ from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
 
+from . import castles
 from . import config
 from . import agent_helpers
 from . import discovery
@@ -349,6 +351,87 @@ async def post_room_action(room_id: str, body: ActionBody) -> dict[str, Any]:
     if not handler:
         raise HTTPException(404, "no handler for this room")
     return await handler.action(body.name, body.payload)
+
+
+class StartBody(BaseModel):
+    """What the operator filled in, plus where they pressed it."""
+    model_config = ConfigDict(extra="forbid")
+
+    castle_id: str = ""
+    values: dict[str, Any] = {}
+
+
+def _starts_for(castle_id: str) -> list[dict[str, Any]]:
+    """The openings offered in one castle, as the app should draw them.
+
+    Scoped by KIND, the same way gates are: a start opens work on a pipeline,
+    and a pipeline runs where its records land. A start that names no kind is
+    offered everywhere, which is the honest answer when a plugin has not said.
+    """
+    kinds = set(state.kinds_in_castle(castle_id)) if castle_id else set()
+    out = []
+    for st in environment.current().starts():
+        if castle_id and st.kind and kinds and st.kind not in kinds:
+            continue
+        out.append({
+            "id": st.id,
+            "label": st.label,
+            "kind": st.kind,
+            "note": st.note,
+            "room": castles.scope(st.room, castle_id) if st.room else "",
+            "inputs": [
+                {"id": f.id, "label": f.label, "kind": f.kind, "hint": f.hint,
+                 "required": f.required, "default": f.default,
+                 "options": list(f.options),
+                 "minimum": f.minimum, "maximum": f.maximum}
+                for f in st.inputs
+            ],
+        })
+    return out
+
+
+@app.get("/starts")
+async def get_starts(castle_id: str = "") -> dict[str, Any]:
+    """How work can be started, here.
+
+    The one thing the stage transport cannot derive. Everything else about
+    moving work follows from a record's stage; the FIRST record has no stage
+    to be found at, so the room that would make one is dispatched by nothing.
+    """
+    return {"starts": _starts_for(castle_id)}
+
+
+@app.post("/starts/{start_id}")
+async def post_start(start_id: str, body: StartBody) -> dict[str, Any]:
+    """Open work. The values are the form the plugin declared, filled in."""
+    st = environment.current().start(start_id)
+    if st is None:
+        raise HTTPException(404, f"no such start: {start_id}")
+
+    missing = [f.label for f in st.inputs
+               if f.required and not str(body.values.get(f.id) or "").strip()]
+    if missing:
+        # Checked here as well as in the app, because the app is not the only
+        # caller and a required field reaching the agent empty is how a run
+        # burns a turn discovering it has nothing to do.
+        raise HTTPException(400, f"needs {', '.join(missing)}")
+
+    if st.run is not None:
+        got = st.run(world, dict(body.values))
+        return await got if inspect.isawaitable(got) else got
+
+    room_id = castles.scope(st.room, body.castle_id)
+    handler = HANDLERS.get(room_id) or HANDLERS.get(st.room)
+    if handler is None:
+        raise HTTPException(404, f"no handler for room {room_id}")
+    # The castle the operator pressed it in, for the duration of the run — the
+    # same scoping a dispatch sets, so the agent's world, crew and run_agent
+    # all answer about this castle rather than the first one declared.
+    token = castles.CURRENT.set(body.castle_id)
+    try:
+        return await handler.action(st.action, dict(body.values))
+    finally:
+        castles.CURRENT.reset(token)
 
 
 @app.get("/plugins")

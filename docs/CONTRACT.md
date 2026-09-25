@@ -107,6 +107,55 @@ names what was allowed instead. Declare the rejections and the loops, not just
 the happy path — those are the edges people forget and then find in
 production.
 
+### `starts() -> Iterable[Start]`
+
+**How work ENTERS a pipeline** — the one thing the transport cannot derive.
+
+Everything else about moving work follows from a record's stage: it changes,
+and the room whose benches declare that stage is dispatched. But the first
+record has no stage to be found at, so the room that would make one is
+dispatched by nothing. It is not on the stage sweep, and it has no queue, so
+the app's Run buttons — all of which hang off a queue row — never appear.
+
+Declare an opening and the operator's app builds the control from it:
+
+```python
+Start(
+    id="job_hunt.sweep",
+    label="Sweep the boards",          # the button
+    kind="application",                # which pipeline it opens work on
+    note="Reads every board and opens one application per posting worth reading.",
+    room="board", action="run_sweep",  # base room id; the core scopes it
+    inputs=(
+        StartInput(id="sources", label="Only these boards", kind="list",
+                   options=SOURCE_NAMES,
+                   hint="blank sweeps all of them"),
+    ),
+)
+```
+
+Either name a `room` and its `action`, or supply `run=(world, values) -> dict`
+for an opening that belongs to no room — a commission typed in by hand, say.
+By reference, never by name.
+
+**Declare the inputs, not just a button.** A button alone serves exactly one
+shape of opening. In this repo one sourcing agent *refuses* an empty prompt,
+another takes an optional set of boards, and a commission is six fields — a
+bare button would have produced a run that declined itself.
+
+`kind` is a small fixed vocabulary the app knows how to draw, exactly like the
+record-view blocks and for the same reason: each is a renderer in a binary
+that ships on its own schedule. `text`, `longtext`, `toggle`, `number`,
+`choice`, `list`, `file`. An unknown kind degrades to a text box rather than
+being dropped, so a plugin built against a newer vocabulary is still startable.
+Variety lives in `hint` and `options` rather than in more kinds.
+
+Boot refuses a start that names neither a room nor a `run`, a room or pipeline
+nothing declares, a `choice` with no options, and two plugins claiming one id.
+
+A plugin with no starts is legitimate: an extension that only adds a stage
+opens no work of its own.
+
 ### `record_model() -> type[BaseModel] | None`
 
 The shape of one unit of work. **Purely declarative today** — nothing

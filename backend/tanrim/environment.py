@@ -57,6 +57,7 @@ from .contract import (
     Room,
     RoomPatch,
     Stage,
+    Start,
     StepGate,
     Tool,
     Transition,
@@ -131,6 +132,7 @@ class Environment:
     #: fan out, suppliers take the last.
     _hooks: dict[str, list[Callable[..., Any]]] = field(default_factory=dict)
     _step_gates: list[StepGate] = field(default_factory=list)
+    _starts: dict[str, Start] = field(default_factory=dict)
     _room_handlers: dict[str, type] = field(default_factory=dict)
     _summary_fields: list[str] = field(default_factory=list)
     _models: dict[str, Any] = field(default_factory=dict)
@@ -188,6 +190,7 @@ class Environment:
                 "skills": dict(p.skills()),
                 "hooks": dict(p.hooks()),
                 "step_gates": list(p.step_gates()),
+                "starts": list(p.starts()),
                 "room_handlers": dict(p.room_handlers()),
                 "summary_fields": list(p.summary_fields()),
                 "bulk_fields": tuple(p.bulk_fields()),
@@ -283,6 +286,12 @@ class Environment:
                         f"Known: {', '.join(sorted(HOOKS))}")
                 self._hooks.setdefault(name, []).append(fn)
             self._step_gates.extend(self._said(p, "step_gates"))
+            for st in self._said(p, "starts"):
+                if st.id in self._starts:
+                    raise EnvironmentError(
+                        f"two plugins declare the start {st.id!r}; a start is "
+                        f"addressed by that id, so one would shadow the other")
+                self._starts[st.id] = st
             self._room_handlers.update(self._said(p, "room_handlers"))
             for f in self._said(p, "summary_fields"):
                 if f not in self._summary_fields:
@@ -319,6 +328,7 @@ class Environment:
                 "agent_patches": [a.extends for a in agents
                                   if isinstance(a, AgentPatch)],
                 "step_gates": [g.stage for g in self._said(p, "step_gates")],
+                "starts": [s.id for s in self._said(p, "starts")],
                 "room_handlers": sorted(self._said(p, "room_handlers")),
                 "gates": [g.kind for g in self._said(p, "gates")],
                 "tools": [t.name for t in self._said(p, "tools")],
@@ -351,6 +361,26 @@ class Environment:
                         f"a step gate at {sg.stage!r} is scoped to pipeline "
                         f"{k!r}, which no plugin declares — so it would never "
                         f"fire, silently")
+        for st in self._starts.values():
+            if st.kind and st.kind not in self._pipelines:
+                problems.append(
+                    f"start {st.id!r} opens work on pipeline {st.kind!r}, "
+                    f"which no plugin declares")
+            if st.run is None and not (st.room and st.action):
+                problems.append(
+                    f"start {st.id!r} names neither a room and action nor a "
+                    f"run function, so pressing it would do nothing")
+            if st.room and st.room not in self._rooms:
+                problems.append(
+                    f"start {st.id!r} runs in room {st.room!r}, which no "
+                    f"plugin declares")
+            for field_ in st.inputs:
+                if field_.kind in ("choice", "list") and not field_.options:
+                    # `list` may be free entries; `choice` cannot be.
+                    if field_.kind == "choice":
+                        problems.append(
+                            f"start {st.id!r} offers a choice {field_.id!r} "
+                            f"with no options to choose from")
         # A job at a stage no bench in that room declares is dispatched and
         # then refused by `runners._wrong_stage`, which reads BENCHES. The two
         # were independent truths: a plugin adding an `AgentPatch` job without
@@ -721,6 +751,14 @@ class Environment:
 
     def step_gates(self) -> list[StepGate]:
         return list(self._step_gates)
+
+    def starts(self, kind: str = "") -> list[Start]:
+        """How work enters, optionally for one pipeline only."""
+        got = list(self._starts.values())
+        return [s for s in got if s.kind == kind] if kind else got
+
+    def start(self, start_id: str) -> "Start | None":
+        return self._starts.get(start_id)
 
     def room_handler(self, room_id: str) -> type | None:
         room_id = self._base(room_id)

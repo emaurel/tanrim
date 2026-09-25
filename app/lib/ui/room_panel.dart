@@ -4,6 +4,7 @@ import '../api/client.dart';
 import '../model/record.dart';
 import 'room_settings.dart';
 import '../model/world.dart';
+import 'start_form.dart';
 
 /// A room, rendered from whatever its manifest and handler report.
 ///
@@ -217,9 +218,22 @@ class _RoomPanelState extends State<RoomPanel> {
                                   _inFlight(s)[r.id]),
                           ],
                         ),
+                      // A room that OPENS work rather than consuming it has
+                      // an empty queue by design, and every Run button here
+                      // hangs off a queue row — so both sourcing rooms in this
+                      // repo rendered the note below, with an empty stage list,
+                      // where their only control should have been.
                       if (queue.isEmpty && (s['has_handler'] ?? false) == true)
-                        _note('nothing waiting at '
-                            '${(s['accepts_stages'] as List?)?.join(", ") ?? "this room"}'),
+                        if ((s['accepts_stages'] as List?)?.isEmpty ?? true)
+                          StartForms(
+                            api: widget.api,
+                            castleId: '${s['castle_id'] ?? ''}',
+                            only: widget.room.id,
+                            onStarted: widget.onChanged,
+                          )
+                        else
+                          _note('nothing waiting at '
+                              '${(s['accepts_stages'] as List?)?.join(", ")}'),
                       _crew(s),
                       _benches(),
                       if (widget.room.tools.isNotEmpty)

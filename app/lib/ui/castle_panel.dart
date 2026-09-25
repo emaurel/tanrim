@@ -4,6 +4,7 @@ import '../api/client.dart';
 import '../model/castle.dart';
 import 'castle_gates.dart';
 import 'castle_settings.dart';
+import 'start_form.dart';
 import '../model/record.dart';
 import '../model/world.dart';
 import 'board.dart';
@@ -138,6 +139,10 @@ class _CastlePanelState extends State<CastlePanel> {
     final tabs = [
       if (_inFlight.isNotEmpty) 'working',
       ..._work.keys,
+      // Before `rooms`, which means a castle with nothing in it yet opens on
+      // Start without a special case: the kinds are empty and nothing is in
+      // flight, so this is simply the first tab.
+      if (widget.api != null) 'start',
       'rooms',
       if (widget.api != null) 'gates',
       if (widget.api != null) 'settings',
@@ -176,6 +181,7 @@ class _CastlePanelState extends State<CastlePanel> {
     final tabs = [
       if (flight.isNotEmpty) 'working',
       ...work.keys,
+      if (widget.api != null) 'start',
       'rooms',
       if (widget.api != null) 'gates',
       if (widget.api != null) 'settings',
@@ -198,6 +204,7 @@ class _CastlePanelState extends State<CastlePanel> {
                   switch (id) {
                     'settings' => 'Settings',
                     'gates' => 'Gates',
+                    'start' => 'Start',
                     'rooms' => 'Rooms (${_mine.length})',
                     'working' => 'Working (${flight.length})',
                     _ => '$id (${work[id]?.length ?? 0})',
@@ -223,6 +230,16 @@ class _CastlePanelState extends State<CastlePanel> {
   }
 
   Widget _body(Castle c) {
+    if (_showing == 'start') {
+      return SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+        child: StartForms(
+          api: widget.api!,
+          castleId: c.id,
+          onStarted: widget.onChanged ?? () {},
+        ),
+      );
+    }
     if (_showing == 'gates') {
       // The kinds come from `/pipeline`, which answers with the ones this
       // castle's PLUGIN declared. Taking them from the records here was

@@ -377,6 +377,31 @@ previous cycle, concluded the next room had already been dispatched, and
 ignored the report. The work sat with nobody looking at it and no error
 anywhere.
 
+## Work has to get in somehow
+
+`Orchestrator._advance_records` moves work that EXISTS. Nothing derives the
+first record: the transport keys on a stage, and a record that has not been
+created is at no stage, so the room that would create one is dispatched by
+nothing — not the sweep, and not the app, whose Run buttons all hang off a
+queue row.
+
+Both sourcing rooms reached the same workaround independently, subclassing the
+record handler and blanking the queue by hand with the same comment in each
+plugin — *"it does not consume a queue, it creates one"* — and neither was
+reachable from the app at all. `job_hunt` shipped with no way to start it.
+
+So a plugin declares its openings with `starts()`, and the app builds the
+control from the `inputs` rather than from a hardcoded panel. Declaring the
+inputs is what makes that possible: Nova REFUSES an empty prompt, Scout takes
+an optional set of boards, and a port commission is six fields typed by hand.
+A bare button serves exactly one of those.
+
+The input kinds are a small fixed vocabulary — the same bargain as the record
+blocks, and unknown kinds degrade to a text box rather than being dropped.
+A start is scoped to a castle by its `kind`, through the same map that decides
+where a record lands, so an extension's opening is offered in the castle its
+records actually go to.
+
 ## One dispatch per record per role
 
 Several things can dispatch the same work in the same instant — an operator

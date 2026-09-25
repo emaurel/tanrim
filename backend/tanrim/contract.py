@@ -314,6 +314,86 @@ class Gate:
 
 
 @dataclass(frozen=True)
+class StartInput:
+    """One control on a start form.
+
+    `kind` comes from a small fixed vocabulary the app knows how to draw —
+    exactly like the record-view blocks, and for the same reason: each one is a
+    renderer in a binary that ships on its own schedule, so a plugin inventing
+    a control the app has never heard of would ship a form with a hole in it.
+    An unknown kind is drawn as `text` rather than refused, because degrading
+    to a box you can type in always leaves the start usable.
+
+        text       one line
+        longtext   several; the brief an agent is given
+        toggle     on or off
+        number     a figure, with `minimum`/`maximum` if they matter
+        choice     one of `options`
+        list       several of `options`, or free entries when it has none
+        file       a path the operator picks
+
+    Variety lives in the hint and the options rather than in more kinds.
+    """
+
+    id: str
+    label: str
+    kind: str = "text"
+    #: Shown in or under the control. This is where a plugin explains what
+    #: blank MEANS, which is the question every one of these forms raises.
+    hint: str = ""
+    required: bool = False
+    default: Any = None
+    #: For `choice` and `list`.
+    options: tuple[str, ...] = ()
+    minimum: float | None = None
+    maximum: float | None = None
+
+
+@dataclass(frozen=True)
+class Start:
+    """How work ENTERS a pipeline — the one thing the transport cannot do.
+
+    Everything else about moving work is derived: a record changes stage, and
+    the room whose benches declare that stage is dispatched. But the FIRST
+    record has no stage to be found at, so nothing dispatches the room that
+    would make one. Both sourcing rooms in this repo worked around it the same
+    way — subclassing the record handler and blanking the queue by hand, with
+    the same comment in both plugins: "it does not consume a queue, it creates
+    one" — and neither could be reached from the app at all, because every Run
+    button hangs off a queue row.
+
+    So a plugin declares its openings, and the operator's app builds the
+    control from `inputs`. Declaring the inputs rather than just a button is
+    what makes that possible: one sourcing agent needs to be told where to
+    look and refuses without it, another takes an optional filter, and a
+    commission arrives as six fields typed by hand. A button alone serves
+    exactly one of those.
+
+    Either name a `room` and its `action` — the ordinary case, resolved to
+    this castle's handler — or supply `run` directly, for an opening that
+    belongs to no room.
+    """
+
+    id: str
+    #: What the button says. An imperative: "Sweep the boards".
+    label: str
+    #: Which pipeline this opens work on. Used to file the start under a kind
+    #: and to scope it to the castles that work that kind.
+    kind: str = ""
+    #: One line under the button: what will actually happen.
+    note: str = ""
+    #: The room whose handler runs this, by BASE id — `board`, not
+    #: `board@a24b3e`. The core scopes it to the castle being started.
+    room: str = ""
+    #: The action name that room's handler answers to.
+    action: str = ""
+    #: `(world, values) -> dict`, for an opening with no room behind it. Takes
+    #: precedence over `room`/`action`. By reference, never by name.
+    run: Callable[..., Any] | None = None
+    inputs: tuple[StartInput, ...] = ()
+
+
+@dataclass(frozen=True)
 class StepGate:
     """Stop before running a STEP and ask, rather than before taking an edge.
 
@@ -581,6 +661,19 @@ class Plugin(ABC):
 
     def step_gates(self) -> Iterable[StepGate]:
         """Steps the operator is asked about before they run."""
+        return ()
+
+    def starts(self) -> Iterable[Start]:
+        """How work ENTERS this plugin's pipelines.
+
+        A plugin with none is legitimate and common: an extension that only
+        adds a stage opens no work of its own, and a plugin whose records
+        arrive over its own route has already said how. But a plugin whose
+        only way in is a sourcing agent has to declare it, or the room that
+        makes the first record is reachable by nothing — not the stage sweep,
+        which keys on a stage no record is at yet, and not the app, whose Run
+        buttons all hang off a queue row.
+        """
         return ()
 
     def persist_room(self, room: Room) -> None:
