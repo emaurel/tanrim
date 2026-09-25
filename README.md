@@ -127,7 +127,7 @@ repository today, so the link 404s unless you have been given access:
 ```bash
 gh repo create my-plugin --private --clone \
    --template emaurel/tanrim-plugin-template
-mv my-plugin /path/to/agent_environment/plugins/my_plugin
+mv my-plugin /path/to/tanrim/plugins/my_plugin
 ```
 
 ## Layout
