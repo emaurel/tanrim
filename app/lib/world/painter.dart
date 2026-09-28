@@ -80,6 +80,26 @@ class WorldPainter extends CustomPainter {
   final Map<String, int> castleBadges;
   final String? hoveredCastle;
 
+  /// The rooms with a worker busy in them right now.
+  ///
+  /// Derived from the agents the server already streams — each carries the
+  /// room it is in and whether it is busy — rather than asking for a field.
+  /// The ids match without stripping: both sides are the scoped ids the map
+  /// addresses, `factory@b2e8e8`.
+  late final Set<String> busyRooms = {
+    for (final a in agents)
+      if (a.busy) a.roomId,
+  };
+
+  /// 0 to 1 and back, about every three seconds.
+  ///
+  /// A pulse rather than a blink. "Blinking" is the obvious reading of the
+  /// ask, and it is wrong for this map: it repaints every frame and is looked
+  /// at for long stretches, so something snapping between two states is an
+  /// irritation you end up avoiding. A slow breath reads as alive from the
+  /// corner of your eye and survives being ignored.
+  double get pulse => 0.5 + 0.5 * _sin(tick * 2.2);
+
   /// Far enough out that rooms are illegible and the estate is the useful
   /// picture.
   bool get far => zoom < farZoom;
@@ -388,6 +408,16 @@ class WorldPainter extends CustomPainter {
       }
     }
 
+    // A working room breathes. The sprite animation says WHO is working; at
+    // the middle zoom there are no sprites worth reading and no labels, so
+    // without this the map cannot say WHERE the work is at the one distance
+    // you would look at the whole castle from.
+    if (busyRooms.contains(room.id)) {
+      canvas.drawPath(
+          iso.rectDiamond(x, y, w, h),
+          Paint()..color = Colors.white.withValues(alpha: 0.05 + 0.17 * pulse));
+    }
+
     // Two walls, on the far edges, so the room reads as a box you look into.
     // The near two are left off deliberately — drawn, they hide the floor and
     // everyone standing on it.
@@ -407,14 +437,25 @@ class WorldPainter extends CustomPainter {
     canvas.drawLine(iso.toScreen(x, y) + lift,
         iso.toScreen(x, y + h) + lift, cap);
 
+    // The outline glows with it. The wash alone is easy to miss on a pale
+    // floor; the edge is the same shape at every zoom and reads against
+    // whatever the room is coloured.
+    final working = busyRooms.contains(room.id);
     final outline = Paint()
       ..color = room.id == selectedRoom
           ? Colors.white
-          : room.id == hoveredRoom
-              ? Colors.white70
-              : p.edge
+          : working
+              ? Color.lerp(p.edge, Colors.white, 0.35 + 0.55 * pulse)!
+              : room.id == hoveredRoom
+                  ? Colors.white70
+                  : p.edge
       ..style = PaintingStyle.stroke
-      ..strokeWidth = (room.id == selectedRoom ? 2.5 : 1.2) / zoom;
+      ..strokeWidth = (room.id == selectedRoom
+              ? 2.5
+              : working
+                  ? 1.6 + 0.9 * pulse
+                  : 1.2) /
+          zoom;
     canvas.drawPath(iso.rectDiamond(x, y, w, h), outline);
 
     for (final bench in room.workbenches) {

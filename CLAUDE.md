@@ -633,6 +633,14 @@ Flutter, `app/`. An isometric map of the world with floating windows over it.
   with the records last, so the first failure cancelled the rest.
   `api/steps.dart` runs each independently, retries once on the first connect,
   and puts what did not load in the status line.
+- **A room with work in it breathes.** A white wash over its floor and a
+  heavier, brighter edge, pulsing about every three seconds, derived from the
+  agents already streamed rather than a new field. The sprite animation says
+  WHO is working; at the middle zoom there are no readable sprites and no
+  labels, so without this the map cannot say WHERE the work is at the one
+  distance you would survey a castle from. A pulse and not a blink: this map
+  repaints every frame and is looked at for long stretches, so something
+  snapping between two states is an irritation you end up avoiding.
 - **Zoomed out, colour is the whole message.** The block IS the castle at that
   distance, so it is green while something runs in it and RED when its plugin
   is not installed — a castle with no rooms and nothing that can run is worth
