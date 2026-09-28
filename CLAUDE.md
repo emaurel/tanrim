@@ -677,6 +677,34 @@ is now cached; and a record's rows were built eagerly in a `ListView(children:)`
 
 ---
 
+# A port is rendered, not written
+
+A rebuild of a client's existing site was an agent writing every page by hand.
+On a 23-page site that cost **$32.17 in one day**, took 101 turns across three
+runs, hit the turn ceiling every time, rolled the whole build back when it
+finally ran out, and still missed nine pages and 219 of the client's words.
+
+Almost none of it was judgement. The content is theirs, the palette is in their
+stylesheet, the images are on their server and the menu order is their
+navigation. Writing sixteen near-identical pages with a language model is an
+expensive way to run a for-loop — and it is why pages went missing: each one
+depended on the model still having attention left when it reached it.
+
+So `website_recreation` renders the site from the capture and hands the agent
+what is left: 22 pages, 98% of their words, 105 images, zero pages missed,
+about a minute, nothing spent. The agent then does the layout judgement a
+template cannot make, and whatever `port_coverage` still flags — a job on a
+page that exists rather than on an empty directory, which is a job that fits in
+its turns.
+
+A mirror was the other option and is not the answer: their homepage is 7.8 MB
+across 30 stylesheets and 25 scripts against a 500 KB budget, and handing a
+client back the WordPress they paid to be rid of is not a port.
+
+**A job is per STAGE, not per kind.** `AgentPatch(extends="forge")` replaces
+`visualised` for every record that reaches it, so the port build checks the
+kind and hands a prospect straight back to the parent.
+
 # Adding to the environment
 
 **Adding a room** = adding a manifest to a plugin. The backend serves the list
