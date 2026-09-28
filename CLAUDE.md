@@ -625,6 +625,19 @@ Flutter, `app/`. An isometric map of the world with floating windows over it.
   answerable part of a record unanswered.
 - **Unknown blocks and unknown socket frames are drawn or ignored, never
   fatal.** The environment gains behaviour by gaining plugins.
+- **A failed load is named, never rendered as empty.** Every loader used to
+  swallow its own error, and an empty list is a LEGITIMATE state here — an
+  install with no plugins is the documented correct empty one. So a failed
+  `/plugins` looked exactly like a server with none, and a failed `/leads`
+  looked like a castle with no work. Worse, all six loads sat in one `try`
+  with the records last, so the first failure cancelled the rest.
+  `api/steps.dart` runs each independently, retries once on the first connect,
+  and puts what did not load in the status line.
+- **Zoomed out, colour is the whole message.** The block IS the castle at that
+  distance, so it is green while something runs in it and RED when its plugin
+  is not installed — a castle with no rooms and nothing that can run is worth
+  seeing from across the estate. Red beats green: one that cannot work is not
+  working, whatever a stale flag says.
 
 Performance lessons that cost a day each: sprites were drawn one art pixel at
 a time (~150 `drawRect` per figure, 5,000 a frame) and are now recorded once

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'api/client.dart';
+import 'api/steps.dart';
 import 'server/prefs.dart';
 import 'server/process.dart';
 import 'api/live.dart';
@@ -180,18 +181,7 @@ class _WorldPageState extends State<WorldPage> {
 
     final api = Api(_server.text.trim().replaceAll(RegExp(r'/+$'), ''));
     _api = api;
-    try {
-      await _loadRooms();
-      setState(() => _connected = true);
-      await _loadPlugins();
-      await _loadCastles();
-      await _loadCatalog();
-      await _loadApprovals();
-      await _loadBoard();
-    } catch (e) {
-      setState(() => _state = e is ApiError ? e.message : '$e');
-      return;
-    }
+    if (!await _loadAll(firstTime: true)) return;
 
     final live = Live(api.socket);
     _live = live;
@@ -220,7 +210,15 @@ class _WorldPageState extends State<WorldPage> {
         case LiveKind.disconnected:
           setState(() => _state = 'reconnecting…');
         case LiveKind.connected:
-          setState(() => _state = '${_rooms.length} rooms · live');
+          // Anything that failed on connect gets another go once the socket
+          // is up. By then the server has finished settling, which is what it
+          // usually was: the app connects the instant the port answers.
+          if (_failed.isNotEmpty) {
+            await _loadAll();
+          }
+          if (_failed.isEmpty) {
+            setState(() => _state = '${_rooms.length} rooms · live');
+          }
         case LiveKind.talk:
           break;
       }
@@ -228,24 +226,77 @@ class _WorldPageState extends State<WorldPage> {
     await live.connect();
   }
 
+  /// What did not load, by name. Empty when everything did.
+  ///
+  /// Kept because an empty list and a list that FAILED to load render
+  /// identically, and in this environment "no plugins" is a legitimate state —
+  /// the documented correct empty install. So a failed `/plugins` looked
+  /// exactly like a server with none, and a failed `/leads` looked like a
+  /// castle with no work: no records tab, nothing wrong on screen, and the
+  /// only way out was reloading the plugins by hand.
+  Set<String> _failed = const {};
+
+  /// Load everything, each part independently.
+  ///
+  /// One `try` around all of them meant the first failure cancelled every load
+  /// after it — and the records were loaded LAST, so almost any hiccup left the
+  /// board empty. Each step now stands on its own: what works is shown, what
+  /// did not is named.
+  ///
+  /// Returns false only if the map itself could not be drawn.
+  Future<bool> _loadAll({bool firstTime = false}) async {
+    // The rooms ARE the map. Without them there is nothing to draw, so this
+    // one failing is the only failure worth stopping for.
+    try {
+      await _loadRooms();
+    } catch (e) {
+      setState(() => _state = e is ApiError ? e.message : '$e');
+      return false;
+    }
+    if (mounted) setState(() => _connected = true);
+
+    final problems = await runSteps(
+      {
+        'plugins': _loadPlugins,
+        'castles': _loadCastles,
+        'catalog': _loadCatalog,
+        'approvals': _loadApprovals,
+        'records': _loadBoard,
+      },
+      // One retry on the first connect: the app starts the server itself and
+      // connects the instant the port answers, which is the moment it is least
+      // ready to be asked five questions.
+      attempts: firstTime ? 2 : 1,
+      onError: (what, e) =>
+          debugPrint('$what failed: ${e is ApiError ? e.message : e}'),
+    );
+
+    if (mounted) {
+      setState(() {
+        _failed = problems;
+        if (problems.isNotEmpty) {
+          _state = '${_rooms.length} rooms · ${problems.join(", ")} '
+              'did not load';
+        }
+      });
+    }
+    return true;
+  }
+
   /// The board. Its stages and their order come from the server, so a plugin
   /// adding a pipeline needs no change here.
   Future<void> _loadBoard() async {
     final api = _api;
     if (api == null) return;
-    try {
-      final b = await api.get('/leads?slim=1') as Map<String, dynamic>;
-      if (!mounted) return;
-      setState(() {
-        _records = ((b['leads'] ?? []) as List)
-            .map((r) => WorkRecord(r as Map<String, dynamic>))
-            .toList();
-        _stages = ((b['stages'] ?? []) as List).cast<String>();
-        _deadStages = ((b['dead_stages'] ?? []) as List).cast<String>();
-      });
-    } catch (_) {
-      // A board that will not load is not worth killing the map for.
-    }
+    final b = await api.get('/leads?slim=1') as Map<String, dynamic>;
+    if (!mounted) return;
+    setState(() {
+      _records = ((b['leads'] ?? []) as List)
+          .map((r) => WorkRecord(r as Map<String, dynamic>))
+          .toList();
+      _stages = ((b['stages'] ?? []) as List).cast<String>();
+      _deadStages = ((b['dead_stages'] ?? []) as List).cast<String>();
+    });
   }
 
   /// The map itself.
@@ -257,16 +308,12 @@ class _WorldPageState extends State<WorldPage> {
   Future<void> _loadCatalog() async {
     final api = _api;
     if (api == null) return;
-    try {
-      final d = await api.get('/plugins/catalog') as Map<String, dynamic>;
-      final list = ((d['plugins'] ?? []) as List)
-          .map((p) => (p as Map).cast<String, dynamic>())
-          .toList();
-      if (!mounted) return;
-      setState(() => _catalog = list);
-    } catch (_) {
-      // An older server has no catalog. The rest of the panel still works.
-    }
+    final d = await api.get('/plugins/catalog') as Map<String, dynamic>;
+    final list = ((d['plugins'] ?? []) as List)
+        .map((p) => (p as Map).cast<String, dynamic>())
+        .toList();
+    if (!mounted) return;
+    setState(() => _catalog = list);
   }
 
   /// After anything that changes what is installed.
@@ -333,19 +380,15 @@ class _WorldPageState extends State<WorldPage> {
   Future<void> _loadPlugins() async {
     final api = _api;
     if (api == null) return;
-    try {
-      final d = await api.get('/plugins') as Map<String, dynamic>;
-      final list = ((d['plugins'] ?? []) as List)
-          .map((p) => (p as Map).cast<String, dynamic>())
-          .toList();
-      if (!mounted) return;
-      setState(() {
-        _plugins = list;
-        _kinds = ((d['kinds'] ?? []) as List).cast<String>();
-      });
-    } catch (_) {
-      // The map still works without them; it just cannot group.
-    }
+    final d = await api.get('/plugins') as Map<String, dynamic>;
+    final list = ((d['plugins'] ?? []) as List)
+        .map((p) => (p as Map).cast<String, dynamic>())
+        .toList();
+    if (!mounted) return;
+    setState(() {
+      _plugins = list;
+      _kinds = ((d['kinds'] ?? []) as List).cast<String>();
+    });
   }
 
   /// Who was busy last time we looked, so a sprite walking does not refetch.
@@ -373,31 +416,27 @@ class _WorldPageState extends State<WorldPage> {
   Future<void> _loadCastles() async {
     final api = _api;
     if (api == null) return;
-    try {
-      final d = await api.get('/castles') as Map<String, dynamic>;
-      final castles = ((d['castles'] ?? []) as List)
-          .map((c) => Castle.fromJson((c as Map).cast<String, dynamic>())
-              .withRooms(_rooms))
-          .toList();
-      final web = Web.fromJson(
-          ((d['web'] ?? const {}) as Map).cast<String, dynamic>());
-      final taken = {
-        for (final t in ((d['taken'] ?? []) as List))
-          ((t as List)[0] as int, t[1] as int),
-      };
-      final buildable = ((d['buildable'] ?? []) as List)
-          .map((p) => (p as Map).cast<String, dynamic>())
-          .toList();
-      if (!mounted) return;
-      setState(() {
-        _castles = castles;
-        _web = web;
-        _taken = taken;
-        _buildable = buildable;
-      });
-    } catch (_) {
-      // An older server has no castles. The map still draws its rooms.
-    }
+    final d = await api.get('/castles') as Map<String, dynamic>;
+    final castles = ((d['castles'] ?? []) as List)
+        .map((c) => Castle.fromJson((c as Map).cast<String, dynamic>())
+            .withRooms(_rooms))
+        .toList();
+    final web = Web.fromJson(
+        ((d['web'] ?? const {}) as Map).cast<String, dynamic>());
+    final taken = {
+      for (final t in ((d['taken'] ?? []) as List))
+        ((t as List)[0] as int, t[1] as int),
+    };
+    final buildable = ((d['buildable'] ?? []) as List)
+        .map((p) => (p as Map).cast<String, dynamic>())
+        .toList();
+    if (!mounted) return;
+    setState(() {
+      _castles = castles;
+      _web = web;
+      _taken = taken;
+      _buildable = buildable;
+    });
   }
 
   /// Build one on an empty plot.
@@ -495,18 +534,14 @@ class _WorldPageState extends State<WorldPage> {
   Future<void> _loadApprovals() async {
     final api = _api;
     if (api == null) return;
-    try {
-      final a = await api.get('/approvals?status=pending');
-      if (!mounted) return;
-      setState(() {
-        _approvals = ((a['approvals'] ?? []) as List)
-            .map((x) => Approval(x as Map<String, dynamic>))
-            .toList();
-        _badges = _countsByRoom(a);
-      });
-    } catch (_) {
-      // Not worth killing the map for.
-    }
+    final a = await api.get('/approvals?status=pending');
+    if (!mounted) return;
+    setState(() {
+      _approvals = ((a['approvals'] ?? []) as List)
+          .map((x) => Approval(x as Map<String, dynamic>))
+          .toList();
+      _badges = _countsByRoom(a);
+    });
   }
 
   Map<String, int> _countsByRoom(dynamic payload) {

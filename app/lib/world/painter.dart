@@ -301,16 +301,24 @@ class WorldPainter extends CustomPainter {
           iso.wall(x + w, y, x + w, y + h, lift),
           Paint()..color = const Color(0xFF585F6D));
 
-      // Green while something is running in it, pale otherwise. At this
-      // distance the block IS the castle, so its colour is the only thing
-      // that can say the place is busy without being read.
+      // Green while something is running in it, RED when its plugin is gone,
+      // pale otherwise. At this distance the block IS the castle, so its
+      // colour is the only thing that can say anything without being read —
+      // and a castle whose plugin is not installed has no rooms, no agents and
+      // nothing that can run, which is worth seeing from across the estate
+      // rather than only after opening it.
+      //
+      // Red beats green: a castle that cannot work is not working, whatever
+      // else the flag says.
       final top = face.shift(Offset(0, -lift * iso.tileH));
       canvas.drawPath(
           top,
           Paint()
-            ..color = c.working
-                ? (hot ? const Color(0xFFBFF0CC) : const Color(0xFF8FD9A6))
-                : (hot ? Colors.white : const Color(0xFFE7EAF0)));
+            ..color = !c.installed
+                ? (hot ? const Color(0xFFF3B4B4) : const Color(0xFFDE8C8C))
+                : c.working
+                    ? (hot ? const Color(0xFFBFF0CC) : const Color(0xFF8FD9A6))
+                    : (hot ? Colors.white : const Color(0xFFE7EAF0)));
       canvas.drawPath(
           top,
           Paint()
@@ -326,9 +334,11 @@ class WorldPainter extends CustomPainter {
           centre: true,
           // Green too when it is working, and the outline stays white either
           // way — it is what keeps the name readable over whatever is behind.
-          colour: c.working
-              ? const Color(0xFF14602F)
-              : const Color(0xFF12141A),
+          colour: !c.installed
+              ? const Color(0xFF6B1F1F)
+              : c.working
+                  ? const Color(0xFF14602F)
+                  : const Color(0xFF12141A),
           halo: Colors.white);
       _text(
           canvas,
