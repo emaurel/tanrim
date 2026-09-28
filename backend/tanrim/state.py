@@ -523,14 +523,28 @@ def resolve_user_approval(
     approval_id: str,
     decision: str,
     reason: str | None = None,
+    answers: "dict[str, str] | None" = None,
 ) -> dict[str, Any] | None:
+    """Resolve a card, optionally with what the operator TYPED.
+
+    `answers` is for a gate that asked questions rather than for a yes or no —
+    a form with fields only the operator can fill, say. It lands on the card
+    beside the decision, so `Gate.on_decision` reads it off the card it was
+    already given and no signature changes.
+    """
     _ensure_approvals()
     with _lock:
         items: list[dict[str, Any]] = _read(USER_APPROVALS_FILE)
         for r in items:
             if r["id"] == approval_id:
                 r["status"] = decision  # "approved" | "rejected" | "applied"
-                r["decision"] = {"ts": time.time(), "reason": reason or ""}
+                r["decision"] = {"ts": time.time(), "reason": reason or "",
+                                 **({"answers": answers} if answers else {})}
+                # Also at the top level, where a handler looking for what the
+                # operator said should not have to know it lives under the
+                # decision.
+                if answers:
+                    r["answers"] = answers
                 _write(USER_APPROVALS_FILE, items)
                 return r
     return None

@@ -1113,6 +1113,10 @@ async def list_approvals(status: str = "pending"):
 class ApprovalDecision(BaseModel):
     decision: str  # "approved" | "rejected"
     reason: str | None = None
+    #: What the operator typed, for a card that ASKED rather than offered a
+    #: yes or no. Keyed by the id of each question in the card's `asks`.
+    #: A gate that does not ask gets an empty dict and ignores it.
+    answers: dict[str, str] = {}
 
 
 def _decision_problem(approval: dict[str, Any], body: "ApprovalDecision") -> str | None:
@@ -1147,7 +1151,8 @@ async def resolve_approval(approval_id: str, body: ApprovalDecision) -> dict[str
         if problem:
             raise HTTPException(400, problem)
 
-    rec = state.resolve_user_approval(approval_id, body.decision, body.reason)
+    rec = state.resolve_user_approval(approval_id, body.decision, body.reason,
+                                      answers=body.answers or None)
     if rec is None:
         raise HTTPException(404, "approval not found")
 

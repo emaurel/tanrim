@@ -40,6 +40,7 @@ Future<void> _pump(WidgetTester t, List<Approval> list) => t.pumpWidget(
     );
 
 void main() {
+  _asksTests();
   testWidgets('nothing waiting says so', (t) async {
     await _pump(t, const []);
     expect(find.text('nothing waiting on you'), findsOneWidget);
@@ -177,4 +178,74 @@ AttributeError: no attribute 'x\'''';
     expect(find.text('NO CASTLE'), findsOneWidget);
     expect(find.textContaining('agent_crashed happened'), findsOneWidget);
   });
+}
+
+void _asksTests() {
+  group('a card that asks', () {
+    testWidgets('renders a box per question and sends the answers',
+        (t) async {
+      // The filler stops on questions only the operator can answer truthfully.
+      // A single "reason" box cannot say which answer goes where.
+      final api = _AskApi();
+      await t.pumpWidget(MaterialApp(
+        theme: ThemeData.dark(),
+        home: Scaffold(body: SingleChildScrollView(child: ApprovalCard(
+          api: api,
+          approval: Approval({
+            'id': 'a1',
+            'kind': 'form_questions',
+            'summary': '2 question(s) only you can answer',
+            'payload': {
+              'lead_id': 'r1',
+              'asks': [
+                {'id': 'k1', 'question': 'Are you authorised to work in the EU?'},
+                {'id': 'k2', 'question': 'Most impactful thing you built?'},
+              ],
+            },
+          }),
+          onResolved: () {},
+        ))),
+      ));
+      await t.pumpAndSettle();
+
+      expect(find.text('Are you authorised to work in the EU?'), findsOneWidget);
+      expect(find.byType(TextField), findsNWidgets(3)); // two asks + the reason
+
+      await t.enterText(find.byType(TextField).at(0), 'Yes, EU citizen');
+      await t.tap(find.widgetWithText(FilledButton, 'Approve'));
+      await t.pumpAndSettle();
+
+      final body = api.sent.last as Map;
+      expect(body['answers'], {'k1': 'Yes, EU citizen'});
+    });
+
+    testWidgets('a card that asks nothing sends no answers', (t) async {
+      final api = _AskApi();
+      await t.pumpWidget(MaterialApp(
+        theme: ThemeData.dark(),
+        home: Scaffold(body: SingleChildScrollView(child: ApprovalCard(
+          api: api,
+          approval: Approval({
+            'id': 'a2', 'kind': 'publish_site',
+            'summary': 'publish?', 'payload': {},
+          }),
+          onResolved: () {},
+        ))),
+      ));
+      await t.pumpAndSettle();
+      await t.tap(find.widgetWithText(FilledButton, 'Approve'));
+      await t.pumpAndSettle();
+      expect((api.sent.last as Map).containsKey('answers'), isFalse);
+    });
+  });
+}
+
+class _AskApi extends Api {
+  _AskApi() : super('http://127.0.0.1:1');
+  final List<Object?> sent = [];
+  @override
+  Future<dynamic> post(String path, [Object? payload]) async {
+    sent.add(payload);
+    return {'ok': true};
+  }
 }

@@ -244,3 +244,41 @@ def test_image_is_a_declared_format():
     from tanrim import view
 
     assert "image" in view.FORMATS
+
+
+def test_an_approval_can_carry_what_the_operator_typed(tmp_path, monkeypatch):
+    """A card that ASKS is a different shape from one that offers a yes or no.
+
+    The answers land on the card beside the decision, so `Gate.on_decision`
+    reads them off the card it was already given — no signature change, and a
+    gate that does not ask gets nothing and ignores it.
+    """
+    from tanrim import state
+
+    monkeypatch.setattr(state, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(state, "USER_APPROVALS_FILE", tmp_path / "ap.json")
+    monkeypatch.setattr(state, "EVENTS_FILE", tmp_path / "ev.json")
+
+    card = state.add_user_approval(
+        kind="form_questions", room_id="forms", requesting_agent="filler",
+        summary="2 questions", payload={"lead_id": "r1"})
+    got = state.resolve_user_approval(
+        card["id"], "approved", "go on",
+        answers={"q1": "yes, EU citizen", "q2": ""})
+
+    assert got["answers"] == {"q1": "yes, EU citizen", "q2": ""}
+    assert got["decision"]["reason"] == "go on"
+
+
+def test_a_card_resolved_without_answers_carries_none(tmp_path, monkeypatch):
+    from tanrim import state
+
+    monkeypatch.setattr(state, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(state, "USER_APPROVALS_FILE", tmp_path / "ap.json")
+    monkeypatch.setattr(state, "EVENTS_FILE", tmp_path / "ev.json")
+
+    card = state.add_user_approval(kind="publish_site", room_id="publish",
+                                   requesting_agent="courier",
+                                   summary="publish?", payload={})
+    got = state.resolve_user_approval(card["id"], "approved", "looks right")
+    assert "answers" not in got

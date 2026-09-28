@@ -145,6 +145,19 @@ class ApprovalCard extends StatefulWidget {
 
 class _ApprovalCardState extends State<ApprovalCard> {
   final _reason = TextEditingController();
+
+  /// One box per question a card ASKED, keyed by the question's id.
+  ///
+  /// A card that asks is a different shape from one that offers a yes or no:
+  /// the filler stops on questions only the operator can answer truthfully —
+  /// which country an application is for, what the most impactful thing he
+  /// built was — and a single "reason" box cannot say which answer goes where.
+  final Map<String, TextEditingController> _answers = {};
+
+  List<Map<String, dynamic>> get _asks => [
+        for (final a in ((widget.approval.payload['asks'] ?? []) as List))
+          (a as Map).cast<String, dynamic>()
+      ];
   bool _busy = false;
   bool _expanded = false;
   String? _error;
@@ -152,7 +165,41 @@ class _ApprovalCardState extends State<ApprovalCard> {
   @override
   void dispose() {
     _reason.dispose();
+    for (final c in _answers.values) {
+      c.dispose();
+    }
     super.dispose();
+  }
+
+  /// One question, with somewhere to answer it.
+  Widget _ask(Map<String, dynamic> a) {
+    final id = '${a['id']}';
+    final c = _answers.putIfAbsent(
+        id, () => TextEditingController(text: '${a['answer'] ?? ''}'));
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('${a['question']}',
+              style: const TextStyle(fontSize: 12, height: 1.35,
+                  color: Colors.white70)),
+          const SizedBox(height: 4),
+          TextField(
+            controller: c,
+            style: const TextStyle(fontSize: 12.5),
+            decoration: InputDecoration(
+              isDense: true,
+              border: const OutlineInputBorder(),
+              hintText: '${a['hint'] ?? 'your answer'}',
+              hintStyle: const TextStyle(fontSize: 12),
+            ),
+            minLines: 1,
+            maxLines: 5,
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _resolve(String decision) async {
@@ -164,6 +211,11 @@ class _ApprovalCardState extends State<ApprovalCard> {
       await widget.api.post('/approvals/${widget.approval.id}', {
         'decision': decision,
         'reason': _reason.text.trim(),
+        if (_answers.isNotEmpty)
+          'answers': {
+            for (final e in _answers.entries)
+              if (e.value.text.trim().isNotEmpty) e.key: e.value.text.trim(),
+          },
       });
       widget.onResolved();
     } catch (e) {
@@ -436,6 +488,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
     }
     return Column(
       children: [
+        for (final a in _asks) _ask(a),
         TextField(
           controller: _reason,
           style: const TextStyle(fontSize: 12.5),

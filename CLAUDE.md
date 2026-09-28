@@ -507,6 +507,14 @@ the operator is asked BEFORE the room runs — at which point which edge it will
 take is not yet known. Inferring "this is a gate" from "every transition out
 of here is the operator's" also fails outright for a stage that has both.
 
+**A card may ASK rather than offer a yes or no.** Its payload carries `asks`
+— `{id, question, hint?}` — and the app draws a box per question; the answers
+come back on the resolved card, beside the decision, so `Gate.on_decision`
+reads them off the card it was already handed and no signature changes. The
+form filler stops on questions only the operator can answer truthfully, and
+before this they reached nobody: the sprite said "form refused" and the run
+ended at `written`.
+
 `permanent=True` means it cannot be switched off from the settings panel.
 Anything irreversible or outward-facing should be; those must never depend on
 a checkbox.
