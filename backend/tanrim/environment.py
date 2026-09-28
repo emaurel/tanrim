@@ -550,11 +550,23 @@ class Environment:
         an extension decides what its own work needs without the plugin it
         extends knowing it exists.
         """
+        # Asked with the BASE id. A plugin never sees a castle, so it compares
+        # `room_id == "factory"` — and every caller here holds the scoped id
+        # off a room on the map, `factory@b2e8e8`. The comparison never matched
+        # and this returned None, which callers read as "everything the room
+        # grants": a port build was handed the Factory's four design skills,
+        # whose whole purpose is to propose a better treatment, which is
+        # exactly the drift this narrowing exists to prevent.
+        #
+        # The sixth place this mismatch has been found. Silent every time.
+        from . import castles as _castles
+
+        base = _castles.base(room_id)
         for plugin in self._owns_kind.get(kind, []) + list(self.plugins):
             answer = self._answers.get(plugin.id, {}).get("room_capabilities")
             if answer is None:
                 continue
-            said = answer(room_id, kind)
+            said = answer(base, kind)
             if said is None:
                 continue
             return {"tools": list(said.get("tools") or []),

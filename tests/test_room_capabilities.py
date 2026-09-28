@@ -188,3 +188,31 @@ def test_no_plugin_looks_a_room_up_by_its_own_base_id():
         "these compare a map room id against the plugin's own base name, "
         "which never matches once castles exist — use `rooms.find`: "
         + ", ".join(offenders))
+
+
+def test_a_scoped_room_id_reaches_the_plugin_as_a_base_one(tmp_path):
+    """A plugin never sees a castle, so it compares `room_id == "factory"` —
+    and every caller holds the scoped id off a room on the map,
+    `factory@b2e8e8`. The comparison never matched and this answered None,
+    which callers read as "everything the room grants": a port build was handed
+    the design skills whose whole purpose is to propose a better treatment,
+    which is exactly the drift the narrowing exists to prevent.
+
+    The sixth place this one mismatch has been found, and silent every time.
+    """
+    from tanrim import discovery, environment
+
+    environment.boot(discovery.find())
+    try:
+        env = environment.current()
+        for kind in env.kinds():
+            for room in env.rooms():
+                base = env.room_capabilities(room.id.split("@")[0], kind)
+                scoped = env.room_capabilities(f"{room.id.split('@')[0]}@c7f2",
+                                               kind)
+                assert base == scoped, (
+                    f"{room.id} answers differently scoped and unscoped for "
+                    f"{kind}: {base} vs {scoped}")
+    finally:
+        environment.reset()
+        environment._invalidate_derived()

@@ -414,9 +414,12 @@ came from an operator pressing a button.
 Measured in the real event log afterwards: 138 automatic dispatches up to that
 day, and none after it.
 
-This is the **fifth** place this one mismatch has been found — after
+This is the **sixth** place this one mismatch has been found — after
 `agent_runners().get(role)`, `resolve_room_tools`, a plugin agent's
-`_room_skills`, and `mcp_servers_for`. It is silent every time: nothing
+`_room_skills`, `mcp_servers_for`, and `environment.room_capabilities`, which
+asked the plugin with a scoped id it could never match and so answered None:
+callers read that as "everything the room grants", and a port build was handed
+the design skills the narrowing exists to withhold. It is silent every time: nothing
 errors, no route 500s, the work simply stops moving. Anything comparing a
 role or room id against something a plugin declared must reduce it with
 `castles.base()` first.
