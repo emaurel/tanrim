@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'dart:async';
+
 import '../api/client.dart';
+import '../api/live.dart';
 import 'blocks.dart';
 import 'settings_tab.dart';
 
@@ -21,6 +24,7 @@ class RecordWindow extends StatefulWidget {
     this.working = false,
     this.stages = const [],
     this.onDeleted,
+    this.live,
   });
 
   final Api api;
@@ -30,6 +34,13 @@ class RecordWindow extends StatefulWidget {
   /// An agent is busy on this record right now. Drives the dot and which of
   /// Start / Stop is offered.
   final bool working;
+
+  /// Lines from the run in flight on this record, as they are said.
+  ///
+  /// A stream rather than a poll: a build talks for eleven minutes, and asking
+  /// every second for a list that is usually unchanged is a request a second
+  /// for the length of the run.
+  final Stream<LiveEvent>? live;
 
   /// Every stage this record's pipeline declares, for the hand-move control.
   /// Comes from the server, because a plugin this build has never seen adds
@@ -52,6 +63,14 @@ class _RecordWindowState extends State<RecordWindow> {
   void initState() {
     super.initState();
     _load();
+    if (widget.working) _loadRun();
+    _watchRun();
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 
   @override
@@ -61,9 +80,16 @@ class _RecordWindowState extends State<RecordWindow> {
       setState(() {
         _view = null;
         _error = null;
+        _run = const [];
+        _runWorkers = const [];
       });
       _load();
+      _watchRun();
+      if (widget.working) _loadRun();
     }
+    // A run STARTING while the window is open: catch up on whatever it said
+    // between being dispatched and this rebuild.
+    if (!old.working && widget.working) _loadRun();
   }
 
   Future<void> _load() async {
@@ -111,18 +137,78 @@ class _RecordWindowState extends State<RecordWindow> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _header(view),
-        if (_tab != 'settings') _controls(view),
+        if (_showing != 'settings') _controls(view),
         _tabs(history),
         Expanded(
-          child: _tab == 'settings'
+          child: _showing == 'settings'
               ? _settings(view)
-              : _body(history, rest),
+              : _showing == 'run'
+                  ? _currentRun()
+                  : _body(history, rest),
         ),
       ],
     );
   }
 
-  String _tab = 'details';
+  String? _tab;
+
+  /// Which tab is showing.
+  ///
+  /// Resolved rather than stored, because the run tab COMES AND GOES: a run
+  /// ends while you are reading it, and a stored `_tab` would leave the window
+  /// showing a tab that is no longer there. Nothing to show falls back to the
+  /// details.
+  String get _showing {
+    final t = _tab;
+    if (t == 'run' && !widget.working) return 'details';
+    if (t != null) return t;
+    // A record you opened BECAUSE something is happening to it opens on what
+    // is happening.
+    return widget.working ? 'run' : 'details';
+  }
+
+  /// What the agent working this record has said, this run.
+  ///
+  /// Live only, and dropped when the run ends — which is what the server does
+  /// too. A finished run leaves its history entry and its event; keeping a
+  /// third copy is only a way for the three to disagree.
+  List<Map<String, dynamic>> _run = const [];
+  List<Map<String, dynamic>> _runWorkers = const [];
+  StreamSubscription<LiveEvent>? _sub;
+
+  void _watchRun() {
+    _sub?.cancel();
+    _sub = widget.live?.listen((e) {
+      if (e.kind != LiveKind.runLine || e.from != widget.recordId) return;
+      final line = e.line;
+      if (line == null || !mounted) return;
+      setState(() => _run = [..._run, line]);
+    });
+  }
+
+  /// Everything said before this window opened.
+  ///
+  /// A run that has been going ten minutes has a story already; opening the
+  /// window part way through and seeing only what happens NEXT would answer
+  /// the question a sentence at a time.
+  Future<void> _loadRun() async {
+    try {
+      final d = await widget.api.get('/records/${widget.recordId}/run') as Map;
+      if (!mounted) return;
+      setState(() {
+        _run = [
+          for (final l in (d['lines'] as List? ?? const []))
+            (l as Map).cast<String, dynamic>()
+        ];
+        _runWorkers = [
+          for (final w in (d['workers'] as List? ?? const []))
+            (w as Map).cast<String, dynamic>()
+        ];
+      });
+    } catch (_) {
+      // Nothing to show is the normal answer here; it is not an error state.
+    }
+  }
 
   /// Built lazily, one top-level block at a time.
   ///
@@ -134,8 +220,8 @@ class _RecordWindowState extends State<RecordWindow> {
   /// without every value carrying its own selection machinery.
   Widget _body(List<Map<String, dynamic>> history,
       List<Map<String, dynamic>> rest) {
-    final showing = _tab == 'history' ? history : rest;
-    if (_tab != 'history' && rest.isEmpty) {
+    final showing = _showing == 'history' ? history : rest;
+    if (_showing != 'history' && rest.isEmpty) {
       return const Padding(
         padding: EdgeInsets.all(16),
         child: Text('nothing recorded yet',
@@ -144,7 +230,7 @@ class _RecordWindowState extends State<RecordWindow> {
     }
     return SelectionArea(
       child: ListView.builder(
-        key: ValueKey(_tab),
+        key: ValueKey(_showing),
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 20),
         itemCount: showing.length,
         itemBuilder: (_, i) => Blocks(
@@ -201,6 +287,67 @@ class _RecordWindowState extends State<RecordWindow> {
         ],
       );
 
+  /// What the agent on this record is doing, as it does it.
+  ///
+  /// Newest LAST and scrolled to the bottom, like a log: the question is what
+  /// it is doing now, and the answer is at the end of what it has said.
+  Widget _currentRun() {
+    if (_run.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Text('working — nothing said yet',
+            style: TextStyle(color: Colors.white38, fontSize: 12)),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_runWorkers.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 2),
+            child: Text(
+              _runWorkers
+                  .map((w) => '${w['id']}'
+                      '${w['workbench'] == null ? '' : ' · ${w['workbench']}'}')
+                  .join(', '),
+              style: const TextStyle(fontSize: 11.5, color: Colors.white38),
+            ),
+          ),
+        Expanded(
+          child: SelectionArea(
+            child: ListView.builder(
+              key: const ValueKey('run'),
+              reverse: true,
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              itemCount: _run.length,
+              // Reversed, so it sticks to the newest line without anyone
+              // having to drive a scroll controller as lines arrive.
+              itemBuilder: (_, i) => _runLine(_run[_run.length - 1 - i]),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _runLine(Map<String, dynamic> line) {
+    final tool = line['kind'] == 'tool';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: Text(
+        '${line['text']}',
+        style: TextStyle(
+          fontSize: tool ? 11.5 : 12.5,
+          height: 1.4,
+          // A tool call is what it DID; prose is what it thinks. Telling them
+          // apart at a glance is most of the value of watching at all.
+          color: tool ? const Color(0xFF8FB8D9) : Colors.white70,
+          fontFamily: tool ? 'monospace' : null,
+        ),
+      ),
+    );
+  }
+
   Widget _tabs(List<Map<String, dynamic>> history) {
     final steps =
         ((history.isEmpty ? const [] : history.first['steps'] ?? const [])
@@ -211,6 +358,13 @@ class _RecordWindowState extends State<RecordWindow> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         children: [
+          // FIRST, and only while something is running. A tab that is empty
+          // most of the time trains you to skip it; the whole value of this
+          // one is that its presence means work is happening right now.
+          if (widget.working) ...[
+            _tabButton('run', 'Current run'),
+            const SizedBox(width: 6),
+          ],
           _tabButton('details', 'Details'),
           const SizedBox(width: 6),
           _tabButton('history', 'History ($steps)'),
@@ -222,7 +376,7 @@ class _RecordWindowState extends State<RecordWindow> {
   }
 
   Widget _tabButton(String id, String label) {
-    final on = _tab == id;
+    final on = _showing == id;
     return TextButton(
       onPressed: () => setState(() => _tab = id),
       style: TextButton.styleFrom(

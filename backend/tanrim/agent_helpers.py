@@ -131,7 +131,8 @@ def resolve_room_tools(room_id: str) -> list[str]:
 # release the sprite. `run_agent` owns all of it so an agent module is just a
 # prompt, a schema, and what to do with the parsed result.
 
-import asyncio  # noqa: E402
+import asyncio
+from collections import deque  # noqa: E402
 import time  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 
@@ -178,6 +179,92 @@ _IN_FLIGHT: dict[str, dict[str, Any]] = {}
 # worker_id -> the asyncio.Task running it. Separate from `_IN_FLIGHT` because
 # that one is a payload and this one is a handle.
 _TASKS: dict[str, "asyncio.Task[Any]"] = {}
+
+
+#: worker_id -> what it has said and done this run, newest last.
+#:
+#: Deliberately NOT part of `_IN_FLIGHT`: that dict is serialised into every
+#: room-state response, so a transcript there would be re-sent on every poll of
+#: every room. And deliberately not persisted — a finished run's story is its
+#: history entry and its event, and a second copy is how the two disagree. The
+#: operator wants to see what is happening WHILE it happens; afterwards there
+#: is nothing here to see.
+_NARRATION: dict[str, "deque[dict[str, Any]]"] = {}
+
+#: Bounded, because a build can talk for eleven minutes and nobody scrolls back
+#: through a thousand lines to find out what it is doing NOW.
+NARRATION_LINES = 240
+
+
+def narrate(worker_id: str, kind: str, text: str) -> dict[str, Any]:
+    """Record one line of what a worker is doing, and hand it back to publish."""
+    line = {"ts": time.time(), "kind": kind, "text": text[:2000]}
+    _NARRATION.setdefault(
+        worker_id, deque(maxlen=NARRATION_LINES)).append(line)
+    return line
+
+
+def narration(worker_id: str) -> list[dict[str, Any]]:
+    return list(_NARRATION.get(worker_id) or ())
+
+
+def narration_for_record(record_id: str) -> dict[str, Any]:
+    """Everything being said about one record, right now.
+
+    A record can have more than one worker on it — a room at capacity hires a
+    second — so the lines are merged and tagged rather than picked from one.
+    """
+    workers = [w for w, info in _IN_FLIGHT.items()
+               if info.get("lead_id") == record_id]
+    lines: list[dict[str, Any]] = []
+    for worker in workers:
+        for line in narration(worker):
+            lines.append({**line, "agent": worker})
+    lines.sort(key=lambda entry: entry.get("ts", 0))
+    return {
+        "running": bool(workers),
+        "workers": [
+            {"id": w, "role": _IN_FLIGHT[w].get("role"),
+             "summary": _IN_FLIGHT[w].get("summary"),
+             "workbench": _IN_FLIGHT[w].get("workbench"),
+             "started_ts": _IN_FLIGHT[w].get("started_ts")}
+            for w in workers
+        ],
+        "lines": lines[-NARRATION_LINES:],
+    }
+
+
+async def _publish_line(world, worker_id: str, record_id: str | None,
+                        kind: str, text: str) -> None:
+    """Record a line and push it to anyone watching that record."""
+    if not text.strip():
+        return
+    line = narrate(worker_id, kind, text)
+    if not record_id:
+        return
+    try:
+        await world.publish({
+            "type": "run_line", "lead_id": record_id,
+            "agent": worker_id, "line": line,
+        })
+    except Exception:  # noqa: BLE001
+        # A watcher that has gone away must not end the run it was watching.
+        pass
+
+
+def _tool_line(name: Any, args: Any) -> str:
+    """A tool call as one readable line.
+
+    The arguments matter — "Write" says nothing, "Write index.html" says what
+    is happening — but a whole file's contents in a side panel says nothing
+    either, so each value is clipped.
+    """
+    bits = []
+    if isinstance(args, dict):
+        for key, value in list(args.items())[:4]:
+            shown = str(value).replace("\n", " ")
+            bits.append(f"{key}={shown[:90]}")
+    return f"{name}({', '.join(bits)})"[:600]
 
 
 def in_flight(worker_id: str) -> dict[str, Any] | None:
@@ -684,6 +771,11 @@ async def run_agent(
     # asyncio.Task is not JSON — putting it there made every room showing a
     # working agent return 500, which the panel rendered as loading forever.
     _TASKS[agent_id] = asyncio.current_task()
+    # One line straight away, so the run tab says something the moment it
+    # opens. A quiet agent — one structured call, no tools, like the screener
+    # judging a posting — streams nothing at all until its answer lands, and a
+    # panel that sits blank for forty seconds reads as broken rather than busy.
+    narrate(agent_id, "start", summary)
     # Declares which record this run belongs to, so `state.advance_record` can
     # refuse a write from a run the operator has already overtaken.
     state.RUN_CONTEXT.set({"lead_id": record_id, "started_ts": started_ts,
@@ -834,6 +926,14 @@ async def run_agent(
                         if text:
                             result.text += text
                             result.transcript.append(text)
+                            # Out to whoever is watching this record. The
+                            # transcript already accumulated here and went
+                            # nowhere until the run was over, so the one
+                            # question an operator has mid-run — what is it
+                            # doing? — was answerable only by the speech
+                            # bubble, which holds one tool name.
+                            await _publish_line(
+                                world, agent_id, record_id, "text", text)
                         # Surface tool use in the speech bubble so the dungeon
                         # actually shows what the agent is doing right now.
                         tool_name = getattr(block, "name", None)
@@ -841,6 +941,9 @@ async def run_agent(
                         if tool_name and tool_input is not None:
                             result.tool_names.append(str(tool_name))
                             await world.say(agent_id, f"{str(tool_name)[:28]}…", seconds=60)
+                            await _publish_line(
+                                world, agent_id, record_id, "tool",
+                                _tool_line(tool_name, tool_input))
                             # A report to the overseer is often where the real conclusion
                             # went — one appraisal put "margin EUR 650, confidence
                             # medium" there and ended its turn with a sentence that
@@ -856,6 +959,12 @@ async def run_agent(
                 res = getattr(message, "result", None)
                 if isinstance(res, str) and res:
                     result.text = res
+                    # The ANSWER, narrated too. An agent that makes one
+                    # structured call and uses no tools — the screener judging
+                    # a posting — says nothing in blocks, so without this its
+                    # run tab watched in silence and then closed empty.
+                    await _publish_line(
+                        world, agent_id, record_id, "result", res)
                 usage_obj = getattr(message, "usage", None)
                 if usage_obj is not None:
                     att["in"] = usage_int(usage_obj, "input_tokens")
@@ -1107,6 +1216,11 @@ async def run_agent(
         if exclusive_cwd and cwd is not None:
             buildlock.release(cwd, agent_id=role)
         _IN_FLIGHT.pop(agent_id, None)
+        # Dropped with the run. The operator asked to watch work happening,
+        # not to keep a second transcript: once it is done the history entry
+        # says what the step produced and the event says how it ended, and a
+        # third copy here is only a way for the three to disagree.
+        _NARRATION.pop(agent_id, None)
         _TASKS.pop(agent_id, None)
         lock.release()
         if agent is not None:

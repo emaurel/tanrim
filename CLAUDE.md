@@ -633,6 +633,25 @@ Flutter, `app/`. An isometric map of the world with floating windows over it.
   with the records last, so the first failure cancelled the rest.
   `api/steps.dart` runs each independently, retries once on the first connect,
   and puts what did not load in the status line.
+- **A record being worked opens on `Current run`**, first, and the tab is gone
+  when nothing is running — a tab that is empty most of the time trains you to
+  skip it. It shows what the agent is saying and doing as it happens: prose in
+  white, tool calls in monospace, because what it DID and what it thinks are
+  different questions.
+
+  The transcript already accumulated on the result object and went nowhere
+  until the run was over, so the one question an operator has mid-run was
+  answerable only by the speech bubble, which holds one tool name.
+  `agent_helpers` keeps it in `_NARRATION`, bounded and keyed by worker, and
+  pushes each line as a `run_line` frame. **Kept out of `_IN_FLIGHT`**, which
+  is serialised into every room-state response — a transcript there would be
+  re-sent on every poll of every room.
+
+  **Dropped when the run ends**, deliberately. A finished run leaves its
+  history entry and its event; a third copy is only a way for the three to
+  disagree. A quiet agent — one structured call, no tools — streams nothing
+  until its answer lands, so the run is narrated at its start too: a panel
+  that sits blank for forty seconds reads as broken rather than busy.
 - **A room with work in it breathes.** A white wash over its floor and a
   heavier, brighter edge, pulsing about every three seconds, derived from the
   agents already streamed rather than a new field. The sprite animation says

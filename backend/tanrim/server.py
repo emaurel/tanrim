@@ -475,6 +475,17 @@ async def get_run_all(castle_id: str = "") -> dict[str, Any]:
     return {"drains": drain.all_for(castle_id)}
 
 
+@app.get("/records/{record_id}/run")
+async def get_record_run(record_id: str) -> dict[str, Any]:
+    """What is being said about this record, right now.
+
+    Live only. A finished run leaves its history entry and its event; this
+    answers the question those cannot, which is what the thing is doing while
+    it is still doing it.
+    """
+    return agent_helpers.narration_for_record(record_id)
+
+
 @app.get("/plugins")
 async def get_plugins() -> dict[str, Any]:
     """What is installed, and what each one contributes.

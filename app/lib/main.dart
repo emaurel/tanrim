@@ -219,6 +219,10 @@ class _WorldPageState extends State<WorldPage> {
           if (_failed.isEmpty) {
             setState(() => _state = '${_rooms.length} rooms · live');
           }
+        case LiveKind.runLine:
+          // For an open record window only, which subscribes to the stream
+          // itself. Nothing on the map is waiting for this.
+          break;
         case LiveKind.talk:
           break;
       }
@@ -852,6 +856,7 @@ class _WorldPageState extends State<WorldPage> {
           api: _api!,
           recordId: recordId,
           working: _workingRecords(agents).contains(recordId),
+          live: _live?.events,
           // Both lists, because a hand-move is the escape hatch FROM the
           // pipeline — including into a terminal stage, which is where a
           // record goes when the answer is "stop working this".

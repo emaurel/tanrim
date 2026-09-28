@@ -98,6 +98,16 @@ class Live {
           msg['to'] as String? ?? '',
           msg['label'] as String? ?? '',
         ));
+      case 'run_line':
+        // What a running agent is saying, as it says it. Not stored here: a
+        // record window that is open wants it, and nothing else does.
+        final line = (msg['line'] as Map?)?.cast<String, dynamic>();
+        if (line != null) {
+          _controller.add(LiveEvent.runLine(
+            '${msg['lead_id'] ?? ''}',
+            {...line, 'agent': msg['agent']},
+          ));
+        }
       case 'approvals_updated':
         _controller.add(const LiveEvent.approvalsChanged());
       case 'rooms_changed':
@@ -121,6 +131,8 @@ class Live {
 }
 
 enum LiveKind {
+  /// One line of what a running agent is doing, for a record window watching.
+  runLine,
   connected,
   disconnected,
   agentsChanged,
@@ -130,7 +142,10 @@ enum LiveKind {
 }
 
 class LiveEvent {
-  const LiveEvent(this.kind, {this.from = '', this.to = '', this.label = ''});
+  const LiveEvent(this.kind,
+      {this.from = '', this.to = '', this.label = '', this.line});
+  const LiveEvent.runLine(String recordId, Map<String, dynamic> line)
+      : this(LiveKind.runLine, from: recordId, line: line);
   const LiveEvent.connected() : this(LiveKind.connected);
   const LiveEvent.disconnected() : this(LiveKind.disconnected);
   const LiveEvent.agentsChanged() : this(LiveKind.agentsChanged);
@@ -143,4 +158,7 @@ class LiveEvent {
   final String from;
   final String to;
   final String label;
+
+  /// Only on [LiveKind.runLine]: `{ts, kind, text, agent}`.
+  final Map<String, dynamic>? line;
 }
