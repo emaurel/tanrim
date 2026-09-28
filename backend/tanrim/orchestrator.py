@@ -6,6 +6,7 @@ from typing import Any
 
 from . import environment
 from . import rooms as rooms_mod
+from . import castles
 from . import state, workers
 from . import runners as _runners
 from .world import World
@@ -214,7 +215,17 @@ class Orchestrator:
             allowed_roles = state.roles_for(stage, kind)
             if not allowed_roles:
                 continue  # terminal for this kind of record
-            if role not in allowed_roles:
+            # Compared BASE to base. `role_for_stage` reads the id off a room
+            # on the map, so it answers `lens@b2e8e8`; `roles_for` comes from
+            # the transition table a plugin declared, and a plugin never sees a
+            # castle, so it answers `lens`. The two never matched and this
+            # `continue` fired for every record on every tick — automatic
+            # dispatch was dead from the day castles landed, and every run
+            # since came from an operator pressing a button.
+            #
+            # The fifth place this same mismatch has been found. It is silent
+            # every time: nothing errors, the work simply stops moving.
+            if castles.base(role) not in allowed_roles:
                 if allowed_roles == {"operator"}:
                     await self._raise_step_gate(record, stage, kind)
                 continue

@@ -402,6 +402,25 @@ A start is scoped to a castle by its `kind`, through the same map that decides
 where a record lands, so an extension's opening is offered in the castle its
 records actually go to.
 
+## The transport compares BASE roles
+
+`role_for_stage` reads the id off a room on the map, so it answers
+`lens@b2e8e8`. `roles_for` comes from the transition table a plugin declared,
+and a plugin never sees a castle, so it answers `lens`. `_advance_records`
+compared the two directly, the check failed for every record on every tick,
+and automatic dispatch was dead from the day castles landed — every run since
+came from an operator pressing a button.
+
+Measured in the real event log afterwards: 138 automatic dispatches up to that
+day, and none after it.
+
+This is the **fifth** place this one mismatch has been found — after
+`agent_runners().get(role)`, `resolve_room_tools`, a plugin agent's
+`_room_skills`, and `mcp_servers_for`. It is silent every time: nothing
+errors, no route 500s, the work simply stops moving. Anything comparing a
+role or room id against something a plugin declared must reduce it with
+`castles.base()` first.
+
 ## One dispatch per record per role
 
 Several things can dispatch the same work in the same instant — an operator
