@@ -627,10 +627,15 @@ Flutter, `app/`. An isometric map of the world with floating windows over it.
   block, so a photograph can sit in a row of facts; any picture opens full
   size on a tap, with a cross and Escape to close. The core only calls a value
   an image when it is REACHABLE — an absolute URL or a path from the root —
-  because a bare `photo-01.jpg` cannot be resolved from the core and a broken
-  image icon is worse than the filename. Turning a name into a URL is the
-  plugin's job: only it knows the file is under `photos/` in the build and
-  that `/staging/<id>/` serves it.
+  because a path cannot be resolved from the core. A leading `/` was allowed
+  once, on the reasoning that a root-relative path is reachable — but
+  `/staging/x/p.png` and `/home/edgar/.../shot.png` are the same string from
+  here, and `job_hunt` holds the second kind: the app fetched the API base
+  plus a filesystem path and put a broken image where a readable filename had
+  been, which is worse than not drawing it. Turning a path into a URL needs to
+  know where the file is SERVED from, so it belongs to the plugin that wrote
+  it — `web_agency` has `/staging/<id>/`, `job_hunt` has
+  `/applications/<id>/screenshot`.
 - **The timeline is the core's**, built from the history for every kind. A
   plugin cannot know it better and one that forgot would leave the only always-
   answerable part of a record unanswered.

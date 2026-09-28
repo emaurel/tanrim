@@ -192,22 +192,28 @@ MACHINERY = frozenset({
 _HEX = frozenset("0123456789abcdefABCDEF")
 
 
-#: Rendered as a picture rather than as its path. Only where the path is
-#: REACHABLE — an absolute URL, or a path from the server's root. A bare
-#: `photo-01.jpg` is not resolvable from here and claiming otherwise would put
-#: a broken-image icon where a filename at least told you the name.
+#: Rendered as a picture rather than as its path — and only when the core can
+#: be SURE it is fetchable, which means an absolute URL and nothing else.
+#:
+#: A leading `/` was allowed here once, on the reasoning that a root-relative
+#: path is reachable. From this side `/staging/x/photo.png` and
+#: `/home/edgar/.../screenshot.png` are the same string, and job_hunt records
+#: hold the second: the app dutifully fetched the API base plus a filesystem
+#: path, got nothing, and put a broken image where a readable filename had
+#: been. Worse than before it was drawn at all.
+#:
+#: Turning a path into a URL needs to know where the file is served from, and
+#: only the plugin that wrote it knows that. `job_hunt` has a route for its
+#: screenshots; `web_agency` has `/staging/<id>/`. Both say so themselves.
 _PICTURE = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".avif")
 
 
 def _format_of(key: str, value: Any) -> str:
     """How a value should read, guessed from it and its name."""
     if isinstance(value, str):
-        low = value.split("?")[0].lower()
-        if low.endswith(_PICTURE) and value.startswith(
-                ("http://", "https://", "/")):
-            return "image"
         if value.startswith(("http://", "https://")):
-            return "url"
+            return "image" if value.split("?")[0].lower().endswith(_PICTURE) \
+                else "url"
         if value.startswith("#") and 4 <= len(value) <= 9 \
                 and all(c in _HEX for c in value[1:]):
             return "colour"

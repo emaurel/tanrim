@@ -204,3 +204,43 @@ def test_the_kind_decides_which_plugin_answers(plugins):
     env = environment.current()
     assert env.record_view({}, "alpha")[0]["body"] == "A"
     assert env.record_view({}, "beta")[0]["body"] == "B"
+
+
+# ---------------------------------------------------------------------------
+# A path is not a URL.
+
+
+def test_a_filesystem_path_is_never_called_an_image():
+    """From the core's side `/staging/x/photo.png` and
+    `/home/edgar/.../screenshot.png` are the same string.
+
+    A leading `/` was allowed here once, on the reasoning that a root-relative
+    path is reachable. `job_hunt` records hold the second kind: the app
+    dutifully fetched the API base plus a filesystem path, got nothing, and put
+    a broken image where a readable filename had been — worse than not drawing
+    it at all.
+    """
+    from tanrim import view
+
+    for path in ("/home/edgar/state/job_hunt/screenshots/a.png",
+                 "/staging/x/photos/p.jpg",
+                 "photo-01.jpg",
+                 "state/sites/x/photos/p.webp"):
+        assert view._format_of("shot", path) == "text", path
+
+
+def test_only_an_absolute_url_to_a_picture_is_an_image():
+    from tanrim import view
+
+    assert view._format_of("k", "https://x.test/a.jpg") == "image"
+    assert view._format_of("k", "http://x.test/a.PNG") == "image"
+    assert view._format_of("k", "https://x.test/a.png?v=2") == "image"
+    # A URL that is not a picture is still a link.
+    assert view._format_of("k", "https://x.test/page") == "url"
+
+
+def test_image_is_a_declared_format():
+    """The app switches on it; an undeclared format is one nobody validates."""
+    from tanrim import view
+
+    assert "image" in view.FORMATS
