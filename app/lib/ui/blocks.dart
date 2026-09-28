@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'lightbox.dart';
+
 import '../model/record.dart';
 
 /// Draws the blocks a record's view is made of.
@@ -49,7 +51,10 @@ class Blocks extends StatelessWidget {
       'fields' => _titled(title, _fields(b)),
       'list' => _titled(title, _list(b)),
       'table' => _titled(title, _table(b)),
-      'images' => _titled(title, _images(b)),
+      // Open, like the timeline. Collapsed, an images block is a heading
+      // that says "Photographs (11)" — which is the count and nothing else,
+      // and the whole value of a photograph is seeing it.
+      'images' => _titled(title, _images(b), open: true),
       // Open. The history has a tab to itself, so there is nothing for
       // folding it to reveal — closed, that tab is one grey heading and the
       // click to open it is the only thing you can do there.
@@ -175,6 +180,10 @@ class Blocks extends StatelessWidget {
           ),
           Text(text, style: style),
         ]),
+      // A value the server called an image. Shown, because a path is the one
+      // thing in a dossier you cannot read: the point of a photograph is what
+      // is in it.
+      'image' => _thumb(text),
       'money' => Text(_money(value), style: style),
       'bytes' => Text(_bytes(value), style: style),
       'datetime' => Text(
@@ -184,6 +193,28 @@ class Blocks extends StatelessWidget {
       _ => Text(text, style: style),
     };
   }
+
+  /// One image sitting in a row of facts, rather than in an images block.
+  ///
+  /// Small, because it is inline in a table of values and a full-width picture
+  /// there would push everything else off the screen. Tapping it opens the
+  /// real thing.
+  Widget _thumb(String url) => Align(
+        alignment: Alignment.centerLeft,
+        child: _Tappable(
+          url: url,
+          caption: '',
+          child: Image.network(
+            url,
+            height: 64,
+            fit: BoxFit.contain,
+            errorBuilder: (_, _, _) => Text(
+              url,
+              style: const TextStyle(fontSize: 12.5, color: Colors.white54),
+            ),
+          ),
+        ),
+      );
 
   /// The citation marker.
   ///
@@ -332,8 +363,9 @@ class Blocks extends StatelessWidget {
         SizedBox(
           width: 130,
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(5),
+            _Tappable(
+              url: '${i['url']}',
+              caption: '${i['caption'] ?? ''}',
               child: Image.network(
                 '${i['url']}',
                 height: 88,
@@ -646,4 +678,27 @@ class _CollapsibleState extends State<Collapsible> {
       child: body,
     );
   }
+}
+
+
+/// A picture you can open. Rounded, and it says so on hover.
+class _Tappable extends StatelessWidget {
+  const _Tappable({required this.url, required this.caption,
+                   required this.child});
+
+  final String url;
+  final String caption;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: () => showPicture(context, url, caption: caption),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(5),
+            child: child,
+          ),
+        ),
+      );
 }

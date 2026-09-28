@@ -623,6 +623,14 @@ Flutter, `app/`. An isometric map of the world with floating windows over it.
   its own schedule.
 - **`source` is a property of a row**, not a block, so a renderer can mark
   which facts are cited without being told what the record is.
+- **A picture is drawn, not spelled out.** `image` is a value FORMAT, not a
+  block, so a photograph can sit in a row of facts; any picture opens full
+  size on a tap, with a cross and Escape to close. The core only calls a value
+  an image when it is REACHABLE — an absolute URL or a path from the root —
+  because a bare `photo-01.jpg` cannot be resolved from the core and a broken
+  image icon is worse than the filename. Turning a name into a URL is the
+  plugin's job: only it knows the file is under `photos/` in the build and
+  that `/staging/<id>/` serves it.
 - **The timeline is the core's**, built from the history for every kind. A
   plugin cannot know it better and one that forgot would leave the only always-
   answerable part of a record unanswered.

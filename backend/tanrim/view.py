@@ -57,7 +57,10 @@ BLOCKS = (
 #: How a single value should read. Not block types: a colour swatch and a byte
 #: count are the same ROW with different formatting, and making them blocks
 #: would be two more renderers to keep.
-FORMATS = ("text", "money", "bytes", "colour", "url", "datetime", "percent")
+FORMATS = ("text", "money", "bytes", "colour", "url", "datetime", "percent",
+           # A picture, drawn rather than spelled out. The app opens it full
+           # size on a tap; an unreachable one falls back to its path.
+           "image")
 
 
 def section(title: str, children: list[dict], note: str = "") -> dict:
@@ -189,9 +192,20 @@ MACHINERY = frozenset({
 _HEX = frozenset("0123456789abcdefABCDEF")
 
 
+#: Rendered as a picture rather than as its path. Only where the path is
+#: REACHABLE — an absolute URL, or a path from the server's root. A bare
+#: `photo-01.jpg` is not resolvable from here and claiming otherwise would put
+#: a broken-image icon where a filename at least told you the name.
+_PICTURE = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".avif")
+
+
 def _format_of(key: str, value: Any) -> str:
     """How a value should read, guessed from it and its name."""
     if isinstance(value, str):
+        low = value.split("?")[0].lower()
+        if low.endswith(_PICTURE) and value.startswith(
+                ("http://", "https://", "/")):
+            return "image"
         if value.startswith(("http://", "https://")):
             return "url"
         if value.startswith("#") and 4 <= len(value) <= 9 \
