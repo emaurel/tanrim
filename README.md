@@ -19,6 +19,13 @@ Built on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk).
 ![A castle's eleven rooms, each with the worker that staffs it. Two are
 working; two carry an approval badge.](docs/img/world.png)
 
+Pull back and the labels go, because at that distance they are grey fuzz over
+the thing you are looking at — but the layout stays, and so do the badges. Two
+castles here, on their plots, with the empty land around them.
+
+![Two castles seen from above, each a cluster of coloured rooms on its own
+plot, with empty plots around them.](docs/img/estate.png)
+
 <table>
 <tr>
 <td><img src="docs/img/castle.png" alt="A castle's window: what it is an
@@ -36,8 +43,9 @@ of work.</td>
 </tr>
 </table>
 
-Rendered from the real widgets by `cd app && tool/screenshots.sh`, so
-re-running it is the whole job of keeping them true. The rooms are a real dump
+All four are rendered from the real widgets by `cd app && tool/screenshots.sh`,
+so re-running it is the whole job of keeping them true — a screenshot taken by
+hand is taken once, at whatever zoom, and goes stale the moment the UI moves. The rooms are a real dump
 of a running server; the businesses on the board are invented.
 
 ## What you get

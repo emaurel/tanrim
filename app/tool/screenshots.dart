@@ -261,6 +261,7 @@ void main() {
   //
   // So `screenshots.sh` runs this file three times, naming one shot each, and
   // each run writes its file and exits. Compiling is cached after the first.
+  testWidgets('estate', (t) async => _leave(await _shotEstate(t)));
   testWidgets('world', (t) async => _leave(await _shotWorld(t)));
   testWidgets('record', (t) async => _leave(await _shotRecord(t)));
   testWidgets('castle', (t) async => _leave(await _shotCastle(t)));
@@ -271,6 +272,45 @@ Never _leave(void _) {
   // ignore: avoid_print
   print(_written == 1 ? 'ok' : 'NOTHING WAS WRITTEN');
   exit(_written == 1 ? 0 : 1);
+}
+
+/// Both castles at once, from far enough back that the rooms are a layout
+/// rather than a set of labels.
+///
+/// The step the other shots skip. `world` is one castle close enough to read,
+/// and the estate view is one block per castle — this is between them, and it
+/// is the distance the map is actually used from: you can see which castles
+/// exist, how each is laid out, and which rooms are lit, without any of it
+/// being legible. The empty plots around them are the point as much as the
+/// castles are: the world is a place with room in it.
+Future<void> _shotEstate(WidgetTester t) async {
+    final rooms = _rooms();
+    final castles = _castles(rooms);
+    final key = GlobalKey<MapViewState>();
+    await _shoot(
+      t,
+      'estate',
+      MapView(
+        key: key,
+        rooms: rooms,
+        agents: _agents(rooms, working: {
+          for (final r in rooms)
+            if (r.baseId == 'factory') r.id: 'building…'
+              else if (r.baseId == 'screening') r.id: 'reading…',
+        }),
+        badges: {rooms[6].id: 2, rooms[9].id: 1},
+        castles: castles,
+        web: const Web(),
+        taken: _taken(castles),
+        onRoomTapped: (_) {},
+      ),
+      size: const Size(1920, 1360),
+      cropBottom: 390,
+      frameOn: key,
+      // Framed on EVERY room rather than one castle's, so the box covers the
+      // whole estate and `flyToCastle` pulls back far enough to hold both.
+      castle: _framing(castles.first, rooms),
+    );
 }
 
 Future<void> _shotWorld(WidgetTester t) async {
