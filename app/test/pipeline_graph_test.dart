@@ -54,6 +54,7 @@ Future<void> _pump(WidgetTester t, Widget w) async {
 }
 
 void main() {
+  _longTests();
   testWidgets('it draws, from the server rather than from a hand-drawn map',
       (t) async {
     // `docs/pipeline.html` was a diagram somebody maintained, and it went
@@ -106,4 +107,73 @@ class _Broken extends Api {
   @override
   Future<dynamic> get(String path) async => throw ApiError('/pipeline', 500,
       '{"detail": "nope"}');
+}
+
+/// The web agency's prospect pipeline: sixteen stages, and the reason the
+/// floor mattered — about 1,770px of canvas in a panel half that tall.
+class _Long extends Api {
+  _Long() : super('http://127.0.0.1:1');
+  static const _stages = [
+    'sourced', 'qualified', 'enriched', 'appraised', 'needs_review',
+    'visualised', 'built', 'qa_failed', 'qa_passed', 'published', 'drafted',
+    'contacted', 'replied', 'won',
+  ];
+
+  @override
+  Future<dynamic> get(String path) async => {
+        'kinds': const ['prospect'],
+        'stages': _stages,
+        'dead_stages': const ['lost', 'disqualified'],
+        'steps': [
+          for (var i = 0; i < _stages.length; i++)
+            {
+              'stage': _stages[i], 'role': 'probe', 'room_name': 'Assay',
+              'waiting': 0, 'gated': false,
+              'outcomes': [
+                {'to': i + 1 < _stages.length ? _stages[i + 1] : 'won',
+                 'kind': 'forward'},
+                {'to': 'lost', 'kind': 'reject'},
+              ],
+            },
+        ],
+      };
+}
+
+void _longTests() {
+  testWidgets('a long pipeline opens at a zoom that shows the whole shape',
+      (t) async {
+    // Sixteen stages is about 1,770px of canvas. Opening at 1.0 showed the
+    // first three and an arrow leaving the frame; the old floor of 0.4 could
+    // not reach the bottom either. The question this tab answers is what the
+    // shape IS.
+    await t.pumpWidget(MaterialApp(
+      theme: ThemeData.dark(),
+      home: Scaffold(
+          body: SizedBox(
+              width: 420, height: 520,
+              child: PipelineGraph(api: _Long(), castleId: 'c1'))),
+    ));
+    for (var i = 0; i < 8; i++) {
+      await t.pump(const Duration(milliseconds: 40));
+    }
+
+    final viewer = t.widget<InteractiveViewer>(find.byType(InteractiveViewer));
+    // m00, not `getMaxScaleOnAxis` — that takes the largest of the three
+    // axes and z stays 1 in a 2D transform, so it reports 1.0 however far the
+    // picture is actually scaled.
+    final scale = viewer.transformationController!.value.entry(0, 0);
+    final painted = t.widget<CustomPaint>(
+        find.descendant(of: find.byType(InteractiveViewer),
+                        matching: find.byType(CustomPaint)).first);
+    final canvas = painted.size;
+
+    expect(canvas.height, greaterThan(1400), reason: 'not a long pipeline');
+    // It fits, with a little air.
+    expect(canvas.height * scale, lessThanOrEqualTo(520));
+    expect(scale, greaterThan(viewer.minScale),
+        reason: 'it opened pinned against the floor');
+    // And the floor is below what fitting needed, so there is room to go out
+    // further by hand.
+    expect(viewer.minScale, lessThan(scale));
+  });
 }

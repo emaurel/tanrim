@@ -29,6 +29,17 @@ class _PipelineGraphState extends State<PipelineGraph> {
   bool _loading = true;
   String _problem = '';
 
+  /// How far out it is allowed to go, and where it opened.
+  static const _floor = 0.08;
+  double? _fitted;
+  TransformationController? _view;
+
+  @override
+  void dispose() {
+    _view?.dispose();
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -46,6 +57,11 @@ class _PipelineGraphState extends State<PipelineGraph> {
         _kinds = kinds;
         if (_kind.isEmpty && kinds.isNotEmpty) _kind = kinds.first;
         _graph = _Graph.from(d);
+        // A different kind is a different shape, so it is re-fitted rather
+        // than inheriting the last one's zoom.
+        _fitted = null;
+        _view?.dispose();
+        _view = null;
         _loading = false;
         _problem = '';
       });
@@ -107,16 +123,32 @@ class _PipelineGraphState extends State<PipelineGraph> {
         Expanded(
           // Both ways, because a pipeline is taller than a panel and a branch
           // is wider than one.
-          child: InteractiveViewer(
-            constrained: false,
-            minScale: 0.4,
-            maxScale: 2.5,
-            boundaryMargin: const EdgeInsets.all(80),
-            child: CustomPaint(
-              size: g.canvas,
-              painter: _GraphPainter(g),
-            ),
-          ),
+          child: LayoutBuilder(builder: (_, box) {
+            // Opened at whatever fits. The web agency's prospect pipeline is
+            // sixteen stages and about 1,770px tall; in a panel half that, a
+            // floor of 0.4 could not reach the bottom of it and opening at 1.0
+            // showed the first three stages and an arrow leaving the frame.
+            // The question the tab answers is what the shape IS, so the shape
+            // is what it opens on.
+            final fit = math.min(box.maxWidth / g.canvas.width,
+                                 box.maxHeight / g.canvas.height);
+            _fitted ??= (math.min(fit, 1.0) * 0.96).clamp(_floor, 1.0);
+            return InteractiveViewer(
+              transformationController: _view ??= TransformationController(
+                  Matrix4.identity()..scaleByDouble(_fitted!, _fitted!, 1, 1)),
+              constrained: false,
+              // Low enough to hold a pipeline twice the length of any declared
+              // today, because a plugin declares its own and this should not
+              // be the thing that stops it being read.
+              minScale: _floor,
+              maxScale: 2.5,
+              boundaryMargin: const EdgeInsets.all(400),
+              child: CustomPaint(
+                size: g.canvas,
+                painter: _GraphPainter(g),
+              ),
+            );
+          }),
         ),
       ],
     );
