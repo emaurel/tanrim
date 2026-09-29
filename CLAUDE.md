@@ -676,6 +676,16 @@ Flutter, `app/`. An isometric map of the world with floating windows over it.
   disagree. A quiet agent — one structured call, no tools — streams nothing
   until its answer lands, so the run is narrated at its start too: a panel
   that sits blank for forty seconds reads as broken rather than busy.
+- **The pipeline draws itself.** A tab on the castle window renders the graph
+  from `/pipeline` — stages as nodes, transitions as edges, with what is
+  waiting at each and which agent works it. Nothing maintains it:
+  `docs/pipeline.html` was a hand-drawn diagram that went stale the week a
+  stage was added and then sat there describing a machine that no longer
+  existed. Depth comes from the DECLARED stage order rather than from a
+  longest path, because the graph has CYCLES — a rejection sending a record
+  back is a real edge, and relaxing over one ping-pongs, each pass pushing
+  both ends a row further down. A back edge is simply an edge that points
+  upwards.
 - **A room with work in it breathes.** A white wash over its floor and a
   heavier, brighter edge, pulsing about every three seconds, derived from the
   agents already streamed rather than a new field. The sprite animation says

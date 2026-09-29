@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api/client.dart';
 import '../model/castle.dart';
 import 'castle_gates.dart';
+import 'pipeline_graph.dart';
 import 'castle_settings.dart';
 import 'start_form.dart';
 import '../model/record.dart';
@@ -204,6 +205,7 @@ class _CastlePanelState extends State<CastlePanel> {
       // flight, so this is simply the first tab.
       if (widget.api != null) 'start',
       'rooms',
+      if (widget.api != null) 'pipeline',
       if (widget.api != null) 'gates',
       if (widget.api != null) 'settings',
     ];
@@ -243,6 +245,7 @@ class _CastlePanelState extends State<CastlePanel> {
       ...work.keys,
       if (widget.api != null) 'start',
       'rooms',
+      if (widget.api != null) 'pipeline',
       if (widget.api != null) 'gates',
       if (widget.api != null) 'settings',
     ];
@@ -264,6 +267,7 @@ class _CastlePanelState extends State<CastlePanel> {
                   switch (id) {
                     'settings' => 'Settings',
                     'gates' => 'Gates',
+                    'pipeline' => 'Pipeline',
                     'start' => 'Start',
                     'rooms' => 'Rooms (${_mine.length})',
                     'working' => 'Working (${flight.length})',
@@ -299,6 +303,9 @@ class _CastlePanelState extends State<CastlePanel> {
           onStarted: widget.onChanged ?? () {},
         ),
       );
+    }
+    if (_showing == 'pipeline') {
+      return PipelineGraph(api: widget.api!, castleId: c.id);
     }
     if (_showing == 'gates') {
       // The kinds come from `/pipeline`, which answers with the ones this
