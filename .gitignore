@@ -73,3 +73,7 @@ app/android/.gradle/
 # shape — which is exactly the arrangement where the wrong one gets added.
 plugins/*/profile/profile.yaml
 plugins/*/profile/*.pdf
+
+# The zoom-out gif's individual frames. The gif is committed; forty-four PNGs
+# of the same thing are not, and `tool/zoomout.sh` regenerates them.
+docs/img/zoomout/

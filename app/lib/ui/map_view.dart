@@ -142,6 +142,26 @@ class MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
   @visibleForTesting
   double get debugZoom => _zoom;
 
+  /// For tests: put the camera somewhere, without flying there.
+  ///
+  /// `flyToCastle` is the only other way in and it eases over a fixed
+  /// duration, which is right for a click and wrong for rendering a sequence
+  /// of frames at zooms you choose — the README's zoom-out is forty frames on
+  /// a geometric curve, and easing each one separately would fight it.
+  ///
+  /// `on` centres the camera on a point in TILE space, so a caller can say
+  /// "this room" without doing the projection itself.
+  @visibleForTesting
+  void debugSetView({double? zoom, Offset? on}) {
+    setState(() {
+      if (zoom != null) _zoom = zoom;
+      if (on != null) {
+        final centre = _iso.toScreen(on.dx, on.dy);
+        _camera = Offset(-centre.dx * _zoom, -centre.dy * _zoom);
+      }
+    });
+  }
+
   /// For tests: whether a camera move is in flight.
   @visibleForTesting
   bool get debugFlying => _flight != null;

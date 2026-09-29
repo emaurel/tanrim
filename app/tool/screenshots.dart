@@ -92,6 +92,48 @@ Widget _app(Widget child) => MaterialApp(
     );
 
 /// Everything under one `RepaintBoundary`, captured at 2x.
+/// The boundary the frame grabs come out of, kept so `_grab` can find it.
+final _boundary = GlobalKey();
+
+/// Put a widget on screen at a fixed size, without capturing anything.
+///
+/// Split out of `_shoot` for the zoom-out, which mounts ONCE and then captures
+/// forty-four times — remounting per frame would restart the sprite animation
+/// and the gif would show the same stride over and over.
+Future<void> _mount(WidgetTester t, Widget body, Size size) async {
+  t.view
+    ..physicalSize = size
+    ..devicePixelRatio = 1.0;
+  addTearDown(t.view.reset);
+  await t.pumpWidget(_app(RepaintBoundary(
+    key: _boundary,
+    child: ColoredBox(color: const Color(0xFF12141A), child: body),
+  )));
+  for (var i = 0; i < 4; i++) {
+    await t.pump(const Duration(milliseconds: 60));
+  }
+}
+
+/// One frame to a file, at 1x. The gif is a gif; two-times it and the palette
+/// quantisation costs more than the detail is worth.
+///
+/// Captured with `toImageSync` and encoded inside `runAsync`. A plain
+/// `await boundary.toImage(...)` works exactly once here and then deadlocks:
+/// the map's ticker reschedules itself every frame so the binding never
+/// reaches idle, and the second capture waits for a frame the test clock will
+/// not produce. `runAsync` steps outside the fake clock for the encode, which
+/// is the part that actually needs real time.
+Future<void> _grab(WidgetTester t, String path, Size size) async {
+  final boundary =
+      _boundary.currentContext!.findRenderObject() as RenderRepaintBoundary;
+  final image = boundary.toImageSync(pixelRatio: 1.0);
+  await t.runAsync(() async {
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    File(path).writeAsBytesSync(bytes!.buffer.asUint8List(), flush: true);
+  });
+  image.dispose();
+}
+
 Future<void> _shoot(WidgetTester t, String name, Widget body,
     {Size size = const Size(1280, 800),
     int settle = 0,
@@ -261,6 +303,7 @@ void main() {
   //
   // So `screenshots.sh` runs this file three times, naming one shot each, and
   // each run writes its file and exits. Compiling is cached after the first.
+  testWidgets('zoomout', (t) async => _leave(await _zoomOut(t)));
   testWidgets('web', (t) async => _leave(await _shotWeb(t)));
   testWidgets('estate', (t) async => _leave(await _shotEstate(t)));
   testWidgets('world', (t) async => _leave(await _shotWorld(t)));
@@ -273,6 +316,82 @@ Never _leave(void _) {
   // ignore: avoid_print
   print(_written == 1 ? 'ok' : 'NOTHING WAS WRITTEN');
   exit(_written == 1 ? 0 : 1);
+}
+
+/// Every frame of the README's zoom-out, as numbered PNGs.
+///
+/// One continuous pull from a bench you can read to the whole web, because the
+/// three still images show the ends and the middle and none of them shows that
+/// it is ONE map. The steps where rooms give way to layouts and layouts give
+/// way to blocks are the interesting part, and a still cannot have both sides
+/// of a threshold in it.
+///
+/// Geometric, not linear: zoom is a multiplier, so equal STEPS look like an
+/// accelerating rush and equal RATIOS look like steady travel.
+///
+/// The frames are assembled into a gif by `tool/zoomout.sh`, which is a
+/// separate step because Flutter cannot write one and Pillow can.
+Future<void> _zoomOut(WidgetTester t) async {
+    final rooms = _rooms();
+    final castles = _castles(rooms);
+    final agency = castles.firstWhere((c) => c.pluginId == 'web_agency');
+    final mine = rooms.where((r) => r.castleId == agency.id).toList();
+    // The Factory, because it is the room with something happening in it.
+    final start = mine.firstWhere((r) => r.baseId == 'factory',
+        orElse: () => mine.first);
+    final on = Offset(start.position.x + start.size.x / 2,
+                      start.position.y + start.size.y / 2);
+
+    final key = GlobalKey<MapViewState>();
+    const size = Size(960, 760);
+    await _mount(
+      t,
+      MapView(
+        key: key,
+        rooms: rooms,
+        agents: _agents(rooms, working: {
+          for (final r in rooms)
+            if (r.baseId == 'factory') r.id: 'building…'
+              else if (r.baseId == 'screening') r.id: 'reading…',
+        }),
+        badges: {mine[6].id: 2, mine[8].id: 1},
+        castles: castles,
+        web: const Web(),
+        taken: _taken(castles),
+        onRoomTapped: (_) {},
+      ),
+      size,
+    );
+
+    const frames = 44;
+    const from = 1.35;          // a bench is legible
+    const to = 0.016;           // the whole web, edges in shot
+    final dir = Directory('${_out.path}/zoomout');
+    if (dir.existsSync()) dir.deleteSync(recursive: true);
+    dir.createSync(recursive: true);
+
+    for (var i = 0; i < frames; i++) {
+      final k = i / (frames - 1);
+      final zoom = from * math.pow(to / from, k);
+      // Drift from the room to the hub as it recedes. Staying locked to the
+      // room is the literal reading of "zoom out from here", and it ends with
+      // the whole web shoved into a corner — the thing you pulled back to see
+      // is not centred on the thing you started from.
+      final at = Offset.lerp(on, Offset.zero, k * k)!;
+      // This file is run by `flutter test` but lives in `tool/`, which the
+      // analyzer does not count as a test — same reason `avoid_print` is
+      // ignored above.
+      // ignore: invalid_use_of_visible_for_testing_member
+      key.currentState!.debugSetView(zoom: zoom.toDouble(), on: at);
+      // Two pumps: one to apply the camera, one to let the sprites advance so
+      // the figures are not frozen mid-stride for the whole gif.
+      await t.pump(const Duration(milliseconds: 40));
+      await t.pump(const Duration(milliseconds: 40));
+      await _grab(t, '${dir.path}/${i.toString().padLeft(3, '0')}.png', size);
+    }
+    // ignore: avoid_print
+    print('wrote $frames frames to ${dir.path}');
+    _written++;
 }
 
 /// The whole web, from far enough out that a castle is one block.

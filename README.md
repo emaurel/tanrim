@@ -16,6 +16,13 @@ nothing to do, which is the correct empty state rather than an error.
 
 Built on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk).
 
+![Zooming out from the Factory floor to the whole web: rooms and sprites give
+way to a castle's layout, then to one named block per castle on rings of empty
+plots.](docs/img/zoomout.gif)
+
+The three steps, still: a room close enough to read, both castles as layouts,
+and the whole web.
+
 ![A castle's eleven rooms, each with the worker that staffs it. Two are
 working; two carry an approval badge.](docs/img/world.png)
 
@@ -50,8 +57,10 @@ of work.</td>
 </tr>
 </table>
 
-All five are rendered from the real widgets by `cd app && tool/screenshots.sh`,
-so re-running it is the whole job of keeping them true — a screenshot taken by
+All five are rendered from the real widgets by `cd app && tool/screenshots.sh`
+— and the gif by `tool/zoomout.sh`, from the same fixtures and the same
+widgets, so it cannot drift from the stills — so re-running them is the whole
+job of keeping them true — a screenshot taken by
 hand is taken once, at whatever zoom, and goes stale the moment the UI moves. The rooms are a real dump
 of a running server; the businesses on the board are invented.
 
