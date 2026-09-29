@@ -26,6 +26,13 @@ castles here, on their plots, with the empty land around them.
 ![Two castles seen from above, each a cluster of coloured rooms on its own
 plot, with empty plots around them.](docs/img/estate.png)
 
+Keep going and a castle becomes one block with its name and what is in it. The
+plots sit on rings around a hub — ring `n` holds `6n` — so the world has room
+for hundreds of these, and what you are looking at is two.
+
+![The whole web of plots, an ellipse of empty land, with two named castles at
+its centre.](docs/img/web.png)
+
 <table>
 <tr>
 <td><img src="docs/img/castle.png" alt="A castle's window: what it is an
@@ -43,7 +50,7 @@ of work.</td>
 </tr>
 </table>
 
-All four are rendered from the real widgets by `cd app && tool/screenshots.sh`,
+All five are rendered from the real widgets by `cd app && tool/screenshots.sh`,
 so re-running it is the whole job of keeping them true — a screenshot taken by
 hand is taken once, at whatever zoom, and goes stale the moment the UI moves. The rooms are a real dump
 of a running server; the businesses on the board are invented.
