@@ -271,9 +271,14 @@ void main() {
         }),
       ]);
       expect(caughtException(), isNull, reason: 'opening the castle threw');
-      expect(find.text('Settings'), findsOneWidget);
       expect(find.text('Rooms (2)'), findsOneWidget);
       expect(find.text('prospect (1)'), findsOneWidget);
+      // The tabs scroll horizontally, and there are enough of them now that
+      // the last one is not built until it is on screen. Dragging to it is
+      // what an operator does too.
+      await t.drag(find.text('Rooms (2)'), const Offset(-260, 0));
+      await t.pumpAndSettle();
+      expect(find.text('Settings'), findsOneWidget);
     });
 
     testWidgets('and it is last', (t) async {
