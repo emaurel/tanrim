@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.."
 out=../docs/img
 mkdir -p "$out"
 fail=0
-for shot in web estate world record castle; do
+for shot in world record castle; do
   printf '%-8s ' "$shot"
   rm -f "$out/$shot.png"
   flutter test tool/screenshots.dart --plain-name "$shot" \

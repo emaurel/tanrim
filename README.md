@@ -20,25 +20,13 @@ Built on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk).
 way to a castle's layout, then to one named block per castle on rings of empty
 plots.](docs/img/zoomout.gif)
 
-The three steps, still: a room close enough to read, both castles as layouts,
-and the whole web.
+Three zoom steps, and the labels go as you pull back because at that distance
+they are grey fuzz over the thing you are looking at. The plots sit on rings
+around a hub — ring `n` holds `6n` — so the world has room for hundreds of
+castles, and what you are looking at is two.
 
 ![A castle's eleven rooms, each with the worker that staffs it. Two are
 working; two carry an approval badge.](docs/img/world.png)
-
-Pull back and the labels go, because at that distance they are grey fuzz over
-the thing you are looking at — but the layout stays, and so do the badges. Two
-castles here, on their plots, with the empty land around them.
-
-![Two castles seen from above, each a cluster of coloured rooms on its own
-plot, with empty plots around them.](docs/img/estate.png)
-
-Keep going and a castle becomes one block with its name and what is in it. The
-plots sit on rings around a hub — ring `n` holds `6n` — so the world has room
-for hundreds of these, and what you are looking at is two.
-
-![The whole web of plots, an ellipse of empty land, with two named castles at
-its centre.](docs/img/web.png)
 
 <table>
 <tr>
