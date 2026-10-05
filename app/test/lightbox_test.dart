@@ -12,6 +12,7 @@ Future<void> _pump(WidgetTester t, Widget child) async {
 }
 
 void main() {
+  _layoutTests();
   testWidgets('a picture opens full size with a cross to close it', (t) async {
     await _pump(t, Builder(
       builder: (c) => TextButton(
@@ -101,5 +102,42 @@ void main() {
     }]));
     expect(find.text('Garage Il Primo'), findsOneWidget);
     expect(find.byType(Image), findsNothing);
+  });
+}
+
+void _layoutTests() {
+  group('a tall picture', () {
+    const window = Size(1200, 800);
+
+    test('a filled form takes the full width and runs off the bottom', () {
+      // 1,280 by 4,228 — a real one. Fitted, that is a sliver of illegible
+      // grey, and the zoom was trapped inside the sliver.
+      final laid = layFor(1280 / 4228, window);
+      expect(laid.width, window.width);
+      expect(laid.height, greaterThan(window.height * 3));
+    });
+
+    test('an ordinary photograph is fitted inside the frame', () {
+      // 16:9 in a 3:2 window is WIDTH-limited: 1200 across, 675 down.
+      final laid = layFor(1600 / 900, window);
+      expect(laid.width, window.width);
+      expect(laid.height, lessThanOrEqualTo(window.height));
+    });
+
+    test('a little taller than the frame is still fitted, not scrolled', () {
+      // A square in a landscape window does not want to be scrolled.
+      final laid = layFor(1.0, window);
+      expect(laid.height, lessThanOrEqualTo(window.height));
+    });
+
+
+
+    test('the shape is never distorted', () {
+      for (final a in [0.3, 0.75, 1.0, 1.78, 3.0]) {
+        final laid = layFor(a, window);
+        expect(laid.width / laid.height, closeTo(a, 1e-9),
+            reason: 'aspect $a came out stretched');
+      }
+    });
   });
 }

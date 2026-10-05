@@ -52,27 +52,20 @@ class _Picture extends StatelessWidget {
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               ConstrainedBox(
                 constraints: BoxConstraints(
-                  maxWidth: size.width * 0.9,
-                  maxHeight: size.height * (caption.isEmpty ? 0.9 : 0.82),
+                  maxWidth: size.width * 0.94,
+                  maxHeight: size.height * (caption.isEmpty ? 0.92 : 0.84),
                 ),
-                child: InteractiveViewer(
-                  maxScale: 6,
-                  child: Image.network(
-                    url,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, _, _) => const Padding(
-                      padding: EdgeInsets.all(40),
-                      child: Text('that picture is not there any more',
-                          style: TextStyle(color: Colors.white54)),
-                    ),
-                    loadingBuilder: (_, child, progress) => progress == null
-                        ? child
-                        : const Padding(
-                            padding: EdgeInsets.all(60),
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                  ),
-                ),
+                // Sized to the picture's own shape, and panned rather than
+                // fitted.
+                //
+                // A filled application form is 1,280 by 4,228. `BoxFit.contain`
+                // fits the HEIGHT of that into a landscape window, so the width
+                // collapses to a sliver of illegible grey — and `constrained`
+                // kept the zoom inside that sliver, so magnifying it did not
+                // help either. A tall picture wants to be read at full width
+                // and scrolled, which is how it was read on the site it came
+                // from.
+                child: _Panned(url: url),
               ),
               if (caption.isNotEmpty)
                 Padding(
@@ -106,5 +99,122 @@ class _Picture extends StatelessWidget {
         ),
       ]),
     );
+  }
+}
+
+
+/// How big to draw a picture of this shape in a frame of this size.
+///
+/// A picture TALLER than the frame takes the frame's full width and runs off
+/// the bottom, where panning reaches it. Anything else is fitted.
+///
+/// A filled application form is 1,280 by 4,228. Fitted into a landscape
+/// window that means fitting its HEIGHT, so the width collapses to a sliver of
+/// illegible grey — and the zoom was trapped inside that sliver, so magnifying
+/// it did not help either. Full width and scrolled is how the form was read on
+/// the site it came from.
+//: Past this much taller than the frame, a picture is better read at full
+//: width and scrolled than shrunk to fit. Below it, fitting is still kinder —
+//: a square in a landscape window does not want to be scrolled.
+const _tallerThanWorthFitting = 1.6;
+
+@visibleForTesting
+Size layFor(double aspect, Size box) {
+  // Full width first: for anything WIDER than the frame this is the fit, and
+  // for anything taller it is the readable choice.
+  final atFullWidth = box.width / aspect;
+  if (atFullWidth <= box.height) return Size(box.width, atFullWidth);
+  if (atFullWidth > box.height * _tallerThanWorthFitting) {
+    return Size(box.width, atFullWidth);
+  }
+  // Only a little taller than the frame — fit it, and no scrolling.
+  return Size(box.height * aspect, box.height);
+}
+
+/// A picture at its own proportions, pannable and zoomable past the frame.
+class _Panned extends StatefulWidget {
+  const _Panned({required this.url});
+
+  final String url;
+
+  @override
+  State<_Panned> createState() => _PannedState();
+}
+
+class _PannedState extends State<_Panned> {
+  ImageStreamListener? _listener;
+  ImageStream? _stream;
+  double? _aspect;
+  Object? _failed;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // The intrinsic size, because the layout depends on it: a wide picture is
+    // fitted and a tall one is read at full width, and `BoxFit` alone cannot
+    // tell them apart.
+    final provider = NetworkImage(widget.url);
+    final stream = provider.resolve(createLocalImageConfiguration(context));
+    if (stream.key == _stream?.key) return;
+    _drop();
+    _stream = stream;
+    _listener = ImageStreamListener(
+      (info, _) {
+        if (!mounted) return;
+        setState(() => _aspect = info.image.width / info.image.height);
+      },
+      onError: (e, _) {
+        if (mounted) setState(() => _failed = e);
+      },
+    );
+    stream.addListener(_listener!);
+  }
+
+  void _drop() {
+    if (_stream != null && _listener != null) {
+      _stream!.removeListener(_listener!);
+    }
+    _stream = null;
+    _listener = null;
+  }
+
+  @override
+  void dispose() {
+    _drop();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_failed != null) {
+      return const Padding(
+        padding: EdgeInsets.all(40),
+        child: Text('that picture is not there any more',
+            style: TextStyle(color: Colors.white54)),
+      );
+    }
+    final aspect = _aspect;
+    if (aspect == null) {
+      return const Padding(
+        padding: EdgeInsets.all(60),
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    return LayoutBuilder(builder: (_, box) {
+      final laid = layFor(aspect, Size(box.maxWidth, box.maxHeight));
+      return InteractiveViewer(
+        // Unconstrained, so a zoom is not trapped inside the frame the
+        // picture was fitted into.
+        constrained: false,
+        minScale: 0.15,
+        maxScale: 8,
+        boundaryMargin: const EdgeInsets.all(2000),
+        child: SizedBox(
+          width: laid.width,
+          height: laid.height,
+          child: Image.network(widget.url, fit: BoxFit.fill),
+        ),
+      );
+    });
   }
 }

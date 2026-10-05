@@ -633,7 +633,13 @@ Flutter, `app/`. An isometric map of the world with floating windows over it.
   which facts are cited without being told what the record is.
 - **A picture is drawn, not spelled out.** `image` is a value FORMAT, not a
   block, so a photograph can sit in a row of facts; any picture opens full
-  size on a tap, with a cross and Escape to close. The core only calls a value
+  size on a tap, with a cross and Escape to close. **A picture taller than the
+  window is read at full width and scrolled**, not fitted: a filled
+  application form is 1,280 by 4,228, and fitting that into a landscape window
+  fits its HEIGHT, so the width collapses to a sliver of illegible grey — and
+  the zoom was trapped inside the sliver, so magnifying it did not help
+  either. Only past about 1.6× the frame's height, because a square does not
+  want to be scrolled. The core only calls a value
   an image when it is REACHABLE — an absolute URL or a path from the root —
   because a path cannot be resolved from the core. A leading `/` was allowed
   once, on the reasoning that a root-relative path is reachable — but
