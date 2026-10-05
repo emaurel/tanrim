@@ -110,6 +110,15 @@ class Live {
         }
       case 'approvals_updated':
         _controller.add(const LiveEvent.approvalsChanged());
+      case 'records_updated':
+        // A record moved. Four places on the server published this and
+        // nothing here listened, so it fell through to `default` and was
+        // ignored as a frame from a plugin this build does not know about —
+        // which is the right default and was exactly wrong here. An
+        // application was filled, submitted and moved to `submitted`, and the
+        // castle window went on drawing it under `prepared` until the window
+        // was closed and reopened.
+        _controller.add(const LiveEvent.recordsChanged());
       case 'rooms_changed':
       case 'plugins_changed':
         // A plugin was installed or removed on the server. Every client is
@@ -137,6 +146,10 @@ enum LiveKind {
   disconnected,
   agentsChanged,
   approvalsChanged,
+
+  /// A record moved, was created, or was enriched. Whatever is showing a list
+  /// of them is now out of date.
+  recordsChanged,
   worldChanged,
   talk,
 }
@@ -150,6 +163,7 @@ class LiveEvent {
   const LiveEvent.disconnected() : this(LiveKind.disconnected);
   const LiveEvent.agentsChanged() : this(LiveKind.agentsChanged);
   const LiveEvent.approvalsChanged() : this(LiveKind.approvalsChanged);
+  const LiveEvent.recordsChanged() : this(LiveKind.recordsChanged);
   const LiveEvent.worldChanged() : this(LiveKind.worldChanged);
   const LiveEvent.talk(String from, String to, String label)
       : this(LiveKind.talk, from: from, to: to, label: label);

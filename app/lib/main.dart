@@ -201,6 +201,13 @@ class _WorldPageState extends State<WorldPage> {
         case LiveKind.approvalsChanged:
           await _loadApprovals();
           await _loadBoard();
+        case LiveKind.recordsChanged:
+          // A record moved. The board is the one thing that is WRONG now,
+          // and it was only ever reloaded as a side effect of an approval
+          // being raised or decided — so a record that moved on its own sat
+          // under its old stage until something else happened to touch a
+          // card, or the window was closed and reopened.
+          await _loadBoard();
         case LiveKind.worldChanged:
           // Someone reloaded the plugins or built a castle — possibly in
           // another window.
