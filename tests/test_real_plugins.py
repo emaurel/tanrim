@@ -183,6 +183,14 @@ def test_no_agent_transition_in_the_real_history_is_newly_refused(real_env):
             frm, to, who = e.get("from_stage"), e.get("stage"), e.get("agent") or "?"
             if frm is None or who == "operator":
                 continue          # the operator's hand-move is the override
+            if frm == to:
+                # `state.note_record` writes a history entry for something
+                # that happened WITHOUT moving the record — a refused run, a
+                # send that reached its last step and could not take it. It
+                # carries `from_stage == stage` so the timeline draws it at
+                # the right place, and a self-edge is not a transition the
+                # table could ever have declared.
+                continue
             if real_env.can_advance(frm, to, kind):
                 continue
             refused.add((frm, to, who))
