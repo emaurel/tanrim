@@ -981,6 +981,46 @@ def advance_record(
     return None
 
 
+def note_record(record_id: str, *, agent: str, note: str,
+                fields: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Record that something happened, without moving the record.
+
+    History was only ever appended by `advance_record`, so anything that did
+    NOT move left no trace on the record at all. That is most of what an
+    operator wants to know when they come back to a desk: an attempt that was
+    refused, a run that stopped to ask, a send that reached the last step and
+    could not take it. All of it was recoverable only by reading the event log
+    beside the record and matching timestamps by eye — the operator looked at
+    the record, found the last entry was an hour old, and concluded nothing
+    had happened.
+
+    The entry carries the same shape as a move with `from_stage == stage`, so
+    the timeline draws it without knowing anything new, and `wrote` is
+    computed the same way.
+    """
+    _ensure()
+    with _lock:
+        items: list[dict[str, Any]] = _read(RECORDS_FILE)
+        for r in items:
+            if r.get("id") == record_id:
+                fields = dict(fields or {})
+                wrote = sorted(k for k, v in fields.items() if r.get(k) != v)
+                r.update(fields)
+                r["history"] = list(r.get("history") or [])
+                r["history"].append({
+                    "ts": time.time(),
+                    "from_stage": r.get("stage"),
+                    "stage": r.get("stage"),
+                    "agent": agent,
+                    "note": note[:400],
+                    **({"wrote": wrote} if wrote else {}),
+                })
+                r["updated_ts"] = time.time()
+                _write(RECORDS_FILE, items)
+                return r
+    return None
+
+
 def delete_record(record_id: str) -> bool:
     """Remove a record entirely. The operator's, never an agent's."""
     _ensure()
