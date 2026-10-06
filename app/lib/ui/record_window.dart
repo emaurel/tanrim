@@ -506,11 +506,25 @@ class _RecordWindowState extends State<RecordWindow> {
         return 'stopped ${(m['stopped'] as List?)?.join(', ') ?? ''}'.trim();
       });
 
+  /// The stages this record can actually be moved to, or null if the server
+  /// did not say.
+  List<String>? _ownStages() {
+    final raw = (_view ?? const {})['stages'];
+    if (raw is! List || raw.isEmpty) return null;
+    return raw.map((e) => '$e').toList();
+  }
+
   Future<void> _move() async {
     final choice = await showDialog<_Move>(
       context: context,
       builder: (_) => _MoveDialog(
-        stages: widget.stages,
+        // The record's OWN pipeline, which the view reports. `widget.stages`
+        // is every stage every installed plugin declares, so a job
+        // application was offered the web agency's `qa_passed` — a stage its
+        // pipeline has never heard of, that no bench works and no transition
+        // leaves. Falls back to the global list for a server that predates
+        // the field, where the old behaviour is better than an empty dialog.
+        stages: _ownStages() ?? widget.stages,
         current: '${(_view ?? const {})['stage'] ?? ''}',
       ),
     );

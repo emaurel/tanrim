@@ -62,3 +62,28 @@ def test_a_note_about_a_record_that_is_gone_is_not_an_error(tmp_path,
     _seed(records, [])
 
     assert state.note_record("nope", agent="x", note="y") is None
+
+
+def test_a_hand_move_offers_only_this_record_s_own_pipeline(real_env):
+    """`ALL_STAGES` is every stage every installed plugin declares, so the
+    move dialog offered a job application the web agency's `qa_passed` — a
+    stage its pipeline has never heard of, that no bench works and no
+    transition leaves. A record parked on one sits there forever with nothing
+    erroring, which is how 69 of them once stopped moving.
+    """
+    from tanrim import environment, state
+
+    env = environment.current()
+    kinds = env.kinds()
+    assert len(kinds) > 1, "this is only meaningful with two pipelines"
+
+    sets = {}
+    for kind in kinds:
+        sets[kind] = {*env.stages(kind), *state.always_reachable(kind)}
+        assert sets[kind], f"{kind} offers nothing to move to"
+
+    # Every pipeline must have at least one stage that is NOT another's, or
+    # the narrowing would be indistinguishable from the global list.
+    for kind, mine in sets.items():
+        others = set().union(*(v for k, v in sets.items() if k != kind))
+        assert mine - others, f"{kind} has no stage of its own"

@@ -645,7 +645,8 @@ async def get_record_view(record_id: str) -> dict[str, Any]:
         raise HTTPException(404, "no such record")
 
     kind = state.record_kind(record)
-    blocks = environment.current().record_view(record, kind)
+    env = environment.current()
+    blocks = env.record_view(record, kind)
     spend = view_mod.spend(record)
     return {
         "id": record_id,
@@ -654,6 +655,12 @@ async def get_record_view(record_id: str) -> dict[str, Any]:
         "stage": record.get("stage", ""),
         "castle_id": state.home_castle_for(record),
         "updated_ts": record.get("updated_ts"),
+        # Where this record can be moved BY HAND. Its own pipeline's stages
+        # and its own endings — not every stage in the install. The operator
+        # was being offered a web-agency `qa_passed` for a job application,
+        # and a record parked on another pipeline's stage is how 69 of them
+        # once stopped moving with nothing erroring anywhere.
+        "stages": [*env.stages(kind), *sorted(state.always_reachable(kind))],
         # What this record has cost, beside the stage it is at. On the record
         # itself rather than only in the ledger room, because "is this one
         # worth continuing" is a question asked while looking at the record —
