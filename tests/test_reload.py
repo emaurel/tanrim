@@ -46,14 +46,18 @@ def _world():
 def test_a_new_plugin_adds_its_rooms_and_staff(plugins):
     plugins.install({"alpha": ONE_ROOM.format(pid="alpha", x=0)})
     world = _world()
-    assert {r.id for r in world.rooms} == {"alpha_room"}
+# The environment's own spend room is on every map and belongs to no
+    # plugin, so it is not part of what a plugin contributed.
+    assert {r.id for r in world.rooms
+            if r.base_id != "ledger"} == {"alpha_room"}
     assert "alpha_agent" in world.agents
 
     # The map gains a castle without the process going anywhere.
     plugins.install({"beta": ONE_ROOM.format(pid="beta", x=40)})
     moved = asyncio.run(world.resync())
 
-    assert {r.id for r in world.rooms} == {"alpha_room", "beta_room"}
+    assert {r.id for r in world.rooms
+            if r.base_id != "ledger"} == {"alpha_room", "beta_room"}
     assert moved["added"] == ["beta_agent"]
     assert moved["removed"] == []
 
@@ -64,13 +68,16 @@ def test_a_removed_plugin_takes_its_staff_with_it(plugins):
         "beta": ONE_ROOM.format(pid="beta", x=40),
     })
     world = _world()
-    assert len(world.rooms) == 2
+    assert len([r for r in world.rooms if r.base_id != "ledger"]) == 2
 
     plugins.remove("beta")
     plugins.boot()
     moved = asyncio.run(world.resync())
 
-    assert {r.id for r in world.rooms} == {"alpha_room"}
+# The environment's own spend room is on every map and belongs to no
+    # plugin, so it is not part of what a plugin contributed.
+    assert {r.id for r in world.rooms
+            if r.base_id != "ledger"} == {"alpha_room"}
     # A base agent is normally permanent — a room should never look abandoned —
     # but its room is gone, so there is nothing for it to stand in.
     assert moved["removed"] == ["beta_agent"]

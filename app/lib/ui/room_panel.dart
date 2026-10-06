@@ -4,6 +4,7 @@ import '../api/client.dart';
 import '../model/record.dart';
 import 'room_settings.dart';
 import '../model/world.dart';
+import 'blocks.dart';
 import 'start_form.dart';
 
 /// A room, rendered from whatever its manifest and handler report.
@@ -163,6 +164,10 @@ class _RoomPanelState extends State<RoomPanel> {
   @override
   Widget build(BuildContext context) {
     final s = _state;
+    final blocks = ((s?['blocks'] ?? const []) as List)
+        .whereType<Map>()
+        .map((b) => b.cast<String, dynamic>())
+        .toList();
     final queue = ((s?['queue'] ?? []) as List)
         .map((r) => WorkRecord(r as Map<String, dynamic>))
         .toList();
@@ -201,6 +206,17 @@ class _RoomPanelState extends State<RoomPanel> {
                           child: Text(widget.room.purpose,
                               style: const TextStyle(
                                   color: Colors.white60, height: 1.35)),
+                        ),
+                      // Anything the room wants to SHOW. A panel is the
+                      // queue, the crew and the benches for most rooms, but
+                      // the ledger has no queue and no crew and exists only
+                      // to be read — and the vocabulary for "here is
+                      // something to read" already ships, so it says it in
+                      // blocks rather than in a panel the app must learn.
+                      if (blocks.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Blocks(blocks: blocks),
                         ),
                       if (queue.isNotEmpty)
                         _section(

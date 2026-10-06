@@ -308,6 +308,7 @@ def _from_environment(env: "Any",
     castles expects, and is why adding them broke nothing.
     """
     from . import castles as geom
+    from . import ledger as _ledger
 
     castles = castles or []
     owner = _plugin_of_room(env)
@@ -327,11 +328,32 @@ def _from_environment(env: "Any",
 
     rooms: list[RoomSpec] = []
     for castle_id, (dx, dy) in plan:
-        for room in env.rooms():
-            if castle_id and owner.get(room.id) != by_plugin.get(castle_id):
-                continue
+        mine = [r for r in env.rooms()
+                if not castle_id or owner.get(r.id) == by_plugin.get(castle_id)]
+        for room in mine:
             rooms.extend(_one_room(env, room, castle_id, dx, dy, geom))
+        # Every castle gets the spend room, whoever its plugin is — and an
+        # install with no plugins at all still gets one, because running
+        # agents costs money before it does anything else. Laid out BELOW
+        # whatever the plugin declared, from that plugin's own footprint, so
+        # it never lands on a room someone else positioned by hand.
+        rooms.extend(_one_room(env, _ledger.room(_below(mine)),
+                               castle_id, dx, dy, geom))
     return rooms
+
+
+def _below(rooms: "list[Any]") -> tuple[int, int]:
+    """A free spot under a castle's rooms, in the plugin's own coordinates.
+
+    The offset that centres a castle on its plot is applied afterwards and to
+    everything alike, so placing this relative to the plugin's footprint keeps
+    it with its castle wherever that castle is.
+    """
+    if not rooms:
+        return (0, 0)
+    x0 = min(r.position[0] for r in rooms)
+    y1 = max(r.position[1] + r.size[1] for r in rooms)
+    return (x0, y1 + 4)
 
 
 def _one_room(env: "Any", room: "Any", castle_id: str, dx: int, dy: int,

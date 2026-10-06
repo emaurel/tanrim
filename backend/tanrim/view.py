@@ -153,6 +153,77 @@ def timeline(record: dict[str, Any]) -> dict[str, Any]:
     return {"block": "timeline", "title": "History", "steps": steps}
 
 
+def spend(record: dict[str, Any]) -> dict[str, Any]:
+    """What this one piece of work has cost, and where it went.
+
+    The core's, like the timeline and for the same reason: every record is
+    worked by agents and every agent costs money, so this is answerable for
+    every kind and a plugin that forgot would leave it unanswered. It was
+    answerable for exactly one plugin before, in a room that plugin owned.
+
+    Split three ways because they answer different questions. By AGENT is who
+    spent it. By WORKBENCH is what it was spent doing — a site build and the
+    logo drawn for it are both `forge` on the same record, and only the bench
+    tells them apart. By API is what was bought from someone else, and is
+    marked as an estimate because it is: list prices, not a bill.
+    """
+    from . import usage
+
+    try:
+        s = usage.for_record(record.get("id", ""))
+    except Exception:          # noqa: BLE001 — a view must never fail to draw
+        return {"block": "section", "title": "Spend", "rows": []}
+
+    rows: list[dict[str, Any]] = [
+        {"label": "Total", "value": _money(s["total"]), "format": "text"},
+        {"label": "Agent runs", "value": str(s["runs"]), "format": "text"},
+    ]
+    if s["api_cost"]:
+        rows.append({"label": "Of which bought in",
+                     "value": f"{_money(s['api_cost'])} (estimated)",
+                     "format": "text"})
+
+    blocks: list[dict[str, Any]] = [
+        {"block": "fields", "title": "Spend", "rows": rows},
+    ]
+    if s["agents"]:
+        blocks.append({
+            "block": "table", "title": "By agent",
+            "columns": ["Agent", "Runs", "Output tokens", "Cost"],
+            "rows": [[b["agent"], str(b["runs"]), f"{b['output_tokens']:,}",
+                      _money(b["cost_usd"])] for b in s["agents"]],
+        })
+    if s["benches"]:
+        blocks.append({
+            "block": "table", "title": "By workbench",
+            "columns": ["Workbench", "Runs", "Cost"],
+            "rows": [[b["workbench"], str(b["runs"]), _money(b["cost_usd"])]
+                     for b in s["benches"]],
+        })
+    if s["apis"]:
+        blocks.append({
+            "block": "table", "title": "Bought in (estimated)",
+            "columns": ["Service", "Calls", "Cost"],
+            "rows": [[b["sku"], str(b["calls"]), _money(b["cost_usd"])]
+                     for b in s["apis"]],
+        })
+    return {"block": "section", "title": "Spend", "blocks": blocks,
+            "total_usd": s["total"]}
+
+
+def _money(usd: float) -> str:
+    """Small spend is the normal case here and rounds to nothing.
+
+    A run that cost three tenths of a cent is a real figure and "$0.00" is not
+    it — a board of them reading as free is how a thousandfold under-report of
+    token spend went unnoticed once already.
+    """
+    usd = float(usd or 0)
+    if usd and usd < 0.01:
+        return f"${usd:.4f}"
+    return f"${usd:,.2f}"
+
+
 def _rooms_safely(rooms_mod: Any) -> list:
     try:
         return rooms_mod.load_rooms()

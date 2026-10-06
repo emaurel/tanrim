@@ -159,7 +159,9 @@ def test_with_no_castles_the_rooms_are_exactly_as_declared(plugins, ledger):
 
     plugins.install({"alpha": ONE_ROOM.format(pid="alpha")})
     got = rooms.load_rooms()
-    assert [r.id for r in got] == ["alpha_room"]
+    # Plus the environment's own spend room, which every castle has and an
+    # install with no castles has once, unscoped.
+    assert [r.id for r in got] == ["alpha_room", "ledger"]
     assert got[0].castle_id == ""
     assert [a.id for a in got[0].agents] == ["alpha_agent"]
 
@@ -173,8 +175,10 @@ def test_two_castles_of_one_plugin_are_two_sets_of_rooms(plugins, ledger):
     rooms.invalidate()
 
     got = rooms.load_rooms()
-    assert {r.id for r in got} == {f"alpha_room@{a['id']}", f"alpha_room@{b['id']}"}
-    assert {r.base_id for r in got} == {"alpha_room"}
+    assert {r.id for r in got} == {
+        f"alpha_room@{a['id']}", f"alpha_room@{b['id']}",
+        f"ledger@{a['id']}", f"ledger@{b['id']}"}
+    assert {r.base_id for r in got} == {"alpha_room", "ledger"}
     # Each has its own crew: one being busy says nothing about the other.
     assert {ag.id for r in got for ag in r.agents} == {
         f"alpha_agent@{a['id']}", f"alpha_agent@{b['id']}"}
@@ -188,8 +192,14 @@ def test_two_castles_do_not_sit_on_top_of_each_other(plugins, ledger):
     state.add_castle("alpha", "Second")
     rooms.invalidate()
 
-    positions = {(r.position.x, r.position.y) for r in rooms.load_rooms()}
-    assert len(positions) == 2, "both castles were laid out at the same place"
+    # Per BASE room: each castle now holds two of them — its plugin's and the
+    # environment's ledger — so counting distinct positions across all four
+    # would pass while both castles sat on top of each other.
+    for base in ("alpha_room", "ledger"):
+        positions = {(r.position.x, r.position.y)
+                     for r in rooms.load_rooms() if r.base_id == base}
+        assert len(positions) == 2, \
+            f"both castles put {base} in the same place"
 
 
 def test_a_castle_whose_plugin_is_gone_contributes_no_rooms(plugins, ledger):
@@ -200,8 +210,9 @@ def test_a_castle_whose_plugin_is_gone_contributes_no_rooms(plugins, ledger):
     plugins.install({"alpha": ONE_ROOM.format(pid="alpha")})
     state.add_castle("ghost", "Nowhere")
     rooms.invalidate()
-    # Nothing applies, so it falls back to the rooms as declared.
-    assert [r.id for r in rooms.load_rooms()] == ["alpha_room"]
+    # Nothing applies, so it falls back to the rooms as declared — plus the
+    # ledger, which is the environment's and does not belong to any plugin.
+    assert [r.id for r in rooms.load_rooms()] == ["alpha_room", "ledger"]
 
 
 # ---------------------------------------------------------------------------

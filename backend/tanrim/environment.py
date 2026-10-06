@@ -222,12 +222,21 @@ class Environment:
                     self._models[pipe.kind] = model
 
     def _collect_world(self) -> None:
+        from . import ledger as _ledger
+
         patches: list[RoomPatch] = []
         for p in self.plugins:
             for item in self._said(p, "rooms"):
                 if isinstance(item, RoomPatch):
                     patches.append(item)
                 else:
+                    if item.id in _ledger.RESERVED:
+                        raise EnvironmentError(
+                            f"the plugin {p.id!r} declares a room {item.id!r}, "
+                            f"which the environment supplies to every castle "
+                            f"itself. Spend is not plugin business — a castle "
+                            f"whose plugin forgot would have nowhere to show "
+                            f"what it cost — so this name is the core's.")
                     self._rooms[item.id] = item
         for patch in patches:
             target = self._rooms.get(patch.extends)
@@ -773,11 +782,19 @@ class Environment:
         return self._starts.get(start_id)
 
     def room_handler(self, room_id: str) -> type | None:
+        from . import ledger as _ledger
+
         room_id = self._base(room_id)
+        if room_id == _ledger.ROOM_ID:
+            return _ledger.LedgerHandler
         return self._room_handlers.get(room_id)
 
     def room_handlers(self) -> dict[str, type]:
-        return dict(self._room_handlers)
+        from . import ledger as _ledger
+
+        # The environment's own, merged last. A plugin cannot shadow it: boot
+        # refuses the room id outright, and this is the belt to that brace.
+        return {**self._room_handlers, _ledger.ROOM_ID: _ledger.LedgerHandler}
 
     def overseer(self) -> str:
         """Who agents escalate to. The last plugin to name one wins.

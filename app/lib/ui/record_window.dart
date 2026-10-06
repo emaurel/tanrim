@@ -131,20 +131,26 @@ class _RecordWindowState extends State<RecordWindow> {
     // being the thing you scroll past to reach anything else.
     final history =
         blocks.where((b) => b['block'] == 'timeline').toList();
-    final rest = blocks.where((b) => b['block'] != 'timeline').toList();
+    // Spend gets its own tab for the same reason the history does: it is
+    // there for every record whatever the record is, and in line it is one
+    // more card to scroll past on the way to the work itself.
+    final spend = blocks.where((b) => b['title'] == 'Spend').toList();
+    final rest = blocks
+        .where((b) => b['block'] != 'timeline' && b['title'] != 'Spend')
+        .toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _header(view),
         if (_showing != 'settings') _controls(view),
-        _tabs(history),
+        _tabs(history, view),
         Expanded(
           child: _showing == 'settings'
               ? _settings(view)
               : _showing == 'run'
                   ? _currentRun()
-                  : _body(history, rest),
+                  : _body(history, spend, rest),
         ),
       ],
     );
@@ -219,9 +225,13 @@ class _RecordWindowState extends State<RecordWindow> {
   /// One `SelectionArea` around the lot, so the text is still selectable
   /// without every value carrying its own selection machinery.
   Widget _body(List<Map<String, dynamic>> history,
-      List<Map<String, dynamic>> rest) {
-    final showing = _showing == 'history' ? history : rest;
-    if (_showing != 'history' && rest.isEmpty) {
+      List<Map<String, dynamic>> spend, List<Map<String, dynamic>> rest) {
+    final showing = switch (_showing) {
+      'history' => history,
+      'spend' => spend,
+      _ => rest,
+    };
+    if (_showing != 'history' && _showing != 'spend' && rest.isEmpty) {
       return const Padding(
         padding: EdgeInsets.all(16),
         child: Text('nothing recorded yet',
@@ -348,7 +358,7 @@ class _RecordWindowState extends State<RecordWindow> {
     );
   }
 
-  Widget _tabs(List<Map<String, dynamic>> history) {
+  Widget _tabs(List<Map<String, dynamic>> history, Map<String, dynamic> view) {
     final steps =
         ((history.isEmpty ? const [] : history.first['steps'] ?? const [])
             as List).length;
@@ -369,10 +379,30 @@ class _RecordWindowState extends State<RecordWindow> {
           const SizedBox(width: 6),
           _tabButton('history', 'History ($steps)'),
           const SizedBox(width: 6),
+          // Labelled with the figure, so the tab answers the question
+          // without being opened. Absent when nothing has been spent —
+          // an empty tab trains you to skip the one that is not.
+          if (_spent(view) != null) ...[
+            _tabButton('spend', 'Spend  ${_spent(view)}'),
+            const SizedBox(width: 6),
+          ],
           _tabButton('settings', 'Settings'),
         ],
       ),
     );
+  }
+
+  /// Money, written so that small spend is still a figure.
+  ///
+  /// Most runs here cost fractions of a cent, and `\$0.00` is not what three
+  /// tenths of a cent looks like — a board of them reading as free is how a
+  /// thousandfold under-report of token spend once went unnoticed.
+  static String? _spent(Map<String, dynamic> view) {
+    final v = view['spent_usd'];
+    if (v is! num || v <= 0) return null;
+    return v < 0.01
+        ? '\$${v.toStringAsFixed(4)}'
+        : '\$${v.toStringAsFixed(2)}';
   }
 
   Widget _tabButton(String id, String label) {
@@ -408,6 +438,11 @@ class _RecordWindowState extends State<RecordWindow> {
             ],
             _chip('${view['kind'] ?? ''}'),
             _chip('${view['stage'] ?? ''}', accent: true),
+            // What this piece of work has cost, beside what it IS and where
+            // it has got to. "Is this one worth continuing" is asked while
+            // looking at the record, and the figure that answers it used to
+            // live in one plugin's own room.
+            if (_spent(view) != null) _chip(_spent(view)!),
           ],
         ),
       );

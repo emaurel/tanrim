@@ -80,7 +80,10 @@ def _patch(workshop, body: str):
 
 
 def test_a_plugin_contributes_its_rooms(workshop):
-    assert [r.id for r in rooms.load_rooms()] == ["workshop"]
+# The environment's own spend room is on every map and belongs to no
+    # plugin, so it is not part of what a plugin contributed.
+    assert [r.id for r in rooms.load_rooms()
+            if r.base_id != "ledger"] == ["workshop"]
     assert _room("workshop").name == "The Workshop"
 
 
@@ -116,7 +119,10 @@ def test_a_patch_does_not_become_a_room_of_its_own(workshop):
             name: Side Bench
             stages: [extra]
     """)
-    assert [r.id for r in rooms.load_rooms()] == ["workshop"]
+# The environment's own spend room is on every map and belongs to no
+    # plugin, so it is not part of what a plugin contributed.
+    assert [r.id for r in rooms.load_rooms()
+            if r.base_id != "ledger"] == ["workshop"]
 
 
 def test_stages_on_an_existing_bench_are_unioned_not_replaced(workshop):

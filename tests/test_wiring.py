@@ -158,7 +158,14 @@ def test_every_room_keeps_its_crew_its_colours_and_its_labels(real_env):
     # because two castles of one plugin have the same rooms.
     staffed = {r.base_id or r.id: r.agents
                for r in rooms.load_rooms() if r.agents}
-    assert {"archives", "treasury"} <= set(staffed), "Sage and Coin were lost"
+    # Coin is gone deliberately: the Treasury counted the spend, which is now
+    # the environment's own Ledger room in every castle, and an agent whose
+    # job was counting the cost was itself a cost. Sage remains.
+    assert {"archives"} <= set(staffed), "Sage was lost"
+    assert "treasury" not in staffed, \
+        "the Treasury is staffed again; it bills, it does not think"
+    assert "ledger" not in staffed, \
+        "the Ledger has no agent — it reads the books and decides nothing"
     for room_id, agents in staffed.items():
         for a in agents:
             base = a.id.split("@")[0]

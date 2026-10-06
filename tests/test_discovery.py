@@ -204,4 +204,7 @@ def test_removing_a_plugin_removes_everything_it_contributed(plugins):
     assert state.KINDS == ("normal",)
     assert "extra_gate" not in env.gates()
     assert rooms.stages_for_role("w") == {"s"}
-    assert len(rooms.load_rooms()) == 1
+# The environment's own spend room is on every map and belongs to no
+    # plugin, so it is not part of what a plugin contributed.
+    assert len([r for r in rooms.load_rooms()
+                if r.base_id != "ledger"]) == 1

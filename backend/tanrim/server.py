@@ -646,6 +646,7 @@ async def get_record_view(record_id: str) -> dict[str, Any]:
 
     kind = state.record_kind(record)
     blocks = environment.current().record_view(record, kind)
+    spend = view_mod.spend(record)
     return {
         "id": record_id,
         "name": record.get("name", ""),
@@ -653,10 +654,16 @@ async def get_record_view(record_id: str) -> dict[str, Any]:
         "stage": record.get("stage", ""),
         "castle_id": state.home_castle_for(record),
         "updated_ts": record.get("updated_ts"),
+        # What this record has cost, beside the stage it is at. On the record
+        # itself rather than only in the ledger room, because "is this one
+        # worth continuing" is a question asked while looking at the record —
+        # and the figure that answers it was reachable only through one
+        # plugin's own panel.
+        "spent_usd": spend.get("total_usd", 0.0),
         # The history is the machine's own record and is built here for every
         # kind, so a plugin cannot forget the one part of a record that is
-        # always answerable.
-        "blocks": [*blocks, view_mod.timeline(record)],
+        # always answerable. The same is true of what it cost.
+        "blocks": [*blocks, spend, view_mod.timeline(record)],
     }
 
 
