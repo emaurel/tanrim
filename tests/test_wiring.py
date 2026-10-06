@@ -467,6 +467,16 @@ def test_no_new_room_action_is_orphaned(real_env):
             body))
 
     sendable = set(primary)
+    # A start is a way to SEND one. The app builds its control from `/starts`
+    # and the server posts `st.action` to the room's handler, so an action
+    # named by a `Start` is as reachable as one a button posts — more so, in
+    # fact, since the app renders the form from the declaration rather than
+    # having to grow a control for it. This scan predates `starts()` and saw
+    # only `action_name`, so the first action declared solely by a start read
+    # as dead on arrival.
+    for path in Path("plugins").rglob("plugin.py"):
+        body = path.read_text()
+        sendable |= set(re.findall(r'action\s*=\s*"([a-z_]+)"', body))
     for path in Path("app/lib").rglob("*.dart"):
         sendable |= set(re.findall(r"'([a-z_]+)'", path.read_text()))
     for path in [*Path("plugins").rglob("routes.py"),
