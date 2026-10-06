@@ -495,6 +495,40 @@ escalation is a new record with a fresh allowance. So there are two:
 
 ---
 
+# The books
+
+Running agents costs money, and that is true of an install with no plugins at
+all — so the **Ledger** is a room the ENVIRONMENT puts in every castle,
+alongside whatever its plugin declared. Same reasoning as the record timeline:
+a plugin cannot know it better, and a plugin that forgot would leave the one
+question every operator eventually asks unanswerable.
+
+It was one plugin's room first, the web agency's Treasury, which meant the
+job-hunt castle — running the same models against the same key — had nowhere
+whatever to see what it had cost.
+
+- **Nobody is staffed there.** Coin was an agent whose job was counting the
+  spend, so the room that measures cost was itself a cost. `max_workers` is 0
+  and no bench declares a stage, so nothing can be dispatched to it.
+- **A plugin may not claim the name.** Boot refuses a room called `ledger`
+  outright: two rooms answering to one id, with the environment's silently
+  losing, is the worst version of that trap.
+- **It answers in BLOCKS**, the same vocabulary a record view uses. The
+  Treasury returned totals, by-agent, by-model and pricing that nothing in the
+  app ever drew, so the room showed an empty panel for as long as it existed.
+  A room panel renders `blocks` from any room that sends them.
+- **A record carries its own figure** — `spent_usd` beside the kind and the
+  stage, and a Spend tab split by agent, by workbench and by what was bought
+  in. By WORKBENCH is the split you cannot otherwise get: a site build and the
+  logo drawn for it are both `forge` on the same record.
+- **Spend with no record is reported separately**, never divided between
+  castles. Dividing it would make the totals agree by inventing the answer.
+
+Invoices stayed with the web agency. What it EARNS is plugin business; what it
+costs to run is not.
+
+---
+
 # Asking the operator
 
 `state.add_user_approval(kind, room_id, ...)` surfaces something for the
