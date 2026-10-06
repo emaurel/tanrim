@@ -59,9 +59,132 @@ class Blocks extends StatelessWidget {
       // folding it to reveal — closed, that tab is one grey heading and the
       // click to open it is the only thing you can do there.
       'timeline' => _titled(title, _timeline(b), open: true),
+      // Open. This is the thing a stranger receives, and folding it away is
+      // how an email goes out unread — the whole point of showing it is that
+      // it looks like what arrives.
+      'email' => _titled(title, _email(b), open: true),
       _ => _titled(title.isEmpty ? 'Raw' : title, _raw(b['value'])),
     };
   }
+
+  /// An email as it will be sent.
+  ///
+  /// Headers, then the body in full, then what is attached — laid out so it
+  /// reads as the thing that lands in somebody's inbox, because the question
+  /// being asked of it is "is this what I want to send" and that is answered
+  /// by reading it, not by checking fields off a list.
+  Widget _email(Map<String, dynamic> b) {
+    final attachments = ((b['attachments'] ?? const []) as List)
+        .whereType<Map>()
+        .map((a) => a.cast<String, dynamic>())
+        .toList();
+    final note = '${b['note'] ?? ''}';
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.black26,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if ('${b['from'] ?? ''}'.isNotEmpty)
+                  _header('From', '${b['from']}'),
+                _header('To', '${b['to'] ?? ''}'),
+                _header('Subject', '${b['subject'] ?? ''}', bold: true),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Colors.white12),
+          // The body, at full width and selectable. Bounded because a letter
+          // is longer than a window; scrolled rather than clipped, because a
+          // paragraph you cannot reach is one nobody checked.
+          Container(
+            constraints: const BoxConstraints(maxHeight: 420),
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+            child: SingleChildScrollView(
+              child: SelectableText(
+                '${b['body'] ?? ''}',
+                style: const TextStyle(
+                    fontSize: 12.5, height: 1.5, color: Colors.white),
+              ),
+            ),
+          ),
+          if (attachments.isNotEmpty) ...[
+            const Divider(height: 1, color: Colors.white12),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final a in attachments)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.white10,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.attach_file_rounded,
+                              size: 13, color: Colors.white54),
+                          const SizedBox(width: 5),
+                          Text('${a['name'] ?? ''}',
+                              style: const TextStyle(
+                                  fontSize: 11.5, color: Colors.white70)),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+          if (note.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+              child: Text(note,
+                  style: const TextStyle(
+                      fontSize: 11.5, color: Colors.white38, height: 1.4)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _header(String label, String value, {bool bold = false}) => Padding(
+        padding: const EdgeInsets.only(bottom: 3),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 58,
+              child: Text(label,
+                  style: const TextStyle(
+                      fontSize: 11.5, color: Colors.white38)),
+            ),
+            Expanded(
+              child: SelectableText(
+                value,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: Colors.white,
+                  fontWeight: bold ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
 
   /// A titled block, folded away by its heading.
   ///

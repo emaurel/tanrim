@@ -51,6 +51,14 @@ BLOCKS = (
     "table",     # {columns: [...], rows: [{cells: [...], source?}]}
     "images",    # items of {url, caption?}
     "timeline",  # built by the core from the record's history
+    # An email as it will be sent: {to, from?, subject, body, attachments?}.
+    # A block rather than a format, because an email is not a value — it is a
+    # set of headers, a body to be READ in full, and a list of what is
+    # attached, and rendering it as three unrelated blocks loses the one thing
+    # that makes it checkable, which is that it looks like the thing that
+    # arrives. The app already had this layout hardcoded for one plugin's two
+    # gates, which is what a block type exists to stop.
+    "email",
     "raw",       # anything that is not worth a shape of its own
 )
 
@@ -61,6 +69,21 @@ FORMATS = ("text", "money", "bytes", "colour", "url", "datetime", "percent",
            # A picture, drawn rather than spelled out. The app opens it full
            # size on a tap; an unreachable one falls back to its path.
            "image")
+
+
+def email(to: str, subject: str, body: str, *,
+          sender: str = "", attachments: "list[dict] | None" = None,
+          title: str = "", note: str = "") -> dict:
+    """One email, as it will be sent.
+
+    Built from whatever is actually going to send it, never from a second
+    reconstruction of the same thing: a preview assembled separately from the
+    sender is a preview that can be right while the email is wrong, which is
+    worse than no preview at all.
+    """
+    return {"block": "email", "title": title or "Email", "note": note,
+            "to": to, "from": sender, "subject": subject, "body": body,
+            "attachments": list(attachments or [])}
 
 
 def section(title: str, children: list[dict], note: str = "") -> dict:

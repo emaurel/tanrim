@@ -18,8 +18,18 @@ def test_the_vocabulary_stays_small():
     Each block is a renderer in an app that ships separately, so the set is
     meant to be added to reluctantly. Raising this is a decision; drifting
     past it is not.
+
+    Raised to 9 for `email`, deliberately. An email is not a value with a
+    format — it is headers, a body meant to be READ in full, and a list of
+    what is attached, and split across a `fields` block and a `text` block it
+    stops looking like the thing that arrives, which is the only question
+    being asked of it. The app had already grown this layout hardcoded for one
+    plugin's two gates, which is precisely the drift a shared block type
+    exists to stop; it also caught an application about to go out from the
+    wrong address, because it printed the From line and the From line was
+    somebody else.
     """
-    assert len(view.BLOCKS) <= 8, view.BLOCKS
+    assert len(view.BLOCKS) <= 9, view.BLOCKS
     assert "raw" in view.BLOCKS, "there must be somewhere for the long tail"
 
 
