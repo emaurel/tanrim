@@ -156,6 +156,56 @@ nothing declares, a `choice` with no options, and two plugins claiming one id.
 A plugin with no starts is legitimate: an extension that only adds a stage
 opens no work of its own.
 
+### `castle_options() -> Iterable[StartInput]`
+
+**What differs between two castles of this plugin.**
+
+A castle is one running instance, and the point of having two is that they do
+the same work on different subjects — two agencies, two repositories, two
+mailboxes. Everything else here is answered once at boot with no castle in the
+signature, deliberately, because a plugin never sees one. So without this
+there is nowhere to say "this castle is THAT repository", and the only way to
+specialise a generic plugin is to install a second copy of it with the paths
+edited in.
+
+```python
+def castle_options(self):
+    return (
+        StartInput(id="upstream", label="Upstream", required=True,
+                   hint="owner/name of the repository contributed to"),
+        StartInput(id="base_branch", label="Base branch", default="main"),
+        StartInput(id="slots", label="Build slots", kind="number",
+                   default=2, minimum=1, maximum=8),
+        StartInput(id="platforms", label="Platforms", kind="json",
+                   hint="where a fix is built and tested"),
+    )
+```
+
+Declared with `StartInput` rather than a shape of its own, so the app draws
+the form from the vocabulary it already renders — a plugin gains a settings
+panel without the app shipping anything. `json` is the one kind that is here
+and not on a start: these are configuration, a nested value has to survive a
+round trip, and a malformed one is worth refusing when it is SAVED rather
+than discovering in the middle of a run. It is stored decoded, so a plugin
+reads a list rather than parsing a string every time.
+
+Read them with `state.get_castle(castle_id)["options"]` — always a dict, even
+for a castle built before the plugin declared anything — or resolve the castle
+in hand with `castles.here()` during a run. The values are the OPERATOR'S:
+stored in `state/castles.json`, never written back to the plugin, and never
+shared between two castles.
+
+The environment checks what is submitted against the declaration before
+storing it: required fields, numbers and their range, a choice within its
+options, and JSON that parses. **An option the plugin never declared is
+refused, not dropped** — a value nothing reads is the silent failure this
+environment keeps finding.
+
+Boot refuses a duplicated option id, a `choice` with no options, a default
+outside them, and options declared by a plugin with no rooms of its own — an
+extension lives inside the castle of what it extends, so its form would be
+unreachable.
+
 ### `record_model() -> type[BaseModel] | None`
 
 The shape of one unit of work. **Purely declarative today** — nothing

@@ -29,6 +29,7 @@ class Castle {
     required this.installed,
     this.status = 'idle',
     this.waiting = 0,
+    this.optionsDeclared = 0,
     this.rooms = const [],
   });
 
@@ -60,6 +61,11 @@ class Castle {
   /// castle outlives it, so the map has to be able to say so rather than
   /// drawing an empty place with no explanation.
   final bool installed;
+
+  /// How many things this castle can be told — what differs between it and
+  /// another of the same plugin. Zero for most plugins, which is why the
+  /// panel is offered only when there is something in it.
+  final int optionsDeclared;
 
   final List<Room> rooms;
 
@@ -103,6 +109,7 @@ class Castle {
         installed: installed,
         status: status,
         waiting: waiting,
+        optionsDeclared: optionsDeclared,
         // A room with no castle belongs to every castle only when there is
         // exactly one — an install that predates castles serves unscoped
         // rooms, and they have to land somewhere.
@@ -127,6 +134,7 @@ class Castle {
         installed: j['installed'] != false,
         status: (j['status'] ?? 'idle') as String,
         waiting: (j['waiting'] ?? 0) as int,
+        optionsDeclared: (j['options_declared'] ?? 0) as int,
       );
 }
 

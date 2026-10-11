@@ -19,10 +19,22 @@ import 'ui/map_view.dart';
 import 'ui/room_panel.dart';
 import 'ui/settings.dart';
 
-void main() => runApp(const TanrimApp());
+/// Prefs are loaded BEFORE the first frame, not inside the widget.
+///
+/// Reading them is asynchronous now that the directory comes from the
+/// platform, and the connection field is built from what they hold — so a
+/// widget that started with the default and corrected itself a moment later
+/// would race the operator pressing Connect.
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final prefs = await Prefs.load();
+  runApp(TanrimApp(prefs: prefs));
+}
 
 class TanrimApp extends StatelessWidget {
-  const TanrimApp({super.key});
+  const TanrimApp({super.key, required this.prefs});
+
+  final Prefs prefs;
 
   @override
   Widget build(BuildContext context) {
@@ -38,13 +50,15 @@ class TanrimApp extends StatelessWidget {
         ),
         scaffoldBackgroundColor: const Color(0xFF12141A),
       ),
-      home: const WorldPage(),
+      home: WorldPage(prefs: prefs),
     );
   }
 }
 
 class WorldPage extends StatefulWidget {
-  const WorldPage({super.key});
+  const WorldPage({super.key, required this.prefs});
+
+  final Prefs prefs;
 
   @override
   State<WorldPage> createState() => _WorldPageState();
@@ -53,7 +67,7 @@ class WorldPage extends StatefulWidget {
 class _WorldPageState extends State<WorldPage> {
   /// Where the environment is. One field, because the app is meant to point at
   /// a server the operator chooses — and later at one castle among several.
-  final _prefs = Prefs.load();
+  late final _prefs = widget.prefs;
   late final _server = TextEditingController(
       text: _prefs.string('server', 'http://127.0.0.1:8765'));
 
@@ -179,9 +193,18 @@ class _WorldPageState extends State<WorldPage> {
       _rooms = const [];
     });
 
-    final api = Api(_server.text.trim().replaceAll(RegExp(r'/+$'), ''));
+    final where = _server.text.trim().replaceAll(RegExp(r'/+$'), '');
+    final api = Api(where);
     _api = api;
     if (!await _loadAll(firstTime: true)) return;
+
+    // Remembered once the address is KNOWN GOOD, and only then. Saving every
+    // attempt would let one mistyped octet overwrite the address that works,
+    // which is the one thing this is here to stop you retyping. Starting a
+    // server saves it too, but that is the local case; an operator pointing
+    // the app at a machine across a tailnet never goes through it, so the
+    // field was reset to 127.0.0.1 on every launch.
+    _prefs.set('server', where);
 
     final live = Live(api.socket);
     _live = live;
@@ -261,7 +284,9 @@ class _WorldPageState extends State<WorldPage> {
     try {
       await _loadRooms();
     } catch (e) {
-      setState(() => _state = e is ApiError ? e.message : '$e');
+      // Guarded like every other write here: a connect is in flight for as
+      // long as the server takes to answer, and the page may be gone by then.
+      if (mounted) setState(() => _state = e is ApiError ? e.message : '$e');
       return false;
     }
     if (mounted) setState(() => _connected = true);
@@ -722,6 +747,17 @@ class _WorldPageState extends State<WorldPage> {
   /// The open windows, rebuilt from live state every frame.
   /// The records an agent is busy on right now.
   ///
+  /// Records with a card waiting on the operator.
+  ///
+  /// Derived from the pending approvals the app already holds. A record
+  /// stopped at a gate looks on the board exactly like one nobody has got to
+  /// yet — same stage, same row, and no working dot, because nothing IS
+  /// running on it.
+  Set<String> get _waitingRecords => {
+        for (final a in _approvals)
+          if (a.recordId != null) a.recordId!,
+      };
+
   /// Derived rather than asked for: every agent already streams the record it
   /// was spawned for and whether it is busy, so "is this record being worked
   /// on" is a question the client can already answer. Adding a field to the
@@ -833,6 +869,7 @@ class _WorldPageState extends State<WorldPage> {
           deadStages: _deadStages,
           selectedRecord: _selectedRecord,
           working: _workingRecords(agents),
+          waiting: _waitingRecords,
           api: _api,
           onChanged: () { _loadRooms(); _loadCastles(); },
           onRunRecord: _runRecord,
@@ -864,6 +901,16 @@ class _WorldPageState extends State<WorldPage> {
           recordId: recordId,
           working: _workingRecords(agents).contains(recordId),
           live: _live?.events,
+          // The cards waiting on THIS record. Already loaded for the badge
+          // and the panel, so the window costs nothing extra — what it
+          // changes is that a record which has stopped to ask something can
+          // be answered where you are looking at it.
+          approvals:
+              _approvals.where((a) => a.recordId == recordId).toList(),
+          onDecided: () async {
+            await _loadApprovals();
+            await _loadBoard();
+          },
           // Both lists, because a hand-move is the escape hatch FROM the
           // pipeline — including into a terminal stage, which is where a
           // record goes when the answer is "stop working this".

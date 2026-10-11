@@ -14,6 +14,46 @@ Future<void> _pump(WidgetTester t, Widget child) => t.pumpWidget(
 
 void main() {
   _runAllTests();
+
+  testWidgets('a record stopped at a gate is MARKED on the board', (t) async {
+    // From here a record waiting on you looks exactly like one nobody has got
+    // to yet: same stage, same row, and no working dot, because nothing IS
+    // running on it. Which record is waiting was readable only from the map
+    // badge or the Approvals panel, and neither of those says which.
+    await _pump(
+      t,
+      Board(
+        records: [
+          WorkRecord(_row('1', 'built', name: 'Waiting on you')),
+          WorkRecord(_row('2', 'built', name: 'Just sitting there')),
+        ],
+        stages: const ['built'],
+        deadStages: const [],
+        counts: const {'built': 2},
+        waiting: const {'1'},
+        onTapRecord: (_) {},
+      ),
+    );
+    await t.tap(find.text('built'));
+    await t.pumpAndSettle();
+    expect(find.byIcon(Icons.pan_tool_alt_outlined), findsOneWidget);
+  });
+
+  testWidgets('and a board with nothing waiting is unmarked', (t) async {
+    await _pump(
+      t,
+      Board(
+        records: [WorkRecord(_row('1', 'built'))],
+        stages: const ['built'],
+        deadStages: const [],
+        counts: const {'built': 1},
+        onTapRecord: (_) {},
+      ),
+    );
+    await t.tap(find.text('built'));
+    await t.pumpAndSettle();
+    expect(find.byIcon(Icons.pan_tool_alt_outlined), findsNothing);
+  });
   testWidgets('stages come from the server, in its order', (t) async {
     // The environment is plugin-driven: a second plugin adds stages this build
     // has never heard of, so nothing in the app may name one.

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api/client.dart';
 import '../model/castle.dart';
 import 'castle_gates.dart';
+import 'castle_options.dart';
 import 'pipeline_graph.dart';
 import 'castle_settings.dart';
 import 'start_form.dart';
@@ -34,6 +35,7 @@ class CastlePanel extends StatefulWidget {
     required this.onTapRecord,
     this.selectedRecord,
     this.working = const {},
+    this.waiting = const {},
     this.onRunRecord,
     this.onStopRecord,
     this.agents = const [],
@@ -61,6 +63,10 @@ class CastlePanel extends StatefulWidget {
 
   /// Record ids an agent is busy on, so a row can say so.
   final Set<String> working;
+
+  /// Record ids with a card waiting on the operator, so a kind's board
+  /// can say which of its records has stopped to ask you something.
+  final Set<String> waiting;
 
   /// Start or stop a record from its row, without opening it.
   final void Function(WorkRecord)? onRunRecord;
@@ -207,6 +213,10 @@ class _CastlePanelState extends State<CastlePanel> {
       'rooms',
       if (widget.api != null) 'pipeline',
       if (widget.api != null) 'gates',
+      // Only when the plugin declares something that differs between one of
+      // its castles and another, which most do not. A tab that is empty most
+      // of the time trains you to skip it.
+      if (widget.api != null && widget.castle.optionsDeclared > 0) 'options',
       if (widget.api != null) 'settings',
     ];
     final wanted = _tab;
@@ -247,6 +257,10 @@ class _CastlePanelState extends State<CastlePanel> {
       'rooms',
       if (widget.api != null) 'pipeline',
       if (widget.api != null) 'gates',
+      // Only when the plugin declares something that differs between one of
+      // its castles and another, which most do not. A tab that is empty most
+      // of the time trains you to skip it.
+      if (widget.api != null && widget.castle.optionsDeclared > 0) 'options',
       if (widget.api != null) 'settings',
     ];
     return SizedBox(
@@ -266,6 +280,7 @@ class _CastlePanelState extends State<CastlePanel> {
                   // `settings` did the moment it was added.
                   switch (id) {
                     'settings' => 'Settings',
+                    'options' => 'Working on',
                     'gates' => 'Gates',
                     'pipeline' => 'Pipeline',
                     'start' => 'Start',
@@ -316,6 +331,9 @@ class _CastlePanelState extends State<CastlePanel> {
       // pipeline, not of what happens to be sitting in it.
       return CastleGates(api: widget.api!, castle: c);
     }
+    if (_showing == 'options') {
+      return CastleOptions(api: widget.api!, castle: c);
+    }
     if (_showing == 'settings') {
       return CastleSettings(
         api: widget.api!,
@@ -339,6 +357,7 @@ class _CastlePanelState extends State<CastlePanel> {
         onTapRecord: widget.onTapRecord,
         selectedId: widget.selectedRecord,
         working: widget.working,
+        waiting: widget.waiting,
         onRun: widget.onRunRecord,
         onStop: widget.onStopRecord,
         drains: _drains,

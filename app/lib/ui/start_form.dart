@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/client.dart';
+import 'input_form.dart';
 
 /// How work ENTERS a pipeline, drawn from what the plugin declared.
 ///
@@ -134,8 +135,10 @@ class _StartCard extends StatefulWidget {
 }
 
 class _StartCardState extends State<_StartCard> {
-  final Map<String, dynamic> _values = {};
-  final Map<String, TextEditingController> _text = {};
+  /// Whatever the form currently holds. `DeclaredForm` pushes it on every
+  /// change rather than being read out at submit, so this card never reaches
+  /// inside the renderer it now shares with the castle options panel.
+  Map<String, dynamic> _values = {};
   bool _busy = false;
   String _problem = '';
   String _done = '';
@@ -145,41 +148,6 @@ class _StartCardState extends State<_StartCard> {
           (i as Map).cast<String, dynamic>()
       ];
 
-  @override
-  void initState() {
-    super.initState();
-    for (final i in _inputs) {
-      final id = '${i['id']}';
-      final kind = '${i['kind'] ?? 'text'}';
-      final options = (i['options'] as List? ?? const []);
-      if (kind == 'toggle') {
-        _values[id] = i['default'] == true;
-      } else if (kind == 'list') {
-        _values[id] = <String>[];
-      } else if (i['default'] != null) {
-        _values[id] = i['default'];
-      }
-      // A controller for every field that will RENDER as a text box — which
-      // includes a `list` with no options to pick from, and any kind this
-      // binary does not recognise. Deciding by kind alone left those two
-      // drawn but not wired: you could type into them and nothing was sent.
-      final typed = kind != 'toggle' &&
-          kind != 'choice' &&
-          !(kind == 'list' && options.isNotEmpty);
-      if (typed) {
-        _text[id] = TextEditingController(text: '${i['default'] ?? ''}');
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    for (final c in _text.values) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
   Future<void> _go() async {
     setState(() {
       _busy = true;
@@ -187,23 +155,6 @@ class _StartCardState extends State<_StartCard> {
       _done = '';
     });
     final values = <String, dynamic>{..._values};
-    final freeLists = {
-      for (final i in _inputs)
-        if ('${i['kind']}' == 'list') '${i['id']}',
-    };
-    _text.forEach((id, c) {
-      final typed = c.text.trim();
-      if (typed.isEmpty) return;
-      // A `list` with no options is typed comma-separated, and must still
-      // ARRIVE as a list — the plugin declared the kind, so sending a bare
-      // string would make the wire disagree with the declaration for exactly
-      // the fields nobody tested.
-      values[id] = freeLists.contains(id)
-          ? [for (final p in typed.split(',')) p.trim()]
-              .where((p) => p.isNotEmpty)
-              .toList()
-          : typed;
-    });
     try {
       final out = await widget.api.post('/starts/${widget.start['id']}',
           {'castle_id': widget.castleId, 'values': values});
@@ -249,7 +200,11 @@ class _StartCardState extends State<_StartCard> {
                     fontSize: 11.5, height: 1.35, color: Colors.white38)),
           ],
           const SizedBox(height: 12),
-          for (final i in _inputs) _field(i),
+          DeclaredForm(
+            inputs: _inputs,
+            keyPrefix: 'start',
+            onChanged: (v) => _values = v,
+          ),
           const SizedBox(height: 4),
           Row(children: [
             FilledButton(
@@ -272,149 +227,4 @@ class _StartCardState extends State<_StartCard> {
       ),
     );
   }
-
-  /// One control, from the fixed vocabulary.
-  ///
-  /// An unknown kind falls through to a text box rather than being dropped.
-  /// The environment gains behaviour by gaining plugins, and a plugin built
-  /// against a newer vocabulary than this binary must still be startable —
-  /// degrading to something you can type in always leaves it usable.
-  Widget _field(Map<String, dynamic> i) {
-    final id = '${i['id']}';
-    final label = '${i['label'] ?? id}';
-    final hint = '${i['hint'] ?? ''}';
-    final required = i['required'] == true;
-    final options = [for (final o in (i['options'] as List? ?? const [])) '$o'];
-
-    switch ('${i['kind'] ?? 'text'}') {
-      case 'toggle':
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 6),
-          child: Row(children: [
-            Switch(
-              key: ValueKey('start-$id'),
-              value: _values[id] == true,
-              onChanged: (v) => setState(() => _values[id] = v),
-            ),
-            const SizedBox(width: 8),
-            Expanded(child: _label(label, hint, required)),
-          ]),
-        );
-
-      case 'choice':
-        return _wrapped(
-          label,
-          hint,
-          required,
-          Wrap(spacing: 6, runSpacing: 4, children: [
-            for (final o in options)
-              ChoiceChip(
-                label: Text(o, style: const TextStyle(fontSize: 11.5)),
-                selected: _values[id] == o,
-                visualDensity: VisualDensity.compact,
-                onSelected: (_) => setState(() => _values[id] = o),
-              ),
-          ]),
-        );
-
-      case 'list':
-        // With options it is a multi-select; without, free entries typed
-        // comma-separated — the same field either way, so a plugin that has
-        // no closed set still gets a control.
-        if (options.isEmpty) break;
-        final picked = (_values[id] as List?)?.cast<String>() ?? const [];
-        return _wrapped(
-          label,
-          hint,
-          required,
-          Wrap(spacing: 6, runSpacing: 4, children: [
-            for (final o in options)
-              FilterChip(
-                label: Text(o, style: const TextStyle(fontSize: 11.5)),
-                selected: picked.contains(o),
-                visualDensity: VisualDensity.compact,
-                onSelected: (on) => setState(() {
-                  final next = [...picked];
-                  on ? next.add(o) : next.remove(o);
-                  _values[id] = next;
-                }),
-              ),
-          ]),
-        );
-    }
-
-    final longtext = '${i['kind']}' == 'longtext';
-    final number = '${i['kind']}' == 'number';
-    // `file` lands here too: a path you type or paste. The app carries almost
-    // no dependencies by choice, and a picker is one — worth adding when a
-    // plugin actually declares a file, not before.
-    return _wrapped(
-      label,
-      hint,
-      required,
-      TextField(
-        // Keyed by the field the plugin declared, so a test (and a screen
-        // reader) can name the control rather than counting them.
-        key: ValueKey('start-$id'),
-        controller: _text[id],
-        maxLines: longtext ? 3 : 1,
-        keyboardType: number ? TextInputType.number : null,
-        style: const TextStyle(fontSize: 12.5),
-        decoration: InputDecoration(
-          isDense: true,
-          hintText: hint.isEmpty ? null : hint,
-          hintStyle: const TextStyle(fontSize: 11.5, color: Colors.white24),
-          border: const OutlineInputBorder(),
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        ),
-      ),
-      showHint: false,
-    );
-  }
-
-  Widget _label(String label, String hint, bool required) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(children: [
-            Text(label, style: const TextStyle(fontSize: 12)),
-            if (required)
-              const Text(' *',
-                  style: TextStyle(fontSize: 12, color: Color(0xFFE0A458))),
-          ]),
-          if (hint.isNotEmpty)
-            Text(hint,
-                style: const TextStyle(
-                    fontSize: 11, height: 1.3, color: Colors.white30)),
-        ],
-      );
-
-  /// `showHint` is false for a text field, which puts the hint inside itself;
-  /// every other control has nowhere to put one, and losing it loses the line
-  /// that explains what leaving the field blank MEANS.
-  Widget _wrapped(String label, String hint, bool required, Widget control,
-          {bool showHint = true}) =>
-      Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              Text(label, style: const TextStyle(fontSize: 12)),
-              if (required)
-                const Text(' *',
-                    style: TextStyle(fontSize: 12, color: Color(0xFFE0A458))),
-            ]),
-            if (showHint && hint.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Text(hint,
-                    style: const TextStyle(
-                        fontSize: 11, height: 1.3, color: Colors.white30)),
-              ),
-            const SizedBox(height: 5),
-            control,
-          ],
-        ),
-      );
 }

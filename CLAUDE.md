@@ -272,6 +272,34 @@ not a global because runs are concurrent.
 An install with **no** castles behaves exactly as it did before they existed,
 unscoped.
 
+### Telling one castle from another
+
+Two castles of one plugin doing the same work on different subjects need
+somewhere to say WHICH subject. Everything else a plugin declares is answered
+once at boot with no castle in the signature — so a plugin that wanted one
+castle on one repository and another on a second had to be installed twice,
+with the paths edited in.
+
+`castle_options()` closes that. The plugin declares the fields with
+`StartInput`, the same vocabulary a start's form uses, and the app draws the
+panel from the declaration rather than shipping one; the values live on the
+castle in `state/castles.json` and are read back with
+`state.get_castle(id)["options"]`. **The plugin still never sees a castle** —
+it declares what a castle of it can be told, and reads the answer for the one
+in hand.
+
+- **An undeclared option is refused, not dropped.** A setting typed into a
+  box, saved without complaint, and read by nothing is the silent failure
+  this environment keeps finding.
+- **`json` is a kind here and not on a start.** A start takes what an
+  operator types in one go; a castle's platform list is configuration that
+  has to survive a round trip, and finding out it was malformed in the middle
+  of a build is the worst place to find out. Stored decoded, so a plugin
+  reads a list rather than parsing a string every run.
+- **The tab is offered only when there is something in it**, from a count on
+  `/castles`. Most plugins have nothing that differs between two of their
+  castles, and a tab that is empty most of the time trains you to skip it.
+
 ### The web
 
 Plots sit on rings around a hub: ring `n` holds `6n`, at radius
@@ -697,6 +725,15 @@ Flutter, `app/`. An isometric map of the world with floating windows over it.
   with the records last, so the first failure cancelled the rest.
   `api/steps.dart` runs each independently, retries once on the first connect,
   and puts what did not load in the status line.
+- **A record waiting on you opens on the question.** A gate stops the work
+  and asks, and the only place to answer was the global Approvals panel — so
+  a record opened BECAUSE it had stopped said nothing about why, and the
+  answer was two windows away. The `Decide` tab carries the panel's own card,
+  comes before `Current run` (a card means nothing is running; the work is
+  waiting on you) and is gone the moment it is decided. The board marks those
+  records too: from a kind's tab, one stopped at a gate otherwise looks
+  exactly like one nobody has got to — same stage, same row, no working dot,
+  because nothing IS running on it.
 - **A record being worked opens on `Current run`**, first, and the tab is gone
   when nothing is running — a tab that is empty most of the time trains you to
   skip it. It shows what the agent is saying and doing as it happens: prose in

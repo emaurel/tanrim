@@ -133,6 +133,10 @@ class Environment:
     _hooks: dict[str, list[Callable[..., Any]]] = field(default_factory=dict)
     _step_gates: list[StepGate] = field(default_factory=list)
     _starts: dict[str, Start] = field(default_factory=dict)
+    #: plugin id -> the options its castles carry. Kept per plugin and
+    #: never merged: a castle belongs to exactly one plugin, so two
+    #: plugins both calling an option `upstream` is not a collision.
+    _castle_options: dict[str, tuple[Any, ...]] = field(default_factory=dict)
     _room_handlers: dict[str, type] = field(default_factory=dict)
     _summary_fields: list[str] = field(default_factory=list)
     _models: dict[str, Any] = field(default_factory=dict)
@@ -191,6 +195,7 @@ class Environment:
                 "hooks": dict(p.hooks()),
                 "step_gates": list(p.step_gates()),
                 "starts": list(p.starts()),
+                "castle_options": tuple(p.castle_options()),
                 "room_handlers": dict(p.room_handlers()),
                 "summary_fields": list(p.summary_fields()),
                 "bulk_fields": tuple(p.bulk_fields()),
@@ -301,6 +306,9 @@ class Environment:
                         f"two plugins declare the start {st.id!r}; a start is "
                         f"addressed by that id, so one would shadow the other")
                 self._starts[st.id] = st
+            declared = self._said(p, "castle_options")
+            if declared:
+                self._castle_options[p.id] = declared
             self._room_handlers.update(self._said(p, "room_handlers"))
             for f in self._said(p, "summary_fields"):
                 if f not in self._summary_fields:
@@ -390,6 +398,35 @@ class Environment:
                         problems.append(
                             f"start {st.id!r} offers a choice {field_.id!r} "
                             f"with no options to choose from")
+        for plugin_id, options in self._castle_options.items():
+            if plugin_id not in {d["id"] for d in self.describe()
+                                 if d.get("rooms")}:
+                problems.append(
+                    f"plugin {plugin_id!r} declares castle options but no "
+                    f"rooms of its own, so it can have no castle and the form "
+                    f"would be unreachable")
+            seen: set[str] = set()
+            for field_ in options:
+                if not field_.id:
+                    problems.append(
+                        f"plugin {plugin_id!r} declares a castle option with "
+                        f"no id, so nothing could store its value")
+                elif field_.id in seen:
+                    problems.append(
+                        f"plugin {plugin_id!r} declares the castle option "
+                        f"{field_.id!r} twice; one would silently win")
+                seen.add(field_.id)
+                if field_.kind == "choice" and not field_.options:
+                    problems.append(
+                        f"castle option {field_.id!r} of {plugin_id!r} is a "
+                        f"choice with no options to choose from")
+                if (field_.kind == "choice" and field_.options
+                        and field_.default is not None
+                        and field_.default not in field_.options):
+                    problems.append(
+                        f"castle option {field_.id!r} of {plugin_id!r} "
+                        f"defaults to {field_.default!r}, which is not one of "
+                        f"its options")
         # A job at a stage no bench in that room declares is dispatched and
         # then refused by `runners._wrong_stage`, which reads BENCHES. The two
         # were independent truths: a plugin adding an `AgentPatch` job without
@@ -780,6 +817,16 @@ class Environment:
 
     def start(self, start_id: str) -> "Start | None":
         return self._starts.get(start_id)
+
+    def castle_options(self, plugin_id: str) -> list[Any]:
+        """What a castle of this plugin can be told, as declared.
+
+        By PLUGIN, because that is what a castle is an instance of. Asking by
+        castle id would be the natural-looking signature and would put the
+        core in the business of resolving one, which is exactly the lookup the
+        caller has already done to get here.
+        """
+        return list(self._castle_options.get(plugin_id, ()))
 
     def room_handler(self, room_id: str) -> type | None:
         from . import ledger as _ledger

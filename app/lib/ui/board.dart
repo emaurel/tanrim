@@ -18,6 +18,7 @@ class Board extends StatelessWidget {
     required this.onTapRecord,
     this.selectedId,
     this.working = const {},
+    this.waiting = const {},
     this.onRun,
     this.onStop,
     this.onRunAll,
@@ -39,6 +40,15 @@ class Board extends StatelessWidget {
   /// for a new field. A record is "being worked on" if somebody is standing
   /// at a bench holding it.
   final Set<String> working;
+
+  /// Record ids with a card waiting on the operator.
+  ///
+  /// The board is where you survey a kind of work, and a record stopped at a
+  /// gate looks from here exactly like one nobody has got to yet — same
+  /// stage, same row, no dot, because nothing is running on it. The thing it
+  /// is waiting for is YOU, and that was readable only from the map badge or
+  /// the Approvals panel, neither of which says which record.
+  final Set<String> waiting;
 
   /// Start the record's next step, or stop what is on it. Both optional: the
   /// board is also drawn in places with no server to ask.
@@ -97,6 +107,7 @@ class Board extends StatelessWidget {
           onTapRecord: onTapRecord,
           selectedId: selectedId,
           working: working,
+          waiting: waiting,
           onRun: onRun,
           onStop: onStop,
         );
@@ -115,6 +126,7 @@ class _StageGroup extends StatefulWidget {
     required this.dimmed,
     required this.onTapRecord,
     required this.working,
+    required this.waiting,
     required this.onRun,
     required this.onStop,
     this.selectedId,
@@ -128,6 +140,7 @@ class _StageGroup extends StatefulWidget {
   final bool dimmed;
   final void Function(WorkRecord) onTapRecord;
   final Set<String> working;
+  final Set<String> waiting;
   final void Function(WorkRecord)? onRun;
   final void Function(WorkRecord)? onStop;
   final String? selectedId;
@@ -289,6 +302,7 @@ class _StageGroupState extends State<_StageGroup> {
               record: r,
               selected: r.id == widget.selectedId,
               working: widget.working.contains(r.id),
+              waiting: widget.waiting.contains(r.id),
               onTap: () => widget.onTapRecord(r),
               onRun: widget.onRun == null ? null : () => widget.onRun!(r),
               onStop: widget.onStop == null ? null : () => widget.onStop!(r),
@@ -304,6 +318,7 @@ class _RecordRow extends StatelessWidget {
       {required this.record,
       required this.selected,
       required this.working,
+      required this.waiting,
       required this.onTap,
       this.onRun,
       this.onStop});
@@ -311,6 +326,7 @@ class _RecordRow extends StatelessWidget {
   final WorkRecord record;
   final bool selected;
   final bool working;
+  final bool waiting;
   final VoidCallback onTap;
   final VoidCallback? onRun;
   final VoidCallback? onStop;
@@ -333,6 +349,13 @@ class _RecordRow extends StatelessWidget {
           children: [
             if (working) ...[
               const _WorkingDot(),
+              const SizedBox(width: 8),
+            ] else if (waiting) ...[
+              // Red, and in the same place the working dot sits: the two are
+              // the only coloured marks on a row, and they are the only two
+              // states where the record is not simply sitting there.
+              const Icon(Icons.pan_tool_alt_outlined,
+                  size: 14, color: Color(0xFFE05A47)),
               const SizedBox(width: 8),
             ],
             Expanded(

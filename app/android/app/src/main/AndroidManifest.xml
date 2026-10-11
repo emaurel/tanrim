@@ -1,8 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Flutter scaffolds this into the DEBUG and PROFILE manifests only, so a
+         release build ships without it and cannot open a socket at all. The
+         app is a client for a server on another machine; without this it
+         installs, launches, and times out on every request with nothing to
+         say why. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
         android:label="tanrim"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

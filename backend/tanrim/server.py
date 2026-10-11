@@ -717,6 +717,12 @@ async def get_castles() -> dict[str, Any]:
              "plugin_name": names.get(c.get("plugin", ""), c.get("plugin", "")),
              "installed": c.get("plugin") in names,
              "records": len(state.records_in(c["id"])),
+             # How many things this castle can be TOLD. A count rather than
+             # the declaration: the app only needs it to decide whether to
+             # offer the tab at all, and a tab that is empty most of the time
+             # trains you to skip it.
+             "options_declared": len(
+                 env.castle_options(c.get("plugin", ""))),
              # `working` when a run is in flight here, `idle` otherwise. There
              # is no third state: a castle is either doing something or it is
              # not, and "has work waiting" is the badge, not the status.
@@ -775,6 +781,167 @@ async def patch_castle(castle_id: str, body: CastleBody) -> dict[str, Any]:
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "castle": state.get_castle(castle_id)}
+
+
+def _declared_options(castle: dict[str, Any]) -> list[Any]:
+    return environment.current().castle_options(castle.get("plugin", ""))
+
+
+def _option_wire(field: Any) -> dict[str, Any]:
+    """One declared option, as the app draws it.
+
+    The same shape a start's input is sent in, because it is the same
+    vocabulary and the app renders them with the same code. A second shape
+    here would be two renderers to keep in step.
+    """
+    return {"id": field.id, "label": field.label, "kind": field.kind,
+            "hint": field.hint, "required": field.required,
+            "default": field.default, "options": list(field.options),
+            "minimum": field.minimum, "maximum": field.maximum}
+
+
+def _checked_options(declared: list[Any], values: dict[str, Any]
+                     ) -> tuple[dict[str, Any], list[str]]:
+    """What to store, and everything wrong with what was sent.
+
+    Every problem is collected rather than raising on the first: this is a
+    form with thirty fields and answering one mistake at a time would be
+    thirty round trips.
+
+    An UNDECLARED key is refused, not dropped. A value nothing reads is the
+    silent failure this environment keeps finding — a setting typed into a
+    box, saved without complaint, and doing nothing — and the plugin that
+    declared the form is the only thing that can say what it understands.
+    """
+    import json as _json
+
+    by_id = {f.id: f for f in declared}
+    problems: list[str] = []
+    for key in values:
+        if key not in by_id:
+            problems.append(f"{key!r} is not an option this plugin declares")
+
+    out: dict[str, Any] = {}
+    for field in declared:
+        if field.id not in values:
+            if field.required:
+                problems.append(f"{field.label or field.id!r} is required")
+            continue
+        value = values[field.id]
+        empty = value is None or (isinstance(value, (str, list, dict))
+                                  and len(value) == 0)
+        if empty:
+            # Storing an empty value and leaving it out mean the same thing —
+            # fall back to the plugin's default — so one of them has to go,
+            # and the one that goes is the one that cannot express "required
+            # and not answered".
+            if field.required:
+                problems.append(f"{field.label or field.id!r} is required")
+            continue
+        if field.kind == "toggle":
+            if not isinstance(value, bool):
+                problems.append(f"{field.id!r} is a toggle, so it takes true "
+                                f"or false, not {type(value).__name__}")
+                continue
+        elif field.kind == "number":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                try:
+                    value = float(str(value))
+                except ValueError:
+                    problems.append(f"{field.id!r} is a number, and "
+                                    f"{value!r} is not one")
+                    continue
+            if value == int(value):
+                value = int(value)
+            if field.minimum is not None and value < field.minimum:
+                problems.append(f"{field.id!r} is below its minimum "
+                                f"of {field.minimum}")
+                continue
+            if field.maximum is not None and value > field.maximum:
+                problems.append(f"{field.id!r} is above its maximum "
+                                f"of {field.maximum}")
+                continue
+        elif field.kind == "choice":
+            if str(value) not in field.options:
+                problems.append(
+                    f"{field.id!r} must be one of "
+                    f"{', '.join(field.options)}, not {value!r}")
+                continue
+            value = str(value)
+        elif field.kind == "list":
+            if not isinstance(value, list):
+                problems.append(f"{field.id!r} is a list, and {value!r} "
+                                f"is not one")
+                continue
+            if field.options:
+                stray = [v for v in value if str(v) not in field.options]
+                if stray:
+                    problems.append(
+                        f"{field.id!r} does not offer "
+                        f"{', '.join(repr(v) for v in stray)}")
+                    continue
+            value = [str(v) for v in value]
+        elif field.kind == "json":
+            # Typed as text and stored as the value it describes, so the
+            # plugin reads a list or a dict rather than re-parsing a string
+            # every run — and a malformed one is refused HERE, at the moment
+            # it is saved, instead of halfway through a build.
+            if isinstance(value, str):
+                try:
+                    value = _json.loads(value)
+                except ValueError as e:
+                    problems.append(f"{field.id!r} is not valid JSON: {e}")
+                    continue
+        else:
+            value = str(value)
+        out[field.id] = value
+    return out, problems
+
+
+@app.get("/castles/{castle_id}/options")
+async def get_castle_options(castle_id: str) -> dict[str, Any]:
+    """What this castle can be told, and what it has been told.
+
+    Both in one answer, because a form needs both and fetching them
+    separately is two requests that can disagree about which plugin the
+    castle belongs to.
+    """
+    castle = state.get_castle(castle_id)
+    if castle is None:
+        raise HTTPException(404, "no such castle")
+    return {"castle": castle_id, "plugin": castle.get("plugin", ""),
+            "declared": [_option_wire(f) for f in _declared_options(castle)],
+            "options": state.castle_options(castle_id)}
+
+
+class CastleOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    options: dict[str, Any] = {}
+
+
+@app.put("/castles/{castle_id}/options")
+async def put_castle_options(castle_id: str, body: CastleOptions
+                             ) -> dict[str, Any]:
+    """Tell a castle what it is. Checked against what its plugin declares."""
+    castle = state.get_castle(castle_id)
+    if castle is None:
+        raise HTTPException(404, "no such castle")
+    declared = _declared_options(castle)
+    if not declared:
+        return {"ok": False,
+                "error": f"{castle.get('plugin')!r} declares no castle "
+                         f"options, so there is nothing to set"}
+    checked, problems = _checked_options(declared, dict(body.options))
+    if problems:
+        return {"ok": False, "error": "; ".join(problems),
+                "problems": problems}
+    state.set_castle_options(castle_id, checked)
+    state.log_event("run_end", from_="operator", outcome="completed",
+                    summary=f"set what {castle.get('name')} is working on",
+                    details={"castle": castle_id,
+                             "options": sorted(checked)})
+    await world.publish({"type": "world_changed"})
+    return {"ok": True, "options": checked}
 
 
 @app.delete("/castles/{castle_id}")

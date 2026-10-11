@@ -433,6 +433,7 @@ void main() {
         'installed': false,
         'status': 'working',
         'waiting': 4,
+        'options_declared': 7,
       });
       final after = before.withRooms(const []);
 
@@ -448,6 +449,7 @@ void main() {
       expect(after.installed, before.installed);
       expect(after.status, before.status);
       expect(after.waiting, before.waiting);
+      expect(after.optionsDeclared, before.optionsDeclared);
       expect(after.working, isTrue);
     });
 

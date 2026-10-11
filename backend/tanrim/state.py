@@ -133,9 +133,22 @@ def _ensure() -> None:
 # ---------------------------------------------------------------------------
 
 def list_castles() -> list[dict[str, Any]]:
-    """Every castle, in the order they were built."""
+    """Every castle, in the order they were built.
+
+    `options` is filled in on the way out rather than backfilled onto the
+    file, the same way `_home_castle` resolves at read time: a castle built
+    before its plugin declared any option has none stored, and a reader that
+    has to remember `.get("options") or {}` is a reader that will forget.
+    """
     _ensure()
-    return _read(CASTLES_FILE)
+    return [_castle_options_filled(c) for c in _read(CASTLES_FILE)]
+
+
+def _castle_options_filled(castle: dict[str, Any]) -> dict[str, Any]:
+    """Guarantee the `options` key, without touching the file."""
+    if not isinstance(castle.get("options"), dict):
+        castle["options"] = {}
+    return castle
 
 
 def get_castle(castle_id: str) -> dict[str, Any] | None:
@@ -220,6 +233,35 @@ def move_castle(castle_id: str, ring: int, slot: int) -> dict[str, Any] | None:
                 _write(CASTLES_FILE, items)
                 return c
     return None
+
+
+def set_castle_options(castle_id: str, options: dict[str, Any]
+                       ) -> dict[str, Any] | None:
+    """Replace what a castle has been told. None if there is no such castle.
+
+    A REPLACEMENT and not a merge, because the form sends the whole thing: a
+    merge cannot express clearing a field, and an option removed from the
+    plugin's declaration would otherwise sit in the file for ever, applying
+    to nothing and explaining nothing.
+
+    What is stored is checked against the declaration before it gets here —
+    `server.put_castle_options` does that, where the environment is in reach.
+    """
+    with _lock:
+        items: list[dict[str, Any]] = _read(CASTLES_FILE)
+        for c in items:
+            if c["id"] == castle_id:
+                c["options"] = dict(options)
+                _write(CASTLES_FILE, items)
+                return c
+    return None
+
+
+def castle_options(castle_id: str) -> dict[str, Any]:
+    """What this castle has been told. Empty when it has been told nothing."""
+    castle = get_castle(castle_id) or {}
+    got = castle.get("options")
+    return dict(got) if isinstance(got, dict) else {}
 
 
 def delete_castle(castle_id: str) -> bool:

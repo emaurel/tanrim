@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 
 import '../api/client.dart';
+import '../model/approval.dart';
 import '../api/live.dart';
+import 'approvals.dart';
 import 'blocks.dart';
 import 'settings_tab.dart';
 
@@ -25,6 +27,8 @@ class RecordWindow extends StatefulWidget {
     this.stages = const [],
     this.onDeleted,
     this.live,
+    this.approvals = const [],
+    this.onDecided,
   });
 
   final Api api;
@@ -50,6 +54,19 @@ class RecordWindow extends StatefulWidget {
   /// Closed by the window that owns it, since a deleted record has nothing
   /// left to show.
   final VoidCallback? onDeleted;
+
+  /// Cards waiting on THIS record.
+  ///
+  /// A gate stops the work and asks, and until now the only place to answer
+  /// was the global Approvals panel — so a record you had opened because it
+  /// had stopped told you nothing about why, and the answer was two windows
+  /// away. The card is the same widget the panel draws; what is new is that
+  /// it is here, where the record is.
+  final List<Approval> approvals;
+
+  /// After a card is decided, so the owner can refetch the record and the
+  /// pending list. The card disappears from here the moment the list does.
+  final VoidCallback? onDecided;
 
   @override
   State<RecordWindow> createState() => _RecordWindowState();
@@ -148,9 +165,11 @@ class _RecordWindowState extends State<RecordWindow> {
         Expanded(
           child: _showing == 'settings'
               ? _settings(view)
-              : _showing == 'run'
-                  ? _currentRun()
-                  : _body(history, spend, rest),
+              : _showing == 'decide'
+                  ? _decide()
+                  : _showing == 'run'
+                      ? _currentRun()
+                      : _body(history, spend, rest),
         ),
       ],
     );
@@ -166,12 +185,39 @@ class _RecordWindowState extends State<RecordWindow> {
   /// details.
   String get _showing {
     final t = _tab;
+    // Both of these COME AND GO — a run ends while you are reading it, a card
+    // is decided — so a stored `_tab` would leave the window on a tab that is
+    // no longer there.
     if (t == 'run' && !widget.working) return 'details';
+    if (t == 'decide' && widget.approvals.isEmpty) return 'details';
     if (t != null) return t;
+    // A record that has STOPPED to ask you something opens on the question.
+    // It beats the run tab because a card means nothing is running: the work
+    // is waiting on you, and that is the only thing worth showing first.
+    if (widget.approvals.isNotEmpty) return 'decide';
     // A record you opened BECAUSE something is happening to it opens on what
     // is happening.
     return widget.working ? 'run' : 'details';
   }
+
+  /// The cards waiting on this record, as the Approvals panel draws them.
+  Widget _decide() => ListView(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 20),
+        children: [
+          for (final a in widget.approvals)
+            ApprovalCard(
+              key: ValueKey(a.id),
+              api: widget.api,
+              approval: a,
+              onResolved: () {
+                // The record moves when a gate is decided, so the view it is
+                // showing is stale from that instant.
+                _load();
+                widget.onDecided?.call();
+              },
+            ),
+        ],
+      );
 
   /// What the agent working this record has said, this run.
   ///
@@ -371,6 +417,16 @@ class _RecordWindowState extends State<RecordWindow> {
           // FIRST, and only while something is running. A tab that is empty
           // most of the time trains you to skip it; the whole value of this
           // one is that its presence means work is happening right now.
+          // Before everything, including the run: a card means the work has
+          // STOPPED and is waiting on you, which outranks anything else this
+          // window has to say. Gone the moment it is decided.
+          if (widget.approvals.isNotEmpty) ...[
+            _tabButton('decide', widget.approvals.length == 1
+                ? 'Decide'
+                : 'Decide (${widget.approvals.length})',
+                tone: const Color(0xFFE05A47)),
+            const SizedBox(width: 6),
+          ],
           if (widget.working) ...[
             _tabButton('run', 'Current run'),
             const SizedBox(width: 6),
@@ -405,15 +461,19 @@ class _RecordWindowState extends State<RecordWindow> {
         : '\$${v.toStringAsFixed(2)}';
   }
 
-  Widget _tabButton(String id, String label) {
+  /// `tone` colours a tab that is asking for something rather than holding
+  /// something — the one case where a tab should pull your eye.
+  Widget _tabButton(String id, String label, {Color? tone}) {
     final on = _showing == id;
     return TextButton(
       onPressed: () => setState(() => _tab = id),
       style: TextButton.styleFrom(
         visualDensity: VisualDensity.compact,
-        backgroundColor:
-            on ? Colors.white.withValues(alpha: .10) : Colors.transparent,
-        foregroundColor: on ? Colors.white : Colors.white54,
+        backgroundColor: on
+            ? (tone ?? Colors.white).withValues(alpha: tone == null ? .10 : .18)
+            : (tone ?? Colors.transparent)
+                .withValues(alpha: tone == null ? 0 : .10),
+        foregroundColor: on ? Colors.white : (tone ?? Colors.white54),
       ),
       child: Text(label, style: const TextStyle(fontSize: 12)),
     );

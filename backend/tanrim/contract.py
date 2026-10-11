@@ -331,6 +331,12 @@ class StartInput:
         choice     one of `options`
         list       several of `options`, or free entries when it has none
         file       a path the operator picks
+        json       a nested value, typed as JSON and refused if it does not
+                   parse. Only castle options use it: a start takes what an
+                   operator types in one go, while a castle's platform list is
+                   configuration that has to survive a round trip, and finding
+                   out it was malformed in the middle of a run is the worst
+                   place to find out. Drawn as a `longtext`.
 
     Variety lives in the hint and the options rather than in more kinds.
     """
@@ -673,6 +679,38 @@ class Plugin(ABC):
         makes the first record is reachable by nothing — not the stage sweep,
         which keys on a stage no record is at yet, and not the app, whose Run
         buttons all hang off a queue row.
+        """
+        return ()
+
+    def castle_options(self) -> Iterable[StartInput]:
+        """What differs between two castles of this plugin.
+
+        A castle is one running instance, and the whole point of having two is
+        that they do the same work on different subjects — two agencies, two
+        repositories, two mailboxes. Everything else a plugin declares is
+        answered once at boot with no castle in the signature, deliberately:
+        a plugin never sees one. So without this there is nowhere to say
+        "this castle is THAT repository", and the only way to specialise a
+        generic plugin was to install a second copy of it with the paths
+        edited in.
+
+        Declared with `StartInput` rather than a shape of its own, for the
+        same reason a start declares its inputs: the app draws the form from
+        the small vocabulary it already renders, so a plugin gains a settings
+        panel without the app shipping anything. `json` is here and not on a
+        start because these are configuration — a platform list is a nested
+        value that has to survive a round trip, and a malformed one is worth
+        refusing when it is SAVED rather than discovering in the middle of a
+        run.
+
+        The values are the operator's, stored by the environment per castle
+        and never written back to the plugin. A plugin reads them with
+        `state.get_castle(id)["options"]`, or through its own helper scoped by
+        `castles.here()` during a run.
+
+        An extension declares none: it has no castle of its own — it lives
+        inside the castle of what it extends — so a form for it would be a
+        form nobody could reach.
         """
         return ()
 

@@ -210,4 +210,7 @@ def record(plugin_id: str, name: str, ring: int, slot: int,
         "ring": int(ring),
         "slot": int(slot),
         "ts": time.time(),
+        # What differs between two castles of one plugin. Empty until the
+        # operator fills in the form the plugin declared.
+        "options": {},
     }
