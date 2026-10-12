@@ -183,7 +183,15 @@ class Room:
     id: str
     name: str
     purpose: str = ""
-    position: tuple[int, int] = (0, 0)
+    #: Where it sits, in tiles. **None means "you decide"**, and the core
+    #: lays it out alongside its plugin's other rooms.
+    #:
+    #: This defaulted to `(0, 0)`, which is a POSITION rather than an absence
+    #: of one — so a plugin that declared five rooms and no coordinates got
+    #: five rooms stacked on the same tile, and `contrib` shipped exactly
+    #: that. "Geometry is computed if omitted" was written down as the
+    #: contract and was not true; the default was doing the omitting silently.
+    position: tuple[int, int] | None = None
     size: tuple[int, int] = (12, 8)
     color: str = "#222222"
     workbenches: tuple[Workbench, ...] = ()

@@ -255,6 +255,73 @@ def _plugin_of_room(env: "Any") -> dict[str, str]:
     return out
 
 
+#: Tiles between two auto-placed rooms, so they read as separate buildings.
+ROOM_GAP = 2
+
+
+def placed(rooms: "list[Any]") -> dict[str, tuple[int, int]]:
+    """Where each room goes, for the ones that did not say.
+
+    A plugin may position its rooms by hand — the web agency and the job hunt
+    both do, and the map they draw is deliberate — or leave it to the core,
+    which is what the contract has always promised. What it did instead was
+    default `position` to `(0, 0)`, so every unplaced room landed on the same
+    tile and five of them looked like one.
+
+    Laid out in a grid as square as the count allows, to the RIGHT of
+    whatever the plugin placed by hand, so the two kinds can be mixed: a
+    plugin that positions two rooms and leaves three to the core gets three
+    rooms beside its own, not on top of them. Rows are as tall as the tallest
+    room so nothing overlaps vertically either.
+    """
+    import math
+
+    free = [r for r in rooms if r.position is None]
+    if not free:
+        return {}
+
+    fixed = [r for r in rooms if r.position is not None]
+    start_x = max((r.position[0] + r.size[0] for r in fixed), default=0)
+    start_y = min((r.position[1] for r in fixed), default=0)
+    if fixed:
+        start_x += ROOM_GAP
+
+    columns = max(1, math.ceil(math.sqrt(len(free))))
+    width = max(r.size[0] for r in free) + ROOM_GAP
+    height = max(r.size[1] for r in free) + ROOM_GAP
+
+    out: dict[str, tuple[int, int]] = {}
+    for i, room in enumerate(free):
+        out[room.id] = (start_x + (i % columns) * width,
+                        start_y + (i // columns) * height)
+    return out
+
+
+def _positions(env: "Any") -> dict[str, tuple[int, int]]:
+    """Every room's effective position, by room id.
+
+    Resolved ONCE and consulted everywhere, because three places read a
+    room's coordinates — the castle offset, the room itself and the spot the
+    Ledger goes under — and three separate answers to "where is this room"
+    is three ways for them to disagree.
+
+    Grouped by PLUGIN, so one plugin's unplaced rooms are laid out among its
+    own and not among somebody else's.
+    """
+    owner = _plugin_of_room(env)
+    groups: dict[str, list[Any]] = {}
+    for room in env.rooms():
+        groups.setdefault(owner.get(room.id, ""), []).append(room)
+
+    out: dict[str, tuple[int, int]] = {}
+    for group in groups.values():
+        out.update(placed(group))
+        for room in group:
+            if room.position is not None:
+                out[room.id] = (room.position[0], room.position[1])
+    return out
+
+
 def _offsets(env: "Any", castles: "list[dict[str, Any]]") -> dict[str, tuple[int, int]]:
     """Where each castle's rooms sit, relative to where the plugin put them.
 
@@ -267,10 +334,11 @@ def _offsets(env: "Any", castles: "list[dict[str, Any]]") -> dict[str, tuple[int
     from . import castles as geom
 
     owner = _plugin_of_room(env)
+    where = _positions(env)
     boxes: dict[str, tuple[float, float, float, float]] = {}
     for room in env.rooms():
         plugin = owner.get(room.id, "")
-        x0, y0 = room.position
+        x0, y0 = where[room.id]
         x1, y1 = x0 + room.size[0], y0 + room.size[1]
         if plugin in boxes:
             a, b, c, d = boxes[plugin]
@@ -312,6 +380,7 @@ def _from_environment(env: "Any",
 
     castles = castles or []
     owner = _plugin_of_room(env)
+    where = _positions(env)
     offsets = _offsets(env, castles)
 
     # Only castles whose plugin is actually installed. A castle outlives an
@@ -331,18 +400,19 @@ def _from_environment(env: "Any",
         mine = [r for r in env.rooms()
                 if not castle_id or owner.get(r.id) == by_plugin.get(castle_id)]
         for room in mine:
-            rooms.extend(_one_room(env, room, castle_id, dx, dy, geom))
+            rooms.extend(_one_room(env, room, castle_id, dx, dy, geom,
+                                   at=where[room.id]))
         # Every castle gets the spend room, whoever its plugin is — and an
         # install with no plugins at all still gets one, because running
         # agents costs money before it does anything else. Laid out BELOW
         # whatever the plugin declared, from that plugin's own footprint, so
         # it never lands on a room someone else positioned by hand.
-        rooms.extend(_one_room(env, _ledger.room(_below(mine)),
+        rooms.extend(_one_room(env, _ledger.room(_below(mine, where)),
                                castle_id, dx, dy, geom))
     return rooms
 
 
-def _below(rooms: "list[Any]") -> tuple[int, int]:
+def _below(rooms: "list[Any]", where: "dict[str, tuple[int, int]]") -> tuple[int, int]:
     """A free spot under a castle's rooms, in the plugin's own coordinates.
 
     The offset that centres a castle on its plot is applied afterwards and to
@@ -351,13 +421,13 @@ def _below(rooms: "list[Any]") -> tuple[int, int]:
     """
     if not rooms:
         return (0, 0)
-    x0 = min(r.position[0] for r in rooms)
-    y1 = max(r.position[1] + r.size[1] for r in rooms)
+    x0 = min(where[r.id][0] for r in rooms)
+    y1 = max(where[r.id][1] + r.size[1] for r in rooms)
     return (x0, y1 + 4)
 
 
 def _one_room(env: "Any", room: "Any", castle_id: str, dx: int, dy: int,
-              geom: "Any") -> list[RoomSpec]:
+              geom: "Any", at: "tuple[int, int] | None" = None) -> list[RoomSpec]:
     if True:
         spec = RoomSpec(
             id=geom.scope(room.id, castle_id),
@@ -365,7 +435,8 @@ def _one_room(env: "Any", room: "Any", castle_id: str, dx: int, dy: int,
             base_id=room.id,
             name=room.name,
             purpose=room.purpose,
-            position=Vec2(x=room.position[0] + dx, y=room.position[1] + dy),
+            position=Vec2(x=(at or room.position)[0] + dx,
+                          y=(at or room.position)[1] + dy),
             size=Size(w=room.size[0], h=room.size[1]),
             color=room.color,
             tools=list(room.tools),

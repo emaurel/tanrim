@@ -22,6 +22,7 @@ from . import secrets as secrets_store
 from . import skills as skills_mod
 from . import rooms as rooms_mod
 from . import state
+from . import weburl
 from .handlers import build_handlers
 from .orchestrator import Orchestrator
 from .tools import registry as tool_registry
@@ -113,6 +114,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _remember_where_we_were_reached(request, call_next):
+    """Hold the base URL this client used, for anything building a link.
+
+    The server binds `0.0.0.0` and is reached as `127.0.0.1`, as a Tailscale
+    address, and over a proxy — three different names for one process, and
+    only the client knows which it used. A plugin putting a picture in a
+    record view needs the one in front of it, not the bind address.
+    """
+    token = weburl.CURRENT.set(
+        weburl.from_headers(request.url.scheme, request.headers))
+    try:
+        return await call_next(request)
+    finally:
+        weburl.CURRENT.reset(token)
 
 
 #: Which routes each plugin put on the app, so that removing a plugin can take

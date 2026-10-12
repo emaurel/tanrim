@@ -70,7 +70,12 @@ def room_from_dict(data: dict[str, Any]) -> Room | RoomPatch:
         id=data["id"],
         name=data.get("name") or data["id"],
         purpose=data.get("purpose", ""),
-        position=_pair(data.get("position"), ("x", "y")) or (0, 0),
+        # No `position:` in the manifest means the core lays it out, so the
+        # absence is passed ON rather than turned into the origin here. This
+        # said `or (0, 0)`, which is how five rooms with no coordinates came
+        # out stacked on one tile — the helper answered a question the
+        # manifest had not asked.
+        position=_pair(data.get("position"), ("x", "y")),
         size=_pair(data.get("size"), ("w", "h")) or (12, 8),
         color=data.get("color", "#222222"),
         workbenches=benches,
