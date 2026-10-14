@@ -55,6 +55,10 @@ class Blocks extends StatelessWidget {
       // that says "Photographs (11)" — which is the count and nothing else,
       // and the whole value of a photograph is seeing it.
       'images' => _titled(title, _images(b), open: true),
+      // Open, for the same reason. A document an employer asked for is the
+      // thing to read before approving a send, and folded it is a heading
+      // that says "Documents (1)".
+      'documents' => _titled(title, _documents(context, b), open: true),
       // Open. The history has a tab to itself, so there is nothing for
       // folding it to reveal — closed, that tab is one grey heading and the
       // click to open it is the only thing you can do there.
@@ -477,6 +481,81 @@ class Blocks extends StatelessWidget {
     );
   }
 
+  /// Files this record carries — what an employer is actually handed.
+  ///
+  /// A card rather than a row of text. A PDF has a length, a date and pages,
+  /// and the one question about it is what is IN it: tapping opens the pages,
+  /// which the server rendered because nothing here can read a PDF. "There is
+  /// a document and you cannot see it" is the failure this environment keeps
+  /// finding, and a filename in blue would be exactly that.
+  Widget _documents(BuildContext context, Map<String, dynamic> b) {
+    final items = ((b['items'] ?? []) as List)
+        .map((i) => (i as Map).cast<String, dynamic>())
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final i in items) _document(context, i),
+      ],
+    );
+  }
+
+  Widget _document(BuildContext context, Map<String, dynamic> i) {
+    final pages = (i['pages'] as num?)?.toInt() ?? 0;
+    final title = '${i['title'] ?? i['name'] ?? 'document'}';
+    final url = '${i['url'] ?? ''}';
+    final pageUrls = ((i['page_urls'] ?? []) as List).map((u) => '$u').toList();
+    final facts = [
+      if (pages > 0) pages == 1 ? '1 page' : '$pages pages',
+      if (i['bytes'] is num) _fileSize((i['bytes'] as num).toDouble()),
+      if ('${i['made_at'] ?? ''}'.isNotEmpty) '${i['made_at']}'.split('T').first,
+    ].join('  ·  ');
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: InkWell(
+        onTap: pageUrls.isEmpty && url.isEmpty
+            ? null
+            : () => showDocument(context,
+                title: title,
+                pageUrls: pageUrls,
+                fileUrl: url.isEmpty ? null : url,
+                onOpenFile: _openUrl),
+        borderRadius: BorderRadius.circular(5),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: .04),
+            borderRadius: BorderRadius.circular(5),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Row(children: [
+            const Icon(Icons.picture_as_pdf_outlined,
+                size: 19, color: Color(0xFFE5989B)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 13, color: Colors.white, height: 1.3)),
+                  if (facts.isNotEmpty)
+                    Text(facts,
+                        style: const TextStyle(
+                            fontSize: 11.5, color: Colors.white38, height: 1.5)),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded,
+                size: 18, color: Colors.white30),
+          ]),
+        ),
+      ),
+    );
+  }
+
   Widget _images(Map<String, dynamic> b) {
     final items = ((b['items'] ?? []) as List)
         .map((i) => (i as Map).cast<String, dynamic>())
@@ -824,4 +903,13 @@ class _Tappable extends StatelessWidget {
           ),
         ),
       );
+}
+
+/// A size in BYTES. `_bytes` is the value format and reads kilobytes, because
+/// that is what the web agency's weight budget is measured in; a document
+/// reports its real file size and 30,708 of them is not 30 gigabytes.
+String _fileSize(double n) {
+  if (n < 1024) return '${n.round()} B';
+  if (n < 1024 * 1024) return '${(n / 1024).round()} KB';
+  return '${(n / (1024 * 1024)).toStringAsFixed(1)} MB';
 }

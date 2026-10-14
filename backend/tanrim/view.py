@@ -50,6 +50,17 @@ BLOCKS = (
     "list",      # items of {text, source?, done?}; `style` bullets|chips|checks
     "table",     # {columns: [...], rows: [{cells: [...], source?}]}
     "images",    # items of {url, caption?}
+    # A document that is SENT as a file: items of
+    # {name, title, url, pages, bytes, made_at?, page_urls: [...]}.
+    #
+    # A block rather than a value format, because a PDF is not a value in a
+    # row: it is a thing with a length, a date and pages you read. The app
+    # cannot render a PDF — there is no renderer for Flutter on the desktop
+    # that does not drag in a native build — so `page_urls` carries the pages
+    # already rendered to pictures and `url` is the file itself, for sending
+    # and for opening outside. A plugin that can serve only the file sends no
+    # `page_urls` and gets a card that still names and opens it.
+    "documents",
     "timeline",  # built by the core from the record's history
     # An email as it will be sent: {to, from?, subject, body, attachments?}.
     # A block rather than a format, because an email is not a value — it is a
@@ -123,6 +134,11 @@ def table(columns: list[str], rows: list[dict], title: str = "") -> dict:
 
 def images(items: list[dict], title: str = "") -> dict:
     return {"block": "images", "title": title, "items": items}
+
+
+def documents(items: list[dict], title: str = "") -> dict:
+    """Files this record carries. See `BLOCKS` for what an item holds."""
+    return {"block": "documents", "title": title, "items": items}
 
 
 def raw(value: Any, title: str = "") -> dict:

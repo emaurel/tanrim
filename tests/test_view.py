@@ -28,8 +28,18 @@ def test_the_vocabulary_stays_small():
     exists to stop; it also caught an application about to go out from the
     wrong address, because it printed the From line and the From line was
     somebody else.
+
+    Raised to 10 for `documents`, and this one had the strongest case for
+    being a format instead. It is not one. A PDF is not a value in a row: it
+    has a length, a date and PAGES, and the app cannot draw it at all —
+    there is no PDF renderer for Flutter on the desktop that does not drag in
+    a native build. So the block carries the file for sending and the same
+    pages already rendered to pictures for reading, which is two parallel
+    lists that cannot live in one cell. The alternative actually on offer was
+    a `url` row saying `portfolio.pdf`, which is the "there is a document and
+    you cannot see it" failure this environment keeps finding.
     """
-    assert len(view.BLOCKS) <= 9, view.BLOCKS
+    assert len(view.BLOCKS) <= 10, view.BLOCKS
     assert "raw" in view.BLOCKS, "there must be somewhere for the long tail"
 
 

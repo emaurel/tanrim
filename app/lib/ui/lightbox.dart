@@ -218,3 +218,178 @@ class _PannedState extends State<_Panned> {
     });
   }
 }
+
+
+/// A document, read page by page.
+///
+/// The server renders each page of a PDF to a picture, because this app has
+/// no PDF renderer and there is none for Flutter on the desktop that does not
+/// drag in a native build. That is not a workaround so much as the right
+/// split: the machine that MADE the document already has a PDF library, and
+/// what the operator needs here is to read it before approving a send.
+///
+/// Scrolled at full width rather than fitted one page at a time. An A4 page
+/// fitted into a landscape window is a column of grey — the same mistake the
+/// filled-form picture made — and a document is read downwards anyway.
+Future<void> showDocument(
+  BuildContext context, {
+  required String title,
+  required List<String> pageUrls,
+  String? fileUrl,
+  void Function(String url)? onOpenFile,
+}) {
+  return showDialog<void>(
+    context: context,
+    barrierColor: Colors.black.withValues(alpha: .86),
+    barrierDismissible: true,
+    builder: (_) => _Document(
+      title: title,
+      pageUrls: pageUrls,
+      fileUrl: fileUrl,
+      onOpenFile: onOpenFile,
+    ),
+  );
+}
+
+class _Document extends StatelessWidget {
+  const _Document({
+    required this.title,
+    required this.pageUrls,
+    this.fileUrl,
+    this.onOpenFile,
+  });
+
+  final String title;
+  final List<String> pageUrls;
+  final String? fileUrl;
+  final void Function(String url)? onOpenFile;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    // A4 is 1:1.414, so a page wider than about seven tenths of a tall window
+    // runs off the bottom anyway; this keeps a readable column on a wide one.
+    final width = (size.width * 0.52).clamp(380.0, 980.0);
+    return Focus(
+      autofocus: true,
+      onKeyEvent: (_, e) {
+        if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.escape) {
+          Navigator.of(context).maybePop();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Stack(children: [
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => Navigator.of(context).maybePop(),
+          ),
+        ),
+        Center(
+          child: GestureDetector(
+            onTap: () {},
+            child: SizedBox(
+              width: width,
+              height: size.height * 0.92,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10, right: 44),
+                  child: Row(children: [
+                    Expanded(
+                      child: Text(title,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600)),
+                    ),
+                    Text(
+                      pageUrls.length == 1
+                          ? '1 page'
+                          : '${pageUrls.length} pages',
+                      style: const TextStyle(
+                          fontSize: 12, color: Colors.white54),
+                    ),
+                    if (fileUrl != null && onOpenFile != null) ...[
+                      const SizedBox(width: 14),
+                      TextButton.icon(
+                        onPressed: () => onOpenFile!(fileUrl!),
+                        icon: const Icon(Icons.open_in_new_rounded, size: 15),
+                        label: const Text('open the PDF'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: const Color(0xFF8ECAE6),
+                          textStyle: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ]),
+                ),
+                Expanded(
+                  child: pageUrls.isEmpty
+                      // A plugin that can serve the file but not its pages is
+                      // allowed; saying so beats an empty white rectangle.
+                      ? const Center(
+                          child: Text(
+                              'no pages were rendered for this document',
+                              style: TextStyle(
+                                  fontSize: 12.5, color: Colors.white54)),
+                        )
+                      : ListView.separated(
+                          itemCount: pageUrls.length,
+                          separatorBuilder: (_, _) => const SizedBox(height: 10),
+                          itemBuilder: (_, i) => Container(
+                            color: Colors.white,
+                            child: Image.network(
+                              pageUrls[i],
+                              fit: BoxFit.fitWidth,
+                              // A page is a known shape, so the space it will
+                              // take is reserved before it arrives: without
+                              // this the list jumps as each one loads and the
+                              // place you were reading moves.
+                              loadingBuilder: (_, child, progress) =>
+                                  progress == null
+                                      ? child
+                                      : AspectRatio(
+                                          aspectRatio: 1 / 1.414,
+                                          child: Container(
+                                            color: const Color(0xFFF2F3F5),
+                                          ),
+                                        ),
+                              errorBuilder: (_, _, _) => AspectRatio(
+                                aspectRatio: 1 / 1.414,
+                                child: Container(
+                                  color: const Color(0xFFF2F3F5),
+                                  alignment: Alignment.center,
+                                  child: Text('page ${i + 1} did not load',
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.black38)),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+        Positioned(
+          top: 12,
+          right: 16,
+          child: IconButton(
+            icon: const Icon(Icons.close_rounded),
+            iconSize: 26,
+            color: Colors.white70,
+            tooltip: 'close',
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.black.withValues(alpha: .45),
+            ),
+            onPressed: () => Navigator.of(context).maybePop(),
+          ),
+        ),
+      ]),
+    );
+  }
+}
